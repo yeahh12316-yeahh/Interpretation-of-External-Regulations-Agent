@@ -1,3 +1,5 @@
+import { isAbortError, raceWithAbort, throwIfAborted } from "../../lib/abort";
+
 export const DEFAULT_MAX_FILE_BYTES = 25 * 1024 * 1024;
 
 export type SupportedDocumentKind = "pdf" | "docx" | "txt";
@@ -37,7 +39,9 @@ const beginsWith = (bytes: Uint8Array, prefix: readonly number[]): boolean =>
 export async function validateFile(
   file: File,
   options: FilePolicyOptions = {},
+  signal?: AbortSignal,
 ): Promise<SupportedDocumentKind> {
+  throwIfAborted(signal);
   const maxBytes = options.maxBytes ?? DEFAULT_MAX_FILE_BYTES;
   if (file.size === 0) throw new Error("不能上传空文件");
   if (file.size > maxBytes) throw new Error("文件超过大小上限");
@@ -48,8 +52,13 @@ export async function validateFile(
   if (kind === "pdf" || kind === "docx") {
     let bytes: Uint8Array;
     try {
-      bytes = new Uint8Array(await file.arrayBuffer());
-    } catch {
+      const buffer = await raceWithAbort(
+        Promise.resolve().then(() => file.arrayBuffer()),
+        signal,
+      );
+      bytes = new Uint8Array(buffer);
+    } catch (error) {
+      if (isAbortError(error)) throw error;
       throw new Error("无法读取文件");
     }
 

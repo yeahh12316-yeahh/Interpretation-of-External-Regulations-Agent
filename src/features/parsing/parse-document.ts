@@ -1,5 +1,11 @@
 import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
 import { SourceUnitSchema } from "../../domain/schemas";
+import {
+  abortError,
+  isAbortError,
+  raceWithAbort,
+  throwIfAborted,
+} from "../../lib/abort";
 import { validateFile } from "../intake/file-policy";
 import { hashFile } from "../intake/hash-file";
 import { buildAnchors, type ParsedSourceUnit } from "./build-anchors";
@@ -24,23 +30,18 @@ export interface ParseResult {
   quality: ParseQuality;
 }
 
-const abortError = (): DOMException =>
-  new DOMException("文件处理已取消", "AbortError");
-
 const readBytes = async (
   file: File,
   signal: AbortSignal,
 ): Promise<ArrayBuffer> => {
-  if (signal.aborted) throw abortError();
+  throwIfAborted(signal);
   try {
-    const bytes = await file.arrayBuffer();
-    if (signal.aborted) throw abortError();
-    return bytes;
+    return await raceWithAbort(
+      Promise.resolve().then(() => file.arrayBuffer()),
+      signal,
+    );
   } catch (error) {
-    if (
-      signal.aborted ||
-      (error instanceof DOMException && error.name === "AbortError")
-    ) {
+    if (signal.aborted || isAbortError(error)) {
       throw abortError();
     }
     throw new Error("无法读取文件");
@@ -52,9 +53,8 @@ export async function parseDocument(
   sourceType: SourceType,
   signal: AbortSignal,
 ): Promise<ParseResult> {
-  if (signal.aborted) throw abortError();
-  const kind = await validateFile(file);
-  if (signal.aborted) throw abortError();
+  throwIfAborted(signal);
+  const kind = await validateFile(file, {}, signal);
   const fileHash = await hashFile(file, signal);
   const sourceId = `SRC-${sourceType}-${fileHash.slice(0, 20)}`;
   const bytes = await readBytes(file, signal);
@@ -66,7 +66,7 @@ export async function parseDocument(
   let lowTextPages: number[] = [];
 
   if (kind === "pdf") {
-    const { parsePdf } = await import("./parse-pdf");
+    const { parsePdf } = await raceWithAbort(import("./parse-pdf"), signal);
     const parsed = await parsePdf(bytes, sourceId, sourceType, signal);
     units = parsed.units;
     pageCount = parsed.pageCount;
@@ -74,7 +74,7 @@ export async function parseDocument(
     failedPages = parsed.failedPages;
     lowTextPages = parsed.lowTextPages;
   } else if (kind === "docx") {
-    const { parseDocx } = await import("./parse-docx");
+    const { parseDocx } = await raceWithAbort(import("./parse-docx"), signal);
     units = await parseDocx(bytes, sourceId, sourceType, signal);
   } else {
     units = parseText(bytes, sourceId, sourceType, signal);

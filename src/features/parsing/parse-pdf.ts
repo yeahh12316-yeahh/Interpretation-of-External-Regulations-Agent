@@ -6,6 +6,12 @@ import {
 
 import type { SourceType } from "../../domain/source";
 import {
+  abortError,
+  isAbortError,
+  raceWithAbort,
+  throwIfAborted,
+} from "../../lib/abort";
+import {
   articleFromText,
   type BoundingBox,
   type ParsedSourceUnit,
@@ -26,8 +32,6 @@ GlobalWorkerOptions.workerSrc =
   import.meta.env.MODE === "test" && testWorkerUrl ? testWorkerUrl : workerUrl;
 
 const LOW_TEXT_CHARACTER_THRESHOLD = 12;
-const abortError = (): DOMException =>
-  new DOMException("文件处理已取消", "AbortError");
 
 interface PdfTextItem {
   str: string;
@@ -84,14 +88,30 @@ interface TextLine {
   items: PdfTextItem[];
 }
 
-const needsWordSpace = (left: string, right: string): boolean =>
-  /[A-Za-z0-9]$/.test(left) && /^[A-Za-z0-9]/.test(right);
+const needsWordSpace = (left: PdfTextItem, right: PdfTextItem): boolean => {
+  if (!/[A-Za-z0-9]$/.test(left.str) || !/^[A-Za-z0-9]/.test(right.str))
+    return false;
+  const leftX = left.transform?.[4];
+  const rightX = right.transform?.[4];
+  if (
+    typeof leftX !== "number" ||
+    typeof rightX !== "number" ||
+    typeof left.width !== "number"
+  ) {
+    return false;
+  }
+  const gap = rightX - (leftX + left.width);
+  const fontHeight = Math.max(left.height ?? 0, right.height ?? 0);
+  return gap > Math.max(1, fontHeight * 0.2);
+};
 
 const lineText = (items: readonly PdfTextItem[]): string => {
   let text = "";
+  let previous: PdfTextItem | undefined;
   for (const item of items) {
-    if (text && item.str && needsWordSpace(text, item.str)) text += " ";
+    if (previous && item.str && needsWordSpace(previous, item)) text += " ";
     text += item.str;
+    if (item.str) previous = item;
   }
   return text.replace(/\s+/g, " ").trim();
 };
@@ -144,11 +164,10 @@ export async function parsePdfPages(
   };
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
-    if (signal.aborted) throw abortError();
+    throwIfAborted(signal);
     try {
-      const page = await pdf.getPage(pageNumber);
-      const textContent = await page.getTextContent();
-      if (signal.aborted) throw abortError();
+      const page = await raceWithAbort(pdf.getPage(pageNumber), signal);
+      const textContent = await raceWithAbort(page.getTextContent(), signal);
       const items = textContent.items.filter(isTextItem);
       const lines = textLines(items).filter((line) => lineText(line.items));
       const pageCharacterCount = lines.reduce(
@@ -178,10 +197,7 @@ export async function parsePdfPages(
         }),
       );
     } catch (error) {
-      if (
-        signal.aborted ||
-        (error instanceof DOMException && error.name === "AbortError")
-      ) {
+      if (signal.aborted || isAbortError(error)) {
         throw abortError();
       }
       result.failedPages.push({ page: pageNumber, error: "页面文本提取失败" });
@@ -197,16 +213,15 @@ export async function parsePdf(
   sourceType: SourceType,
   signal: AbortSignal,
 ): Promise<PdfPageParseResult & { pageCount: number }> {
-  if (signal.aborted) throw abortError();
+  throwIfAborted(signal);
   const loadingTask = getDocument({ data: new Uint8Array(bytes) });
   const cancelLoading = () => {
-    void loadingTask.destroy();
+    void loadingTask.destroy().catch(() => undefined);
   };
   signal.addEventListener("abort", cancelLoading, { once: true });
 
   try {
-    const pdf = await loadingTask.promise;
-    if (signal.aborted) throw abortError();
+    const pdf = await raceWithAbort(loadingTask.promise, signal);
     const pages = await parsePdfPages(pdf, sourceId, sourceType, signal);
     return { ...pages, pageCount: pdf.numPages };
   } catch (error) {
@@ -216,6 +231,6 @@ export async function parsePdf(
     throw new Error("PDF 文本提取失败");
   } finally {
     signal.removeEventListener("abort", cancelLoading);
-    await loadingTask.destroy();
+    void loadingTask.destroy().catch(() => undefined);
   }
 }

@@ -1,5 +1,7 @@
 import type { JSX } from 'react';
 
+import { MaterialUpload } from '../features/intake/MaterialUpload';
+
 export const workflowSteps = ['材料上传', '解析与OCR', '监管分析', '人工复核', '报告导出'] as const;
 
 export function App(): JSX.Element {
@@ -21,7 +23,7 @@ export function App(): JSX.Element {
       </nav>
 
       <main className="app-content">
-        <p>请选择工作流步骤开始处理材料。</p>
+        <MaterialUpload />
       </main>
     </div>
   );

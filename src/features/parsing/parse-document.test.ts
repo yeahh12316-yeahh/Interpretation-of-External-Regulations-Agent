@@ -7,6 +7,7 @@ import { SourceUnitSchema } from "../../domain/schemas";
 import { validateFile } from "../intake/file-policy";
 import { hashFile } from "../intake/hash-file";
 import { buildAnchors } from "./build-anchors";
+import { parseDocx } from "./parse-docx";
 import { parseDocument } from "./parse-document";
 import { parsePdfPages } from "./parse-pdf";
 
@@ -28,6 +29,24 @@ const fixtureFile = async (name: string, type: string): Promise<File> => {
   }
 
   return file;
+};
+
+const settleWithin = async <T>(
+  promise: Promise<T>,
+  timeoutMs = 100,
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(
+      () => reject(new Error("operation did not settle after abort")),
+      timeoutMs,
+    );
+  });
+  try {
+    return await Promise.race([promise, timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
 };
 
 describe("file intake boundaries", () => {
@@ -78,6 +97,38 @@ describe("file intake boundaries", () => {
 
     await expect(hashFile(file)).rejects.toThrow("无法计算文件哈希");
     await expect(hashFile(file)).rejects.not.toThrow(/敏感正文/);
+  });
+
+  test("aborts validation while a PDF read never settles", async () => {
+    const controller = new AbortController();
+    const file = new File(["%PDF-1.7"], "pending.pdf", {
+      type: "application/pdf",
+    });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: () => new Promise<ArrayBuffer>(() => undefined),
+    });
+
+    const validation = validateFile(file, {}, controller.signal);
+    controller.abort();
+
+    await expect(settleWithin(validation)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+  });
+
+  test("aborts hashing while file.arrayBuffer never settles", async () => {
+    const controller = new AbortController();
+    const file = new File(["pending"], "pending.txt", { type: "text/plain" });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: () => new Promise<ArrayBuffer>(() => undefined),
+    });
+
+    const hashing = hashFile(file, controller.signal);
+    controller.abort();
+
+    await expect(settleWithin(hashing)).rejects.toMatchObject({
+      name: "AbortError",
+    });
   });
 });
 
@@ -177,6 +228,61 @@ describe("parseDocument", () => {
       ),
     ).rejects.toMatchObject({ name: "AbortError" });
   });
+
+  test("aborts a second file read that never settles", async () => {
+    const controller = new AbortController();
+    const bytes = new TextEncoder().encode("第一条 商业银行应当审慎经营。");
+    const file = new File([bytes], "pending.txt", { type: "text/plain" });
+    let readCount = 0;
+    let markSecondReadStarted!: () => void;
+    const secondReadStarted = new Promise<void>((resolve) => {
+      markSecondReadStarted = resolve;
+    });
+    Object.defineProperty(file, "arrayBuffer", {
+      value: () => {
+        readCount += 1;
+        if (readCount === 1) return Promise.resolve(bytes.buffer);
+        markSecondReadStarted();
+        return new Promise<ArrayBuffer>(() => undefined);
+      },
+    });
+
+    const parsing = parseDocument(file, "regulatory_text", controller.signal);
+    await settleWithin(secondReadStarted);
+    controller.abort();
+
+    await expect(settleWithin(parsing)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+  });
+
+  test("aborts while Mammoth extraction never settles", async () => {
+    const controller = new AbortController();
+    const file = await fixtureFile(
+      "regulation.docx",
+      "application/vnd.openxmlformats-officedocument.wordprocessingml.document",
+    );
+    let markExtractionStarted!: () => void;
+    const extractionStarted = new Promise<void>((resolve) => {
+      markExtractionStarted = resolve;
+    });
+    const extraction = parseDocx(
+      await file.arrayBuffer(),
+      "SRC-official_interpretation-pending",
+      "official_interpretation",
+      controller.signal,
+      () => {
+        markExtractionStarted();
+        return new Promise(() => undefined);
+      },
+    );
+    await settleWithin(extractionStarted);
+    controller.abort();
+
+    await expect(settleWithin(extraction)).rejects.toMatchObject({
+      name: "AbortError",
+    });
+  });
 });
 
 describe("page failures and stable anchors", () => {
@@ -245,6 +351,97 @@ describe("page failures and stable anchors", () => {
       "商业银行",
     ]);
     expect(result.units.map((unit) => unit.paragraphIndex)).toEqual([0, 1]);
+  });
+
+  test("uses PDF geometry instead of inserting spaces into fragmented article digits and Latin text", async () => {
+    const fakePdf = {
+      numPages: 1,
+      getPage: async () => ({
+        getTextContent: async () => ({
+          items: [
+            {
+              str: "第",
+              transform: [1, 0, 0, 1, 20, 700],
+              width: 12,
+              height: 12,
+            },
+            {
+              str: "2",
+              transform: [1, 0, 0, 1, 32, 700],
+              width: 7,
+              height: 12,
+            },
+            {
+              str: "0",
+              transform: [1, 0, 0, 1, 39, 700],
+              width: 7,
+              height: 12,
+            },
+            {
+              str: "2",
+              transform: [1, 0, 0, 1, 46, 700],
+              width: 7,
+              height: 12,
+            },
+            {
+              str: "6",
+              transform: [1, 0, 0, 1, 53, 700],
+              width: 7,
+              height: 12,
+            },
+            {
+              str: "条",
+              transform: [1, 0, 0, 1, 60, 700],
+              width: 12,
+              height: 12,
+            },
+            {
+              str: "B",
+              transform: [1, 0, 0, 1, 20, 680],
+              width: 8,
+              height: 12,
+            },
+            {
+              str: "a",
+              transform: [1, 0, 0, 1, 28, 680],
+              width: 7,
+              height: 12,
+            },
+            {
+              str: "n",
+              transform: [1, 0, 0, 1, 35, 680],
+              width: 7,
+              height: 12,
+            },
+            {
+              str: "k",
+              transform: [1, 0, 0, 1, 42, 680],
+              width: 7,
+              height: 12,
+            },
+            {
+              str: "Risk",
+              transform: [1, 0, 0, 1, 58, 680],
+              width: 24,
+              height: 12,
+            },
+          ],
+        }),
+      }),
+    };
+
+    const result = await parsePdfPages(
+      fakePdf,
+      "SRC-regulatory_text-ascii",
+      "regulatory_text",
+      new AbortController().signal,
+    );
+
+    expect(result.units.map((unit) => unit.text)).toEqual([
+      "第2026条",
+      "Bank Risk",
+    ]);
+    expect(result.units[0]?.article).toBe("第2026条");
   });
 
   test("records failed and low-text PDF pages instead of silently dropping them", async () => {
