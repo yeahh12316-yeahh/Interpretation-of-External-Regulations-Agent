@@ -314,6 +314,28 @@ export const extractNumbers = (value: string): string[] =>
 
 const FREE_PROSE_MODAL_PATTERN = /严禁|不得|禁止|必须|应当|可以|不应|宜/gu;
 
+const SINGLE_CHARACTER_MODAL_PATTERN = /[应须]/gu;
+
+/**
+ * These are occurrence identities, not a linguistic classifier. Every 应/须
+ * is retained with its normalized clause and exact position, including uses in
+ * ordinary compounds such as 相应、响应、须知. That lets reverse validation
+ * detect an insertion/removal without maintaining an unsafe word denylist.
+ */
+export const singleCharacterModalContexts = (value: string): string[] =>
+  value
+    .normalize("NFKC")
+    .split(/[。！？!?；;\r\n]+/u)
+    .flatMap((rawClause) => {
+      const clause = normalizeText(rawClause);
+      return [...clause.matchAll(SINGLE_CHARACTER_MODAL_PATTERN)].map(
+        (match) => {
+          const index = match.index;
+          return `${match[0]}:${clause.slice(0, index)}<${match[0]}>${clause.slice(index + match[0].length)}`;
+        },
+      );
+    });
+
 export const extractModalTerms = (value: string): string[] =>
   value.normalize("NFKC").match(FREE_PROSE_MODAL_PATTERN) ?? [];
 

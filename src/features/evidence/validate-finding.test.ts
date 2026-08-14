@@ -178,6 +178,90 @@ describe("validateFinding", () => {
     ).toEqual(["可以"]);
   });
 
+  test("protects every prose 应/须 occurrence by ordered clause context without classifying compounds", () => {
+    const proseSource: SourceUnit = {
+      sourceId: "REG-SINGLE-PROSE",
+      sourceType: "regulatory_text",
+      title: "合成单字语境文件",
+      content: "机构应建立制度；操作人员阅读须知并作出相应响应。",
+    };
+    const proseUnit: ParsedSourceUnit = {
+      sourceId: proseSource.sourceId,
+      sourceType: proseSource.sourceType,
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: proseSource.content,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const proseFinding = finding({
+      statement: proseSource.content,
+      sourceAnchors: [
+        {
+          sourceId: proseSource.sourceId,
+          sourceType: proseSource.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: proseSource.content,
+        },
+      ],
+    });
+    const proseIndex = createSourceIndex({
+      sources: [proseSource],
+      parsedUnits: [proseUnit],
+      findings: [proseFinding],
+    });
+
+    expect(resultFor(proseFinding, proseIndex).modal_strength.passed).toBe(
+      true,
+    );
+    expect(
+      resultFor(
+        {
+          ...proseFinding,
+          statement: "机构建立制度；操作人员阅读须知并作出相应响应。",
+        },
+        proseIndex,
+      ).modal_strength.passed,
+    ).toBe(false);
+
+    const responseSource: SourceUnit = {
+      ...proseSource,
+      sourceId: "REG-RESPONSE",
+      content: "系统响应告警。",
+    };
+    const responseUnit: ParsedSourceUnit = {
+      ...proseUnit,
+      sourceId: responseSource.sourceId,
+      text: responseSource.content,
+    };
+    const invented = finding({
+      statement: "系统应响应告警。",
+      sourceAnchors: [
+        {
+          sourceId: responseSource.sourceId,
+          sourceType: responseSource.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: responseSource.content,
+        },
+      ],
+    });
+    expect(
+      resultFor(
+        invented,
+        createSourceIndex({
+          sources: [responseSource],
+          parsedUnits: [responseUnit],
+          findings: [invented],
+        }),
+      ).modal_strength.passed,
+    ).toBe(false);
+  });
+
   test("rejects swapping protected values between clause subjects or changing multiplicity", () => {
     const evidenceText =
       "甲机构不得在2026年1月1日超过1亿元；乙机构可以在2027年1月1日超过1万元。";
@@ -526,6 +610,87 @@ describe("validateFinding", () => {
       resultFor(singleStrengthFinding, singleStrengthIndex).modal_strength
         .passed,
     ).toBe(true);
+
+    const singleCharacterCases = [
+      {
+        strength: "应",
+        action: "建立",
+        object: "管理制度",
+        text: "机构应建立管理制度。",
+        expected: true,
+      },
+      {
+        strength: "须",
+        action: "报告",
+        object: "重大事项",
+        text: "机构须报告重大事项。",
+        expected: true,
+      },
+      {
+        strength: "应",
+        action: "建立",
+        object: "管理制度",
+        text: "机构应，建立管理制度。",
+        expected: true,
+      },
+      {
+        strength: "应",
+        action: "建立",
+        object: "管理制度",
+        text: "机构作出相应安排并建立管理制度。",
+        expected: false,
+      },
+      {
+        strength: "须",
+        action: "报告",
+        object: "重大事项",
+        text: "机构阅读须知后报告重大事项。",
+        expected: false,
+      },
+    ] as const;
+    for (const [caseIndex, item] of singleCharacterCases.entries()) {
+      const caseSource: SourceUnit = {
+        sourceId: `REG-SINGLE-ATOMIC-${caseIndex}`,
+        sourceType: "regulatory_text",
+        title: "合成原子要求文件",
+        content: item.text,
+      };
+      const caseAnchor = {
+        sourceId: caseSource.sourceId,
+        sourceType: caseSource.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 0,
+        quote: item.text,
+      } as const;
+      const caseFinding = finding({
+        category: "atomic_requirement",
+        statement: item.text,
+        sourceAnchors: [caseAnchor],
+      });
+      const caseRequirement: AtomicRequirement = {
+        ...singleStrengthAtomic,
+        strength: item.strength,
+        action: item.action,
+        object: item.object,
+        sourceAnchors: [caseAnchor],
+      };
+      const caseIndexValue = createSourceIndex({
+        sources: [caseSource],
+        parsedUnits: [
+          {
+            ...singleStrengthUnit,
+            sourceId: caseSource.sourceId,
+            text: item.text,
+          },
+        ],
+        findings: [caseFinding],
+        atomicRequirements: [caseRequirement],
+      });
+      expect(resultFor(caseFinding, caseIndexValue).modal_strength.passed).toBe(
+        item.expected,
+      );
+    }
   });
 
   test("uses parsed locators to distinguish the same quote on different pages", () => {

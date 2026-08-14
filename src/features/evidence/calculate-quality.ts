@@ -1,12 +1,13 @@
 import type { Finding } from "../../domain/finding";
 import type { Project } from "../../domain/project";
-import type { SourceType, SourceUnit } from "../../domain/source";
+import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
 import {
   hasPassedQualityGate,
   type QualityMetrics,
 } from "../../domain/quality";
-import type { ParsedSourceUnit } from "../parsing/build-anchors";
+import { buildAnchors, type ParsedSourceUnit } from "../parsing/build-anchors";
 import type { ParseResult } from "../parsing/parse-document";
+import type { OcrPageResult } from "../parsing/ocr/ocr-pipeline";
 import { normalizeText } from "./normalize-text";
 import type { AtomicRequirement } from "../analysis/skill-orchestrator";
 import {
@@ -28,6 +29,9 @@ export interface SourceParseOutcome {
   totalCharacters: number;
   orderedUnitDigest: string;
   ocrFailedPages: readonly number[];
+  lowTextPages: readonly number[];
+  ocrReviews: readonly OcrPageResult[];
+  anchors: readonly SourceAnchor[];
   finalizationBlocked: boolean;
   extractionCoverage: number;
   units: readonly ParsedSourceUnit[];
@@ -95,6 +99,9 @@ export const parseOutcomeFromResult = (
   totalCharacters: result.quality.totalCharacters,
   orderedUnitDigest: orderedUnitDigest(result.units),
   ocrFailedPages: result.quality.ocrFailedPages,
+  lowTextPages: result.quality.lowTextPages,
+  ocrReviews: result.ocrReviews,
+  anchors: result.anchors,
   finalizationBlocked: result.quality.finalizationBlocked,
   extractionCoverage: result.quality.extractionCoverage,
   units: result.units,
@@ -367,6 +374,9 @@ const parsingEvidenceComplete = (
       !Array.isArray(outcome.successfulPages) ||
       !Array.isArray(outcome.failedPages) ||
       !Array.isArray(outcome.ocrFailedPages) ||
+      !Array.isArray(outcome.lowTextPages) ||
+      !Array.isArray(outcome.ocrReviews) ||
+      !Array.isArray(outcome.anchors) ||
       !Array.isArray(outcome.units) ||
       !Number.isInteger(outcome.failedPageCount) ||
       outcome.failedPageCount < 0 ||
@@ -395,6 +405,13 @@ const parsingEvidenceComplete = (
       .replace(/\r\n?/gu, "\n")
       .trim();
     const authoritativeContent = source.content.replace(/\r\n?/gu, "\n").trim();
+    const expectedAnchors = buildAnchors(outcome.units);
+    const locatorKeys = expectedAnchors.map(({ quote: _quote, ...locator }) =>
+      stableValue(locator),
+    );
+    const unitIds = outcome.units.flatMap(({ unitId }) =>
+      unitId === undefined ? [] : [unitId],
+    );
     if (
       outcome.finalizationBlocked !== false ||
       outcome.failedPages.length > 0 ||
@@ -405,6 +422,10 @@ const parsingEvidenceComplete = (
       outcome.orderedUnitDigest !== orderedUnitDigest(outcome.units) ||
       outcomeUnitKeys.join("\u0000") !== sessionUnitKeys.join("\u0000") ||
       reconstructedContent !== authoritativeContent ||
+      stableValue(outcome.anchors) !== stableValue(expectedAnchors) ||
+      new Set(locatorKeys).size !== locatorKeys.length ||
+      unitIds.some((unitId) => !unitId.trim()) ||
+      new Set(unitIds).size !== unitIds.length ||
       outcome.units.some(
         (unit) =>
           unit.sourceId !== source.sourceId ||
@@ -412,6 +433,7 @@ const parsingEvidenceComplete = (
           !normalizeText(source.content).includes(normalizeText(unit.text)),
       ) ||
       outcome.ocrFailedPages.length > 0 ||
+      !ocrEvidenceComplete(outcome) ||
       outcome.extractionCoverage !== 1
     ) {
       return false;
@@ -471,6 +493,82 @@ const parsingEvidenceComplete = (
       (unit.lowConfidenceCharacters?.length ?? 0) > 0 &&
       unit.reviewStatus !== "corrected";
     return !unresolvedOcr;
+  });
+};
+
+const isValidDateTime = (value: string | null): value is string =>
+  value !== null &&
+  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value) &&
+  !Number.isNaN(Date.parse(value));
+
+const ocrEvidenceComplete = (outcome: SourceParseOutcome): boolean => {
+  const ocrUnits = outcome.units.filter(
+    ({ extractionMethod }) => extractionMethod === "ocr",
+  );
+  const lowTextPages = outcome.lowTextPages;
+  if (
+    new Set(lowTextPages).size !== lowTextPages.length ||
+    lowTextPages.some(
+      (page) =>
+        !Number.isInteger(page) ||
+        page < 1 ||
+        outcome.pageCount === null ||
+        page > outcome.pageCount,
+    ) ||
+    outcome.ocrReviews.length !== ocrUnits.length
+  ) {
+    return false;
+  }
+  const reviewPages = outcome.ocrReviews.map(({ page }) => page);
+  if (
+    new Set(reviewPages).size !== reviewPages.length ||
+    stableValue([...reviewPages].sort((left, right) => left - right)) !==
+      stableValue([...lowTextPages].sort((left, right) => left - right))
+  ) {
+    return false;
+  }
+
+  return outcome.ocrReviews.every((review) => {
+    const matchingUnits = ocrUnits.filter(
+      (unit) =>
+        unit.unitId === review.unitId &&
+        unit.sourceId === review.sourceId &&
+        unit.sourceType === review.sourceType &&
+        unit.page === review.page,
+    );
+    if (matchingUnits.length !== 1) return false;
+    const [unit] = matchingUnits;
+    const lastCorrection = review.correctionHistory.at(-1);
+    return (
+      review.method === "ocr" &&
+      review.sourceId === outcome.sourceId &&
+      review.sourceType === outcome.sourceType &&
+      review.reviewStatus === "corrected" &&
+      !review.error &&
+      typeof review.correctedText === "string" &&
+      review.correctedText.trim().length > 0 &&
+      review.text === review.correctedText &&
+      typeof review.reviewedBy === "string" &&
+      review.reviewedBy.trim().length > 0 &&
+      isValidDateTime(review.reviewedAt) &&
+      review.correctionHistory.length > 0 &&
+      lastCorrection?.correctedText === review.correctedText &&
+      lastCorrection.reviewedBy === review.reviewedBy &&
+      lastCorrection.reviewedAt === review.reviewedAt &&
+      unit.text === review.text &&
+      unit.confidence === review.confidence &&
+      unit.originalOcrText === review.originalOcrText &&
+      unit.correctedText === review.correctedText &&
+      unit.reviewStatus === review.reviewStatus &&
+      unit.reviewedAt === review.reviewedAt &&
+      unit.reviewedBy === review.reviewedBy &&
+      stableValue(unit.correctionHistory ?? []) ===
+        stableValue(review.correctionHistory) &&
+      stableValue(unit.boundingBox) === stableValue(review.boundingBox) &&
+      stableValue(unit.ocrRegions ?? []) === stableValue(review.regions) &&
+      stableValue(unit.lowConfidenceCharacters ?? []) ===
+        stableValue(review.lowConfidenceCharacters)
+    );
   });
 };
 

@@ -9,6 +9,7 @@ import {
   extractNumbers,
   normalizeText,
   protectedClaimSkeleton,
+  singleCharacterModalContexts,
 } from "./normalize-text";
 
 export type ValidationRule =
@@ -263,6 +264,47 @@ const structuredStrengthLocated = (
   const object = requirement.object ? normalizeText(requirement.object) : null;
   if (!subject || !action || !object) return false;
   const normalized = normalizeText(text);
+  if (strength === "应" || strength === "须") {
+    let subjectIndex = normalized.indexOf(subject);
+    while (subjectIndex >= 0) {
+      const subjectEnd = subjectIndex + subject.length;
+      let strengthIndex = normalized.indexOf(strength, subjectEnd);
+      while (strengthIndex >= 0) {
+        const actionIndex = normalized.indexOf(
+          action,
+          strengthIndex + strength.length,
+        );
+        const betweenStrengthAndAction = normalized.slice(
+          strengthIndex + strength.length,
+          actionIndex,
+        );
+        const beforeStrength = normalized.slice(0, strengthIndex).at(-1);
+        const lexicallyStandalone =
+          strengthIndex === subjectEnd ||
+          (beforeStrength !== undefined && /\p{P}/u.test(beforeStrength));
+        const objectIndex = normalized.indexOf(
+          object,
+          actionIndex + action.length,
+        );
+        if (
+          strengthIndex >= subjectEnd &&
+          normalized.slice(strengthIndex, strengthIndex + strength.length) ===
+            strength &&
+          /^[\p{P}\s]*$/u.test(betweenStrengthAndAction) &&
+          lexicallyStandalone &&
+          objectIndex >= actionIndex + action.length
+        ) {
+          return true;
+        }
+        strengthIndex = normalized.indexOf(
+          strength,
+          strengthIndex + strength.length,
+        );
+      }
+      subjectIndex = normalized.indexOf(subject, subjectIndex + subject.length);
+    }
+    return false;
+  }
   let subjectIndex = normalized.indexOf(subject);
   while (subjectIndex >= 0) {
     const strengthIndex = normalized.indexOf(
@@ -305,6 +347,12 @@ const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
   }
   const evidenceTerms = extractModalTerms(evidenceFor(finding, index));
   const statementTerms = extractModalTerms(finding.statement);
+  const evidenceSingleCharacterContexts = singleCharacterModalContexts(
+    evidenceFor(finding, index),
+  );
+  const statementSingleCharacterContexts = singleCharacterModalContexts(
+    finding.statement,
+  );
   const hasProtectedClaim =
     statementTerms.length > 0 ||
     extractDates(finding.statement).length > 0 ||
@@ -343,7 +391,11 @@ const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
       structuredTerms.join("\u0000") === evidenceTerms.join("\u0000")
     );
   }
-  return evidenceTerms.join("\u0000") === statementTerms.join("\u0000");
+  return (
+    evidenceTerms.join("\u0000") === statementTerms.join("\u0000") &&
+    evidenceSingleCharacterContexts.join("\u0000") ===
+      statementSingleCharacterContexts.join("\u0000")
+  );
 };
 
 const sourceTypeMatchesClaim = (finding: Finding): boolean => {
