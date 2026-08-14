@@ -248,6 +248,7 @@ export function ReviewPage({
             parsedUnits={state.parsedUnits}
             atomicRequirements={state.atomicRequirements}
             ruleReviewAttestations={state.ruleReviewAttestations}
+            officialPrimarySourceIds={state.officialPrimarySourceIds}
           />
           {integrityFailed ? (
             <p role="alert">

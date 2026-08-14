@@ -66,6 +66,7 @@ export function AnalysisPage({
                 }
                 key={finding.findingId}
                 type="button"
+                disabled={running}
                 onClick={() => onSelectedFindingIdChange(finding.findingId)}
               >
                 <strong>
@@ -83,6 +84,7 @@ export function AnalysisPage({
             parsedUnits={state.parsedUnits}
             atomicRequirements={state.atomicRequirements}
             ruleReviewAttestations={state.ruleReviewAttestations}
+            officialPrimarySourceIds={state.officialPrimarySourceIds}
           />
         </div>
       )}

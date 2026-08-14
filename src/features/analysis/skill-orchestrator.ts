@@ -4,6 +4,7 @@ import type { Finding } from "../../domain/finding";
 import { FindingSchema } from "../../domain/schemas";
 import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
 import { throwIfAborted } from "../../lib/abort";
+import { evidenceDigest } from "../evidence/evidence-hash";
 import type { ModelGateway } from "../model/model-gateway";
 import {
   chunkDocument,
@@ -292,6 +293,35 @@ const AnalysisStageSchema = z.enum([
 
 export type AnalysisStage = z.infer<typeof AnalysisStageSchema>;
 
+const ReanalysisPriorFindingSchema = z
+  .object({
+    findingId: z.string().min(1),
+    category: z.string().min(1),
+    claimType: z.enum([
+      "regulatory_fact",
+      "official_explanation",
+      "ai_inference",
+      "pending_confirmation",
+      "human_judgment",
+    ]),
+    statement: z.string().min(1),
+    sourceIds: z.array(z.string().min(1)).min(1),
+    findingHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+  })
+  .strict();
+
+export const ReanalysisDirectiveSchema = z
+  .object({
+    reason: z.string().trim().min(1),
+    targetFindingIds: z.array(z.string().min(1)).min(1),
+    allowedStages: z.array(AnalysisStageSchema).min(1),
+    allowedSourceIds: z.array(z.string().min(1)).min(1),
+    priorFindings: z.array(ReanalysisPriorFindingSchema).min(1),
+  })
+  .strict();
+
+export type ReanalysisDirective = z.infer<typeof ReanalysisDirectiveSchema>;
+
 export const AnalysisRunMetadataSchema = z
   .object({
     nodeId: z.string().min(1),
@@ -307,6 +337,12 @@ export const AnalysisRunMetadataSchema = z
     atomicRequirementIds: z.array(z.string().min(1)),
     inferenceRelationshipIds: z.array(z.string().min(1)),
     conflictIds: z.array(z.string().min(1)),
+    reanalysisDirectiveHash: z
+      .string()
+      .regex(/^[a-f0-9]{64}$/)
+      .nullable()
+      .default(null),
+    reanalysisTargetFindingIds: z.array(z.string().min(1)).default([]),
   })
   .strict();
 
@@ -509,8 +545,8 @@ export interface AnalysisInput {
   officialPrimaryContext?: Readonly<Record<string, readonly string[]>>;
   resumeFrom?: AnalysisCheckpoint;
   chunkOptions?: Partial<ChunkOptions>;
-  /** Exact stage allowlist used by Task 9 controlled reanalysis. */
-  stages?: readonly AnalysisStage[];
+  /** Trusted, closed control plane for Task 9 targeted reanalysis. */
+  reanalysisDirective?: ReanalysisDirective;
 }
 
 export interface AnalysisProgress {
@@ -694,6 +730,7 @@ const executionPlanFingerprint = async (
   policy: ChunkOptions,
   nodes: readonly AnalysisNode[],
   officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
+  reanalysisDirective: ReanalysisDirective | undefined,
 ): Promise<string> => {
   const sourceManifest = await Promise.all(
     sources.map(async (source) => ({
@@ -730,9 +767,108 @@ const executionPlanFingerprint = async (
       sourceManifest,
       nodeManifest,
       officialPrimaryContext,
+      reanalysisDirective: reanalysisDirective ?? null,
     }),
   );
 };
+
+const stageForPriorFinding = (
+  finding: ReanalysisDirective["priorFindings"][number],
+): AnalysisStage => {
+  if (finding.category === "atomic_requirement") return "atomic_clauses";
+  if (finding.category.startsWith("pending_confirmation:atomic_conflict"))
+    return "atomic_clauses";
+  if (
+    finding.category.startsWith("document_identity:") ||
+    finding.category.startsWith("pending_confirmation:document_identity:") ||
+    finding.category.startsWith("official_context:") ||
+    finding.category.startsWith("pending_confirmation:file_profile") ||
+    finding.category.startsWith("pending_confirmation:source_conflict")
+  )
+    return "document_identity";
+  if (
+    finding.claimType === "ai_inference" ||
+    finding.category.startsWith("institution_impact")
+  )
+    return "institution_impact";
+  return "key_matters";
+};
+
+const normalizeReanalysisDirective = (
+  raw: ReanalysisDirective | undefined,
+  sourceById: ReadonlyMap<string, SourceUnit>,
+): ReanalysisDirective | undefined => {
+  if (!raw) return undefined;
+  const directive = ReanalysisDirectiveSchema.parse(raw);
+  const uniqueExact = (values: readonly string[], label: string): void => {
+    if (new Set(values).size !== values.length)
+      throw new Error(`${label}不得重复`);
+  };
+  uniqueExact(directive.targetFindingIds, "重分析目标");
+  uniqueExact(directive.allowedStages, "重分析阶段");
+  uniqueExact(directive.allowedSourceIds, "重分析来源");
+  uniqueExact(
+    directive.priorFindings.map(({ findingId }) => findingId),
+    "重分析先前结论",
+  );
+  const inputIds = [...sourceById.keys()].sort();
+  if (
+    [...directive.allowedSourceIds].sort().join("\u0000") !==
+    inputIds.join("\u0000")
+  )
+    throw new Error("重分析输入来源必须精确匹配可信指令的授权来源");
+  const targetIds = [...directive.targetFindingIds].sort();
+  const priorIds = directive.priorFindings
+    .map(({ findingId }) => findingId)
+    .sort();
+  if (targetIds.join("\u0000") !== priorIds.join("\u0000"))
+    throw new Error("重分析先前结论必须精确覆盖全部目标");
+  for (const prior of directive.priorFindings) {
+    const summary = {
+      findingId: prior.findingId,
+      category: prior.category,
+      claimType: prior.claimType,
+      statement: prior.statement,
+      sourceIds: prior.sourceIds,
+    };
+    if (prior.findingHash !== evidenceDigest(summary))
+      throw new Error("重分析先前结论摘要哈希无效");
+    if (
+      prior.sourceIds.length === 0 ||
+      new Set(prior.sourceIds).size !== prior.sourceIds.length ||
+      prior.sourceIds.some(
+        (sourceId) => !directive.allowedSourceIds.includes(sourceId),
+      )
+    )
+      throw new Error("重分析先前结论来源超出授权范围");
+    if (!directive.allowedStages.includes(stageForPriorFinding(prior)))
+      throw new Error("重分析目标类别与授权阶段不一致");
+    if (prior.claimType === "human_judgment")
+      throw new Error("人工判断不得由模型重分析替换");
+  }
+  return directive;
+};
+
+const promptPayload = (
+  payload: object,
+  directive: ReanalysisDirective | undefined,
+): string =>
+  canonicalJson(
+    directive
+      ? {
+          ...payload,
+          trustedReanalysisControl: {
+            reason: directive.reason,
+            targetFindingIds: directive.targetFindingIds,
+            allowedStages: directive.allowedStages,
+            allowedSourceIds: directive.allowedSourceIds,
+            priorFindings: directive.priorFindings,
+            outputConstraint:
+              "仅返回 targetFindingIds；不得新增、遗漏或替换为其他 ID。",
+          },
+        }
+      : payload,
+  );
 
 interface AuthorizedSourceEvidence {
   sourceType: SourceType;
@@ -1684,7 +1820,10 @@ const mergeRelationships = (
   return [...byId.values()];
 };
 
-const finalizeDraft = (checkpoint: AnalysisCheckpoint): AnalysisDraft => {
+const finalizeDraft = (
+  checkpoint: AnalysisCheckpoint,
+  directive?: ReanalysisDirective,
+): AnalysisDraft => {
   const conflictFindings = checkpoint.conflicts.map(conflictFinding);
   const expandedAtomicState = expandConflictingAtomicIds(
     checkpoint.findings,
@@ -1694,7 +1833,7 @@ const finalizeDraft = (checkpoint: AnalysisCheckpoint): AnalysisDraft => {
     ...expandedAtomicState.findings,
     ...conflictFindings,
     ...expandedAtomicState.pendingConflicts,
-    fileProfilePendingFinding(),
+    ...(directive ? [] : [fileProfilePendingFinding()]),
   ];
 
   const atomicSignatureByFindingId = new Map<string, string>();
@@ -1750,7 +1889,7 @@ const finalizeDraft = (checkpoint: AnalysisCheckpoint): AnalysisDraft => {
     findingAliases,
   );
 
-  return AnalysisDraftSchema.parse({
+  const draft = AnalysisDraftSchema.parse({
     ...checkpoint,
     findings,
     atomicRequirements,
@@ -1767,6 +1906,44 @@ const finalizeDraft = (checkpoint: AnalysisCheckpoint): AnalysisDraft => {
     findingAliases,
     completed: true,
   });
+  if (directive) {
+    const actualIds = draft.findings.map(({ findingId }) => findingId).sort();
+    const expectedIds = [...directive.targetFindingIds].sort();
+    if (actualIds.join("\u0000") !== expectedIds.join("\u0000"))
+      throw new Error("重分析结果必须精确覆盖授权目标，且不得包含额外结论");
+    const allowedSources = new Set(directive.allowedSourceIds);
+    const priorById = new Map(
+      directive.priorFindings.map((finding) => [finding.findingId, finding]),
+    );
+    for (const finding of draft.findings) {
+      const prior = priorById.get(finding.findingId)!;
+      if (
+        stageForPriorFinding({
+          ...prior,
+          category: finding.category,
+          claimType: finding.claimType,
+        }) !== stageForPriorFinding(prior)
+      )
+        throw new Error("重分析结果类别超出目标授权阶段");
+      if (
+        finding.sourceAnchors.length === 0 ||
+        finding.sourceAnchors.some(
+          ({ sourceId }) => !allowedSources.has(sourceId),
+        )
+      )
+        throw new Error("重分析结果锚点超出授权来源范围");
+    }
+    for (const requirement of draft.atomicRequirements) {
+      if (
+        !expectedIds.includes(requirement.findingId) ||
+        requirement.sourceAnchors.some(
+          ({ sourceId }) => !allowedSources.has(sourceId),
+        )
+      )
+        throw new Error("重分析原子要求超出授权目标或来源范围");
+    }
+  }
+  return draft;
 };
 
 const initialCheckpoint = (
@@ -1802,6 +1979,14 @@ const validateResume = async (
   input: AnalysisInput,
   officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
 ): Promise<void> => {
+  const normalizedResumeDirective = input.reanalysisDirective
+    ? ReanalysisDirectiveSchema.parse(input.reanalysisDirective)
+    : undefined;
+  const expectedReanalysisDirectiveHash = normalizedResumeDirective
+    ? await sha256(canonicalJson(normalizedResumeDirective))
+    : null;
+  const expectedReanalysisTargetFindingIds =
+    normalizedResumeDirective?.targetFindingIds ?? [];
   if (
     checkpoint.inputFingerprint !== inputFingerprint ||
     checkpoint.model !== input.model.trim() ||
@@ -1836,9 +2021,16 @@ const validateResume = async (
     if (
       run.model !== input.model.trim() ||
       run.promptVersion !== node.promptVersion ||
-      !idsMatch(run.inputSourceIds, context.inputSourceIds)
+      !idsMatch(run.inputSourceIds, context.inputSourceIds) ||
+      run.reanalysisDirectiveHash !== expectedReanalysisDirectiveHash ||
+      !idsMatch(
+        run.reanalysisTargetFindingIds,
+        expectedReanalysisTargetFindingIds,
+      )
     ) {
-      throw new Error("重启节点的模型、提示词版本或输入来源已变化");
+      throw new Error(
+        "重启节点的输入来源已变化，或模型、提示词版本、重分析授权已变化",
+      );
     }
 
     const scopeHash = await hashAuthorizedScope(context.scope);
@@ -1950,18 +2142,12 @@ export async function runAnalysis(
     input.officialPrimaryContext,
     sourceById,
   );
+  const reanalysisDirective = normalizeReanalysisDirective(
+    input.reanalysisDirective,
+    sourceById,
+  );
   const chunks = chunkDocument(input.sourceUnits, chunkOptions);
-  const requestedStages = input.stages;
-  if (
-    requestedStages &&
-    (requestedStages.length === 0 ||
-      new Set(requestedStages).size !== requestedStages.length ||
-      requestedStages.some(
-        (stage) => !AnalysisStageSchema.options.includes(stage),
-      ))
-  ) {
-    throw new Error("重分析阶段范围必须为非空、唯一的受控阶段集合");
-  }
+  const requestedStages = reanalysisDirective?.allowedStages;
   const nodes = nodesFor(chunks).filter(
     (node) => !requestedStages || requestedStages.includes(node.stage),
   );
@@ -1970,7 +2156,11 @@ export async function runAnalysis(
     chunkOptions,
     nodes,
     officialPrimaryContext,
+    reanalysisDirective,
   );
+  const reanalysisDirectiveHash = reanalysisDirective
+    ? await sha256(canonicalJson(reanalysisDirective))
+    : null;
   let checkpoint = input.resumeFrom
     ? AnalysisCheckpointSchema.parse(input.resumeFrom)
     : initialCheckpoint(
@@ -2010,10 +2200,13 @@ export async function runAnalysis(
     if (node.stage === "document_identity") {
       const primaryFindings = nodeContext.primaryFindings;
       const messages = buildDocumentIdentityMessages(
-        canonicalJson({
-          sourceChunk: serializeChunk(node.chunk),
-          primaryRegulatoryFindings: primaryFindings,
-        }),
+        promptPayload(
+          {
+            sourceChunk: serializeChunk(node.chunk),
+            primaryRegulatoryFindings: primaryFindings,
+          },
+          reanalysisDirective,
+        ),
       );
       if (node.chunk.sourceType === "official_interpretation") {
         const parsed = await input.gateway.requestStructured({
@@ -2063,7 +2256,10 @@ export async function runAnalysis(
         schemaName: "analysis_atomic_clauses_v1",
         signal,
         messages: buildAtomicClausesMessages(
-          canonicalJson(serializeChunk(node.chunk)),
+          promptPayload(
+            { sourceChunk: serializeChunk(node.chunk) },
+            reanalysisDirective,
+          ),
         ),
       });
       const parsed = AtomicClausesResponseSchema.parse(response);
@@ -2076,16 +2272,19 @@ export async function runAnalysis(
         schemaName: "analysis_key_matters_v1",
         signal,
         messages: buildKeyMattersMessages(
-          canonicalJson({
-            sourceChunk: serializeChunk(node.chunk),
-            upstreamAtomicRequirements: checkpoint.atomicRequirements.filter(
-              (requirement) =>
-                requirement.sourceAnchors.length > 0 &&
-                requirement.sourceAnchors.every((anchor) =>
-                  anchorIsAuthorized(anchor, requestScope),
-                ),
-            ),
-          }),
+          promptPayload(
+            {
+              sourceChunk: serializeChunk(node.chunk),
+              upstreamAtomicRequirements: checkpoint.atomicRequirements.filter(
+                (requirement) =>
+                  requirement.sourceAnchors.length > 0 &&
+                  requirement.sourceAnchors.every((anchor) =>
+                    anchorIsAuthorized(anchor, requestScope),
+                  ),
+              ),
+            },
+            reanalysisDirective,
+          ),
         ),
       });
       const parsed = KeyMattersResponseSchema.parse(response);
@@ -2114,10 +2313,13 @@ export async function runAnalysis(
         schemaName: "analysis_institution_impact_v1",
         signal,
         messages: buildInstitutionImpactMessages(
-          canonicalJson({
-            sourceChunk: serializeChunk(node.chunk),
-            upstreamFindings,
-          }),
+          promptPayload(
+            {
+              sourceChunk: serializeChunk(node.chunk),
+              upstreamFindings,
+            },
+            reanalysisDirective,
+          ),
         ),
       });
       const parsed = InstitutionImpactResponseSchema.parse(response);
@@ -2131,6 +2333,14 @@ export async function runAnalysis(
     }
 
     throwIfAborted(signal);
+    if (
+      reanalysisDirective &&
+      findings.some(
+        ({ findingId }) =>
+          !reanalysisDirective.targetFindingIds.includes(findingId),
+      )
+    )
+      throw new Error("重分析节点返回了授权目标之外的额外结论");
     const output = {
       findings,
       atomicRequirements,
@@ -2174,6 +2384,9 @@ export async function runAnalysis(
             (relationship) => relationship.relationshipId,
           ),
           conflictIds: conflicts.map((conflict) => conflict.conflictId),
+          reanalysisDirectiveHash,
+          reanalysisTargetFindingIds:
+            reanalysisDirective?.targetFindingIds ?? [],
         },
       ],
       lastSuccessfulNode: node.nodeId,
@@ -2189,5 +2402,5 @@ export async function runAnalysis(
     throwIfAborted(signal);
   }
 
-  return finalizeDraft(checkpoint);
+  return finalizeDraft(checkpoint, reanalysisDirective);
 }

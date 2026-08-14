@@ -14,6 +14,7 @@ import {
   cancelReanalysis,
   completeReanalysis,
   confirmFinding,
+  createAnalysisVersion,
   deleteFinding,
   modifyFinding,
   returnForReanalysis,
@@ -113,11 +114,15 @@ const state = (): ReviewWorkflowState => ({
   reviewAudits: [],
   ruleReviewAttestations: [],
   analysisVersions: [
-    {
+    createAnalysisVersion({
       versionId: "V1",
+      projectId: "P1",
+      parentVersionHash: null,
       createdAt: "2026-08-15T00:00:00.000Z",
       reason: "首次分析",
       findings: structuredClone(project.findings),
+      atomicRequirements: [atomic],
+      replacedFindingIds: project.findings.map(({ findingId }) => findingId),
       sourceIds: ["REG-A"],
       scope: [
         "document_identity",
@@ -125,7 +130,7 @@ const state = (): ReviewWorkflowState => ({
         "atomic_clauses",
         "institution_impact",
       ],
-    },
+    }),
   ],
   pendingReanalysis: null,
 });
@@ -282,7 +287,15 @@ describe("rule attestations and reanalysis", () => {
   });
 
   it("preserves the prior version, scopes invalidation, supports cancel, and returns a new version", () => {
-    const requested = returnForReanalysis(state(), {
+    const reviewed = confirmFinding(state(), "F1", meta);
+    const reviewedAndAttested = attestValidationRule(
+      reviewed,
+      "F1",
+      "atomic_structure",
+      "confirmed",
+      { ...meta, reviewedAt: "2026-08-15T02:00:00.000Z" },
+    );
+    const requested = returnForReanalysis(reviewedAndAttested, {
       reason: "重新核对要求强度",
       targetFindingIds: ["F1"],
       sourceIds: ["REG-A"],
@@ -304,12 +317,15 @@ describe("rule attestations and reanalysis", () => {
 
     const completed = completeReanalysis(
       requested,
-      [
-        {
-          ...project.findings[0],
-          statement: "商业银行应建立健全管理机制",
-        },
-      ],
+      {
+        findings: [
+          {
+            ...project.findings[0],
+            statement: "商业银行应建立健全管理机制",
+          },
+        ],
+        atomicRequirements: [{ ...atomic, object: "健全管理机制" }],
+      },
       "2026-08-15T04:00:00.000Z",
     );
     expect(completed.pendingReanalysis).toBeNull();
@@ -326,6 +342,11 @@ describe("rule attestations and reanalysis", () => {
         ({ findingId }) => findingId === "F2",
       ),
     ).toBe(true);
+    expect(completed.atomicRequirements).toEqual([
+      expect.objectContaining({ findingId: "F1", object: "健全管理机制" }),
+    ]);
+    expect(completed.reviewAudits).toHaveLength(0);
+    expect(completed.ruleReviewAttestations).toHaveLength(0);
   });
 
   it("rejects incomplete or over-broad reanalysis scope", () => {
@@ -349,5 +370,60 @@ describe("rule attestations and reanalysis", () => {
         requestedAt: meta.reviewedAt,
       }),
     ).toThrow();
+    expect(() =>
+      returnForReanalysis(state(), {
+        reason: "错误阶段",
+        targetFindingIds: ["F1"],
+        sourceIds: ["REG-A"],
+        scope: ["key_matters"],
+        requestedBy: "合规复核人",
+        requestedAt: meta.reviewedAt,
+      }),
+    ).toThrow(/阶段|范围|覆盖/);
+  });
+
+  it("routes closed pending identity and atomic-conflict categories to their owning stages", () => {
+    const base = state();
+    const identityFinding = {
+      ...base.project.findings[0],
+      category: "pending_confirmation:document_identity:document_title",
+      claimType: "pending_confirmation" as const,
+    };
+    const identity = {
+      ...base,
+      project: { ...base.project, findings: [identityFinding] },
+      atomicRequirements: [],
+    };
+    expect(
+      returnForReanalysis(identity, {
+        reason: "重核文件身份",
+        targetFindingIds: ["F1"],
+        sourceIds: ["REG-A"],
+        scope: ["document_identity"],
+        requestedBy: "合规复核人",
+        requestedAt: meta.reviewedAt,
+      }).pendingReanalysis?.scope,
+    ).toEqual(["document_identity"]);
+
+    const conflictFinding = {
+      ...identityFinding,
+      category: "pending_confirmation:atomic_conflict",
+    };
+    expect(
+      returnForReanalysis(
+        {
+          ...identity,
+          project: { ...identity.project, findings: [conflictFinding] },
+        },
+        {
+          reason: "重核原子冲突",
+          targetFindingIds: ["F1"],
+          sourceIds: ["REG-A"],
+          scope: ["atomic_clauses"],
+          requestedBy: "合规复核人",
+          requestedAt: meta.reviewedAt,
+        },
+      ).pendingReanalysis?.scope,
+    ).toEqual(["atomic_clauses"]);
   });
 });

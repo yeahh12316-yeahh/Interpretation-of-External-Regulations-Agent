@@ -2,7 +2,7 @@ import "@testing-library/jest-dom/vitest";
 import { render, screen } from "@testing-library/react";
 import { App } from "./App";
 
-it("renders the product identity and five workflow steps", () => {
+it("renders the product identity and five workflow steps", async () => {
   render(<App />);
 
   expect(screen.getByRole("heading", { name: "外规解读agent" })).toBeVisible();
@@ -17,6 +17,6 @@ it("renders the product identity and five workflow steps", () => {
       screen.getByRole("button", { name: new RegExp(name) }),
     ).toBeVisible();
   }
+  expect(await screen.findByLabelText("选择监管文件")).toBeVisible();
   expect(screen.getByRole("button", { name: "模型接口设置" })).toBeEnabled();
-  expect(screen.getByLabelText("选择监管文件")).toBeVisible();
 });

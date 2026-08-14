@@ -5,12 +5,20 @@ export type TransitionResult =
   { allowed: true } | { allowed: false; reason: string };
 
 export interface TransitionContext {
-  /** Authoritative Task 4 parse/OCR outcome. Omit only for legacy domain callers. */
+  /** Authoritative Task 4/8 parse and OCR outcome. Required for forward gates. */
   parsingReady?: boolean;
   /** Task 8 evidence and current-bound manual-attestation outcome. */
   evidenceReady?: boolean;
   reanalysisPending?: boolean;
 }
+
+const workflowOrder: readonly WorkflowStep[] = [
+  "intake",
+  "parsing",
+  "analysis",
+  "review",
+  "report",
+];
 
 const hasRegulatoryFile = (project: Project) =>
   project.sourceUnits.some((source) => source.sourceType === "regulatory_text");
@@ -36,6 +44,9 @@ export function canTransition(
   nextStep: WorkflowStep,
   context: TransitionContext = {},
 ): TransitionResult {
+  const movingForward =
+    workflowOrder.indexOf(nextStep) >
+    workflowOrder.indexOf(project.workflowStep);
   if (nextStep === "intake") {
     return { allowed: true };
   }
@@ -50,12 +61,19 @@ export function canTransition(
     if (!project.parsingCompleted) {
       return { allowed: false, reason: "请先完成文件解析" };
     }
+    if (!hasRegulatoryFile(project)) {
+      return { allowed: false, reason: "请先上传监管文件" };
+    }
+    if (movingForward && context.parsingReady === undefined) {
+      return {
+        allowed: false,
+        reason: "缺少权威解析与 OCR 校验上下文",
+      };
+    }
     if (context.parsingReady === false) {
       return { allowed: false, reason: "解析或 OCR 质量未通过" };
     }
-    return hasRegulatoryFile(project)
-      ? { allowed: true }
-      : { allowed: false, reason: "请先上传监管文件" };
+    return { allowed: true };
   }
 
   if (nextStep === "review") {
@@ -68,12 +86,19 @@ export function canTransition(
     if (!project.parsingCompleted) {
       return { allowed: false, reason: "请先完成文件解析" };
     }
+    if (!hasAnalysisResults(project)) {
+      return { allowed: false, reason: "请先完成分析" };
+    }
+    if (movingForward && context.parsingReady === undefined) {
+      return {
+        allowed: false,
+        reason: "缺少权威解析与 OCR 校验上下文",
+      };
+    }
     if (context.parsingReady === false) {
       return { allowed: false, reason: "解析或 OCR 质量未通过" };
     }
-    return hasAnalysisResults(project)
-      ? { allowed: true }
-      : { allowed: false, reason: "请先完成分析" };
+    return { allowed: true };
   }
 
   if (!hasRegulatoryFile(project)) {
@@ -94,6 +119,13 @@ export function canTransition(
 
   if (!hasCompletedRequiredReviews(project)) {
     return { allowed: false, reason: "请先完成必审事项复核" };
+  }
+
+  if (movingForward && context.evidenceReady === undefined) {
+    return {
+      allowed: false,
+      reason: "缺少证据质量与人工规则复核上下文",
+    };
   }
 
   if (context.evidenceReady === false) {

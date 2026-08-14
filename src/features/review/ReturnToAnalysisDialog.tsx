@@ -4,6 +4,7 @@ import type { Finding } from "../../domain/finding";
 import type { SourceUnit } from "../../domain/source";
 import type { AnalysisStage } from "../analysis/skill-orchestrator";
 import type { ReturnForReanalysisInput } from "./review-actions";
+import { useAccessibleDialog } from "./use-accessible-dialog";
 
 const scopes: readonly [AnalysisStage, string][] = [
   ["document_identity", "文件身份"],
@@ -41,7 +42,15 @@ export function ReturnToAnalysisDialog({
       setSelectedScopes([]);
     }
   }, [open]);
+  const { dialogRef, initialFocusRef, onKeyDown } =
+    useAccessibleDialog<HTMLTextAreaElement>(open, onClose);
   if (!open) return null;
+  const valid =
+    reason.trim().length > 0 &&
+    reviewer.trim().length > 0 &&
+    targetIds.length > 0 &&
+    sourceIds.length > 0 &&
+    selectedScopes.length > 0;
   const toggle = <T extends string>(
     value: T,
     current: T[],
@@ -54,14 +63,7 @@ export function ReturnToAnalysisDialog({
     );
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (
-      !reason.trim() ||
-      !reviewer.trim() ||
-      !targetIds.length ||
-      !sourceIds.length ||
-      !selectedScopes.length
-    )
-      return;
+    if (!valid) return;
     onSubmit({
       reason: reason.trim(),
       targetFindingIds: targetIds,
@@ -76,12 +78,15 @@ export function ReturnToAnalysisDialog({
       aria-modal="true"
       className="workflow-dialog"
       role="dialog"
+      ref={dialogRef}
+      onKeyDown={onKeyDown}
     >
       <form onSubmit={submit}>
         <h2 id="return-analysis-title">退回重新分析</h2>
         <label>
           退回原因
           <textarea
+            ref={initialFocusRef}
             required
             value={reason}
             onChange={(event) => setReason(event.target.value)}
@@ -104,6 +109,11 @@ export function ReturnToAnalysisDialog({
               </label>
             ))}
         </fieldset>
+        {!valid ? (
+          <p role="alert">
+            请填写退回原因，并至少选择一个目标、来源和分析范围。
+          </p>
+        ) : null}
         <fieldset>
           <legend>来源范围</legend>
           {sources.map((source) => (
@@ -135,7 +145,9 @@ export function ReturnToAnalysisDialog({
           ))}
         </fieldset>
         <div className="dialog-actions">
-          <button type="submit">提交重分析</button>
+          <button type="submit" disabled={!valid}>
+            提交重分析
+          </button>
           <button type="button" onClick={onClose}>
             取消
           </button>

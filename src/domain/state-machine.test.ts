@@ -119,6 +119,7 @@ describe("canTransition", () => {
           ],
         },
         "report",
+        { evidenceReady: true },
       ),
     ).toEqual({ allowed: false, reason: "请先完成必审事项复核" });
   });
@@ -146,6 +147,7 @@ describe("canTransition", () => {
           ],
         },
         "report",
+        { evidenceReady: true },
       ),
     ).toEqual({ allowed: false, reason: "请先通过质量门槛" });
   });
@@ -174,6 +176,7 @@ describe("canTransition", () => {
           ],
         },
         "report",
+        { evidenceReady: true },
       ),
     ).toEqual({ allowed: true });
   });
@@ -208,6 +211,7 @@ describe("canTransition", () => {
           ],
         },
         "report",
+        { evidenceReady: true },
       ),
     ).toEqual({ allowed: true });
   });
@@ -239,6 +243,7 @@ describe("canTransition", () => {
           ],
         },
         "report",
+        { evidenceReady: true },
       ),
     ).toEqual({ allowed: false, reason: "请先通过质量门槛" });
   });
@@ -254,6 +259,10 @@ it("fails closed when authoritative parse or evidence context is missing/blocked
   expect(canTransition(ready, "analysis", { parsingReady: false })).toEqual({
     allowed: false,
     reason: "解析或 OCR 质量未通过",
+  });
+  expect(canTransition(ready, "analysis")).toEqual({
+    allowed: false,
+    reason: "缺少权威解析与 OCR 校验上下文",
   });
   expect(canTransition(ready, "analysis", { parsingReady: true }).allowed).toBe(
     true,
@@ -286,6 +295,10 @@ it("fails closed when authoritative parse or evidence context is missing/blocked
     allowed: false,
     reason: "证据校验或人工规则复核未通过",
   });
+  expect(canTransition(reviewed, "report", { parsingReady: true })).toEqual({
+    allowed: false,
+    reason: "缺少证据质量与人工规则复核上下文",
+  });
   expect(
     canTransition(reviewed, "review", {
       parsingReady: true,
@@ -295,4 +308,6 @@ it("fails closed when authoritative parse or evidence context is missing/blocked
     allowed: false,
     reason: "定向重分析尚未完成",
   });
+  expect(canTransition(reviewed, "intake").allowed).toBe(true);
+  expect(canTransition(reviewed, "parsing").allowed).toBe(true);
 });

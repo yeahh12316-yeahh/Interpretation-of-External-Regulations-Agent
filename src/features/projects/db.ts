@@ -25,6 +25,7 @@ export interface StoredModelPreferences {
 export interface StoredWorkflowSession {
   projectId: string;
   session: unknown;
+  revision: number;
   updatedAt: string;
 }
 
@@ -43,6 +44,11 @@ class ExternalRegulationDatabase extends Dexie {
       projects: "projectId, updatedAt",
       modelPreferences: "id",
       workflowSessions: "projectId, updatedAt",
+    });
+    this.version(3).stores({
+      projects: "projectId, updatedAt",
+      modelPreferences: "id",
+      workflowSessions: "projectId, revision, updatedAt",
     });
   }
 }

@@ -757,6 +757,17 @@ export const calculateSessionQuality = (
   );
 };
 
+/**
+ * Authoritative Task 4/8 parse and OCR integrity gate for workflow transitions.
+ * This is a client-side consistency check, not cryptographic authentication.
+ */
+export const hasAuthoritativeParsingEvidence = (
+  session: AnalysisEvidenceSession,
+): boolean => {
+  const { parsedUnits, parseOutcomes } = evidenceFromSession(session);
+  return parsingEvidenceComplete(session.project, parsedUnits, parseOutcomes);
+};
+
 export const canFinalizeSession = (
   session: AnalysisEvidenceSession,
 ): boolean => {

@@ -6,6 +6,8 @@ import type {
   AnalysisStage,
   AtomicRequirement,
 } from "../analysis/skill-orchestrator";
+import { AtomicRequirementSchema } from "../analysis/skill-orchestrator";
+import { evidenceDigest } from "../evidence/evidence-hash";
 import {
   reviewSnapshotHash,
   type ReviewAudit,
@@ -26,11 +28,37 @@ import type { ParsedSourceUnit } from "../parsing/build-anchors";
 
 export interface AnalysisVersion {
   readonly versionId: string;
+  readonly projectId: string;
+  readonly parentVersionHash: string | null;
+  readonly versionHash: string;
   readonly createdAt: string;
   readonly reason: string;
   readonly findings: readonly Finding[];
+  readonly atomicRequirements: readonly AtomicRequirement[];
+  readonly replacedFindingIds: readonly string[];
   readonly sourceIds: readonly string[];
   readonly scope: readonly AnalysisStage[];
+}
+
+export type UnhashedAnalysisVersion = Omit<AnalysisVersion, "versionHash">;
+
+export const analysisVersionHash = (version: UnhashedAnalysisVersion): string =>
+  evidenceDigest(version);
+
+export const createAnalysisVersion = (
+  version: UnhashedAnalysisVersion,
+): AnalysisVersion => ({
+  ...version,
+  versionHash: analysisVersionHash(version),
+});
+
+export interface PriorFindingSummary {
+  readonly findingId: string;
+  readonly category: string;
+  readonly claimType: Finding["claimType"];
+  readonly statement: string;
+  readonly sourceIds: readonly string[];
+  readonly findingHash: string;
 }
 
 export interface ReanalysisRequest {
@@ -42,6 +70,7 @@ export interface ReanalysisRequest {
   readonly requestedBy: string;
   readonly requestedAt: string;
   readonly returnStep: WorkflowStep;
+  readonly priorFindings: readonly PriorFindingSummary[];
 }
 
 export interface ReviewWorkflowState {
@@ -52,6 +81,9 @@ export interface ReviewWorkflowState {
   readonly ruleReviewAttestations: readonly RuleReviewAttestation[];
   readonly analysisVersions: readonly AnalysisVersion[];
   readonly pendingReanalysis: ReanalysisRequest | null;
+  readonly officialPrimarySourceIds?: Readonly<
+    Record<string, readonly string[]>
+  >;
 }
 
 export interface ReviewMeta {
@@ -315,6 +347,26 @@ const uniqueNonEmpty = (
   return values;
 };
 
+const analysisStageForFinding = (finding: Finding): AnalysisStage => {
+  if (finding.category === "atomic_requirement") return "atomic_clauses";
+  if (finding.category.startsWith("pending_confirmation:atomic_conflict"))
+    return "atomic_clauses";
+  if (
+    finding.category.startsWith("document_identity:") ||
+    finding.category.startsWith("pending_confirmation:document_identity:") ||
+    finding.category.startsWith("official_context:") ||
+    finding.category.startsWith("pending_confirmation:file_profile") ||
+    finding.category.startsWith("pending_confirmation:source_conflict")
+  )
+    return "document_identity";
+  if (
+    finding.claimType === "ai_inference" ||
+    finding.category.startsWith("institution_impact")
+  )
+    return "institution_impact";
+  return "key_matters";
+};
+
 export const returnForReanalysis = (
   state: ReviewWorkflowState,
   input: ReturnForReanalysisInput,
@@ -342,6 +394,33 @@ export const returnForReanalysis = (
   ) {
     throw new Error("重分析来源必须属于当前项目");
   }
+  if (
+    sourceIds.some((sourceId) => {
+      const source = state.project.sourceUnits.find(
+        ({ sourceId: id }) => id === sourceId,
+      );
+      if (source?.sourceType !== "official_interpretation") return false;
+      const paired = state.officialPrimarySourceIds?.[sourceId];
+      return !paired?.length || paired.some((id) => !sourceIds.includes(id));
+    })
+  )
+    throw new Error("重分析官方解读必须连同完整显式配对的监管原文提交");
+  const targetFindings = targetFindingIds.map((id) =>
+    state.project.findings.find((finding) => finding.findingId === id)!,
+  );
+  if (
+    targetFindings.some(
+      (finding) =>
+        finding.claimType === "human_judgment" ||
+        !input.scope.includes(analysisStageForFinding(finding)) ||
+        finding.sourceAnchors.length === 0 ||
+        finding.sourceAnchors.some(
+          ({ sourceId }) => !sourceIds.includes(sourceId),
+        ),
+    )
+  ) {
+    throw new Error("重分析目标必须由授权来源完整覆盖，且不得替换人工判断");
+  }
   const invalidated = new Set(targetFindingIds);
   let expanded = true;
   while (expanded) {
@@ -367,6 +446,19 @@ export const returnForReanalysis = (
     requestedBy: required(input.requestedBy, "发起人"),
     requestedAt: utc(input.requestedAt),
     returnStep: state.project.workflowStep,
+    priorFindings: targetFindings.map((finding) => {
+      const sourceIds = [
+        ...new Set(finding.sourceAnchors.map(({ sourceId }) => sourceId)),
+      ];
+      const summary = {
+        findingId: finding.findingId,
+        category: finding.category,
+        claimType: finding.claimType,
+        statement: finding.statement,
+        sourceIds,
+      };
+      return { ...summary, findingHash: evidenceDigest(summary) };
+    }),
   };
   return {
     ...state,
@@ -394,19 +486,34 @@ export const cancelReanalysis = (
 
 export const completeReanalysis = (
   state: ReviewWorkflowState,
-  replacementFindings: readonly Finding[],
+  replacement: {
+    readonly findings: readonly Finding[];
+    readonly atomicRequirements: readonly AtomicRequirement[];
+  },
   completedAt = new Date().toISOString(),
 ): ReviewWorkflowState => {
   const request = state.pendingReanalysis;
   if (!request) throw new Error("没有待完成的重分析请求");
   const replacementById = new Map(
-    replacementFindings.map((finding) => [
+    replacement.findings.map((finding) => [
       finding.findingId,
       FindingSchema.parse(finding),
     ]),
   );
-  if (request.targetFindingIds.some((id) => !replacementById.has(id))) {
-    throw new Error("重分析结果必须覆盖全部目标结论");
+  if (
+    replacementById.size !== replacement.findings.length ||
+    replacementById.size !== request.targetFindingIds.length ||
+    request.targetFindingIds.some((id) => !replacementById.has(id)) ||
+    replacement.findings.some(
+      (finding) =>
+        !request.targetFindingIds.includes(finding.findingId) ||
+        finding.sourceAnchors.length === 0 ||
+        finding.sourceAnchors.some(
+          ({ sourceId }) => !request.sourceIds.includes(sourceId),
+        ),
+    )
+  ) {
+    throw new Error("重分析结果必须精确覆盖全部授权目标结论");
   }
   const findings = state.project.findings.flatMap((finding) => {
     if (request.targetFindingIds.includes(finding.findingId))
@@ -415,14 +522,52 @@ export const completeReanalysis = (
       ? []
       : [finding];
   });
-  const version: AnalysisVersion = {
+  const retainedAtomicRequirements = state.atomicRequirements.filter(
+    ({ findingId }) => !request.invalidatedFindingIds.includes(findingId),
+  );
+  const replacementAtomicRequirements = replacement.atomicRequirements.map(
+    (item) => AtomicRequirementSchema.parse(item),
+  );
+  if (
+    replacementAtomicRequirements.some(
+      (item) =>
+        !request.targetFindingIds.includes(item.findingId) ||
+        item.sourceAnchors.some(
+          ({ sourceId }) => !request.sourceIds.includes(sourceId),
+        ),
+    ) ||
+    replacement.findings.some(
+      (finding) =>
+        finding.category === "atomic_requirement" &&
+        replacementAtomicRequirements.filter(
+          ({ findingId }) => findingId === finding.findingId,
+        ).length !== 1,
+    ) ||
+    replacementAtomicRequirements.some(
+      ({ findingId }) =>
+        replacement.findings.find(({ findingId: id }) => id === findingId)
+          ?.category !== "atomic_requirement",
+    )
+  )
+    throw new Error("重分析原子要求必须精确绑定授权目标及来源");
+  const atomicRequirements = [
+    ...retainedAtomicRequirements,
+    ...replacementAtomicRequirements,
+  ];
+  const priorVersion = state.analysisVersions.at(-1);
+  const version = createAnalysisVersion({
     versionId: `V${state.analysisVersions.length + 1}`,
+    projectId: state.project.projectId,
+    parentVersionHash: priorVersion?.versionHash ?? null,
     createdAt: utc(completedAt),
     reason: request.reason,
     findings: structuredClone(findings),
+    atomicRequirements: structuredClone(atomicRequirements),
+    replacedFindingIds: request.targetFindingIds,
     sourceIds: request.sourceIds,
     scope: request.scope,
-  };
+  });
+  const invalidatedIds = new Set(request.invalidatedFindingIds);
   return {
     ...state,
     project: ProjectSchema.parse({
@@ -431,6 +576,13 @@ export const completeReanalysis = (
       findings,
     }),
     analysisVersions: [...state.analysisVersions, version],
+    atomicRequirements,
+    reviewAudits: state.reviewAudits.filter(
+      ({ findingId }) => !invalidatedIds.has(findingId),
+    ),
+    ruleReviewAttestations: state.ruleReviewAttestations.filter(
+      ({ findingId }) => !invalidatedIds.has(findingId),
+    ),
     pendingReanalysis: null,
   };
 };

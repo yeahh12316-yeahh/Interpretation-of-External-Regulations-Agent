@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type JSX } from "react";
 
 import type { Finding } from "../../domain/finding";
+import { useAccessibleDialog } from "./use-accessible-dialog";
 
 export interface AddHumanJudgmentDialogProps {
   open: boolean;
@@ -23,10 +24,13 @@ export function AddHumanJudgmentDialog({
       setReason("");
     }
   }, [open]);
+  const { dialogRef, initialFocusRef, onKeyDown } =
+    useAccessibleDialog<HTMLTextAreaElement>(open, onClose);
   if (!open || !basisFinding?.sourceAnchors[0]) return null;
+  const valid = statement.trim().length > 0 && reason.trim().length > 0;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (!statement.trim() || !reason.trim()) return;
+    if (!valid) return;
     onSave(statement.trim(), reason.trim());
   };
   return (
@@ -35,6 +39,8 @@ export function AddHumanJudgmentDialog({
       aria-modal="true"
       className="workflow-dialog"
       role="dialog"
+      ref={dialogRef}
+      onKeyDown={onKeyDown}
     >
       <form onSubmit={submit}>
         <h2 id="human-judgment-title">新增人工判断</h2>
@@ -42,11 +48,13 @@ export function AddHumanJudgmentDialog({
         <label>
           人工判断陈述
           <textarea
+            ref={initialFocusRef}
             required
             value={statement}
             onChange={(event) => setStatement(event.target.value)}
           />
         </label>
+        {!valid ? <p role="alert">人工判断陈述与判断理由均为必填项。</p> : null}
         <label>
           判断理由
           <textarea
@@ -56,7 +64,9 @@ export function AddHumanJudgmentDialog({
           />
         </label>
         <div className="dialog-actions">
-          <button type="submit">保存人工判断</button>
+          <button type="submit" disabled={!valid}>
+            保存人工判断
+          </button>
           <button type="button" onClick={onClose}>
             取消
           </button>

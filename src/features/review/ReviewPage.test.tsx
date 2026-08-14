@@ -4,7 +4,10 @@ import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 
 import type { Project } from "../../domain/project";
-import type { ReviewWorkflowState } from "./review-actions";
+import {
+  createAnalysisVersion,
+  type ReviewWorkflowState,
+} from "./review-actions";
 import { ReviewPage } from "./ReviewPage";
 
 const anchor = {
@@ -100,14 +103,18 @@ const session = (): ReviewWorkflowState => ({
   reviewAudits: [],
   ruleReviewAttestations: [],
   analysisVersions: [
-    {
+    createAnalysisVersion({
       versionId: "V1",
+      projectId: "P1",
+      parentVersionHash: null,
       createdAt: "2026-08-15T00:00:00.000Z",
       reason: "首次分析",
       findings: structuredClone(project.findings),
+      atomicRequirements: [],
+      replacedFindingIds: project.findings.map(({ findingId }) => findingId),
       sourceIds: ["REG-A"],
       scope: ["atomic_clauses"],
-    },
+    }),
   ],
   pendingReanalysis: null,
 });
@@ -200,6 +207,39 @@ it("wires confirm, modify, soft-delete, human judgment, rule review and return a
   await user.click(screen.getByRole("checkbox", { name: "原子条款" }));
   await user.click(screen.getByRole("button", { name: "提交重分析" }));
   expect(current.pendingReanalysis?.targetFindingIds).toEqual(["F1"]);
+});
+
+it("keeps review dialogs keyboard-contained with inline validation and restores focus", async () => {
+  const user = userEvent.setup();
+  render(<ReviewPage state={session()} onChange={vi.fn()} />);
+  const opener = screen.getByRole("button", { name: "修改 F1" });
+  await user.click(opener);
+  const dialog = screen.getByRole("dialog", { name: /修改结论 F1/ });
+  const statement = within(dialog).getByLabelText("修改后陈述");
+  expect(statement).toHaveFocus();
+  expect(
+    within(dialog).getByRole("button", { name: "保存修改" }),
+  ).toBeDisabled();
+  expect(within(dialog).getByRole("alert")).toHaveTextContent(/理由|不同/);
+  await user.keyboard("{Escape}");
+  expect(
+    screen.queryByRole("dialog", { name: /修改结论/ }),
+  ).not.toBeInTheDocument();
+  expect(opener).toHaveFocus();
+
+  await user.click(screen.getByRole("button", { name: "退回重新分析" }));
+  const returnDialog = screen.getByRole("dialog", { name: "退回重新分析" });
+  expect(within(returnDialog).getByLabelText("退回原因")).toHaveFocus();
+  expect(
+    within(returnDialog).getByRole("button", { name: "提交重分析" }),
+  ).toBeDisabled();
+  expect(within(returnDialog).getByRole("alert")).toHaveTextContent(
+    /目标|来源|范围/,
+  );
+  await user.keyboard("{Escape}");
+  expect(
+    screen.queryByRole("dialog", { name: "退回重新分析" }),
+  ).not.toBeInTheDocument();
 });
 
 it("rejects an ambiguous evidence rule through the controlled UI", async () => {

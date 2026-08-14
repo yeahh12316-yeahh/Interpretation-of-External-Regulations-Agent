@@ -2,6 +2,7 @@ import { describe, expect, it } from "vitest";
 
 import { FindingSchema } from "../../domain/schemas";
 import type { SourceAnchor, SourceUnit } from "../../domain/source";
+import { evidenceDigest } from "../evidence/evidence-hash";
 import {
   createModelGateway,
   modelDataFlowConsent,
@@ -157,19 +158,133 @@ const emptyResponse = (request: StructuredModelRequest<unknown>): unknown => {
 };
 
 describe("runAnalysis", () => {
-  it("executes only the exact requested stage scope for controlled reanalysis", async () => {
+  it("executes a trusted reanalysis directive and returns exactly its authorized target", async () => {
     const gateway = new RecordingGateway(successfulResponse);
+    const priorFinding = {
+      ...baseFinding,
+      findingId: "REQ-1",
+      category: "atomic_requirement",
+      statement: "商业银行应当建立数据治理机制",
+      claimType: "regulatory_fact" as const,
+      sourceAnchors: [anchor()],
+    };
     const draft = await runAnalysis({
       sourceUnits: [regulatorySource],
       gateway,
       model: "user-model",
       hasOfficialInterpretation: false,
-      stages: ["atomic_clauses"],
+      reanalysisDirective: {
+        reason: "重新核验要求强度",
+        targetFindingIds: ["REQ-1"],
+        allowedStages: ["atomic_clauses"],
+        allowedSourceIds: ["REG-1"],
+        priorFindings: [
+          {
+            findingId: priorFinding.findingId,
+            category: priorFinding.category,
+            claimType: priorFinding.claimType,
+            statement: priorFinding.statement,
+            sourceIds: ["REG-1"],
+            findingHash: evidenceDigest({
+              findingId: priorFinding.findingId,
+              category: priorFinding.category,
+              claimType: priorFinding.claimType,
+              statement: priorFinding.statement,
+              sourceIds: ["REG-1"],
+            }),
+          },
+        ],
+      },
     });
     expect(gateway.requests.map(({ schemaName }) => schemaName)).toEqual([
       "analysis_atomic_clauses_v1",
     ]);
     expect(draft.findings.map(({ findingId }) => findingId)).toContain("REQ-1");
+    expect(draft.findings.map(({ findingId }) => findingId)).toEqual(["REQ-1"]);
+    expect(gateway.requests[0].messages.at(-1)?.content).toContain(
+      '"targetFindingIds":["REQ-1"]',
+    );
+    expect(draft.runs[0]).toMatchObject({
+      reanalysisTargetFindingIds: ["REQ-1"],
+    });
+  });
+
+  it("rejects a reanalysis response with a missing target or an extra finding before apply", async () => {
+    const priorFinding = {
+      ...baseFinding,
+      findingId: "REQ-1",
+      category: "atomic_requirement",
+      statement: "商业银行应当建立数据治理机制",
+      claimType: "regulatory_fact" as const,
+      sourceAnchors: [anchor()],
+    };
+    const directive = {
+      reason: "重新核验要求强度",
+      targetFindingIds: ["REQ-1"],
+      allowedStages: ["atomic_clauses" as const],
+      allowedSourceIds: ["REG-1"],
+      priorFindings: [
+        {
+          findingId: "REQ-1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact" as const,
+          statement: priorFinding.statement,
+          sourceIds: ["REG-1"],
+          findingHash: evidenceDigest({
+            findingId: priorFinding.findingId,
+            category: priorFinding.category,
+            claimType: priorFinding.claimType,
+            statement: priorFinding.statement,
+            sourceIds: ["REG-1"],
+          }),
+        },
+      ],
+    };
+    const extraGateway = new RecordingGateway((request) => {
+      const response = successfulResponse(request);
+      if (request.schemaName !== "analysis_atomic_clauses_v1") return response;
+      const atomicResponse = response as { findings: unknown[] };
+      return {
+        ...(response as object),
+        findings: [
+          ...atomicResponse.findings,
+          {
+            ...priorFinding,
+            findingId: "REQ-EXTRA",
+          },
+        ],
+        atomicRequirements: [
+          ...((response as { atomicRequirements: unknown[] })
+            .atomicRequirements ?? []),
+          {
+            ...(
+              response as { atomicRequirements: Array<Record<string, unknown>> }
+            ).atomicRequirements[0],
+            requirementId: "AR-REQ-EXTRA",
+            findingId: "REQ-EXTRA",
+          },
+        ],
+      };
+    });
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource],
+        gateway: extraGateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+        reanalysisDirective: directive,
+      }),
+    ).rejects.toThrow(/目标|授权|额外/);
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource],
+        gateway: new RecordingGateway(emptyResponse),
+        model: "user-model",
+        hasOfficialInterpretation: false,
+        reanalysisDirective: directive,
+      }),
+    ).rejects.toThrow(/覆盖|目标/);
   });
 
   it("runs stages in order, preserves atomic/inference provenance, and records restart metadata", async () => {

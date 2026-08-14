@@ -1,6 +1,7 @@
 import { useEffect, useState, type FormEvent, type JSX } from "react";
 
 import type { Finding } from "../../domain/finding";
+import { useAccessibleDialog } from "./use-accessible-dialog";
 
 export interface EditFindingDialogProps {
   open: boolean;
@@ -23,15 +24,16 @@ export function EditFindingDialog({
       setReason("");
     }
   }, [open, finding]);
+  const { dialogRef, initialFocusRef, onKeyDown } =
+    useAccessibleDialog<HTMLTextAreaElement>(open, onClose);
   if (!open || !finding) return null;
+  const valid =
+    statement.trim().length > 0 &&
+    reason.trim().length > 0 &&
+    statement.trim() !== finding.statement;
   const submit = (event: FormEvent) => {
     event.preventDefault();
-    if (
-      !statement.trim() ||
-      !reason.trim() ||
-      statement.trim() === finding.statement
-    )
-      return;
+    if (!valid) return;
     onSave(statement.trim(), reason.trim());
   };
   return (
@@ -40,6 +42,8 @@ export function EditFindingDialog({
       aria-modal="true"
       className="workflow-dialog"
       role="dialog"
+      ref={dialogRef}
+      onKeyDown={onKeyDown}
     >
       <form onSubmit={submit}>
         <h2 id="edit-finding-title">修改结论 {finding.findingId}</h2>
@@ -47,11 +51,17 @@ export function EditFindingDialog({
         <label>
           修改后陈述
           <textarea
+            ref={initialFocusRef}
             required
             value={statement}
             onChange={(event) => setStatement(event.target.value)}
           />
         </label>
+        {!valid ? (
+          <p role="alert">
+            修改后陈述必须非空且不同于当前结论，并填写修改理由。
+          </p>
+        ) : null}
         <label>
           修改理由
           <textarea
@@ -61,7 +71,9 @@ export function EditFindingDialog({
           />
         </label>
         <div className="dialog-actions">
-          <button type="submit">保存修改</button>
+          <button type="submit" disabled={!valid}>
+            保存修改
+          </button>
           <button type="button" onClick={onClose}>
             取消
           </button>
