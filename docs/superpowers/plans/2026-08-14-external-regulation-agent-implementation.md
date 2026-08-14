@@ -61,12 +61,11 @@
 - Consumes: 无。
 - Produces: `App(): JSX.Element`、统一 CSS tokens、`pnpm test`、`pnpm build` 和 `pnpm test:e2e` 命令。
 
-- [ ] **Step 1: 初始化 Git 和前端依赖**
+- [ ] **Step 1: 在已建立的功能 worktree 中初始化前端依赖**
 
 Run:
 
 ```bash
-git init
 pnpm init
 pnpm add react react-dom zod dexie zustand pdfjs-dist mammoth tesseract.js @tesseract.js-data/chi_sim @tesseract.js-data/eng docx @react-pdf/renderer file-saver
 pnpm add -D typescript tsx vite @vitejs/plugin-react vitest jsdom fake-indexeddb @types/react @types/react-dom @types/file-saver @testing-library/react @testing-library/jest-dom @testing-library/user-event msw @playwright/test eslint prettier
