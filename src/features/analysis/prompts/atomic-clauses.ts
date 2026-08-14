@@ -4,12 +4,12 @@ import {
   SHARED_GUARDRAILS_VERSION,
 } from "./shared-guardrails";
 
-export const ATOMIC_CLAUSES_PROMPT_VERSION = `atomic-clauses-v1+${SHARED_GUARDRAILS_VERSION}`;
+export const ATOMIC_CLAUSES_PROMPT_VERSION = `atomic-clauses-v2+${SHARED_GUARDRAILS_VERSION}`;
 
 export const buildAtomicClausesMessages = (payload: string): ModelMessage[] => [
   {
     role: "system",
-    content: `${SHARED_GUARDRAILS}\n任务：只对监管原文逐项拆分原子要求。每个 atomic_requirement Finding 必须与一个 AtomicRequirement 通过 findingId 一一关联；不得把背景、身份或机构影响伪装成原子要求。共享前提应复制到 sharedContext，例外不得丢失。`,
+    content: `${SHARED_GUARDRAILS}\n任务：只对监管原文逐项拆分原子要求。Finding category 只能是 atomic_requirement，claimType 只能是 regulatory_fact 或 pending_confirmation。每个 Finding 必须与一个 AtomicRequirement 通过 findingId 一一关联；不得把背景、身份、状态或机构影响伪装成原子要求。共享前提应复制到 sharedContext，例外不得丢失。`,
   },
   {
     role: "user",

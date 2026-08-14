@@ -135,22 +135,138 @@ export const SourceConflictSchema = z
 
 export type SourceConflict = z.infer<typeof SourceConflictSchema>;
 
-const DocumentIdentityResponseSchema = z
+const RegulatoryIdentityCategorySchema = z.enum([
+  "document_identity:document_title",
+  "document_identity:document_number",
+  "document_identity:issuing_authority",
+  "document_identity:publication_date",
+  "document_identity:effective_date",
+  "document_identity:expiry_date",
+  "document_identity:effectivity_status",
+  "document_identity:applicability",
+  "document_identity:penalty",
+  "document_identity:enforcement",
+  "document_identity:deadline",
+  "document_identity:amount",
+  "document_identity:regulatory_context",
+]);
+
+const OfficialContextCategorySchema = z.enum([
+  "official_context:policy_background",
+  "official_context:regulatory_intent",
+  "official_context:implementation_guidance",
+]);
+
+const KeyMatterCategorySchema = z.enum([
+  "key_matter:core_requirement",
+  "key_matter:prohibition",
+  "key_matter:effective_date",
+  "key_matter:implementation_arrangement",
+  "key_matter:transition_period",
+]);
+
+const identityFindingShape = {
+  findingId: z.string().min(1),
+  statement: z.string().min(1),
+  sourceAnchors: z.array(SourceAnchorSchema).min(1),
+  inferenceParents: z.array(z.string().min(1)).max(0).default([]),
+  reviewStatus: z.literal("unreviewed"),
+  requiredReview: z.boolean(),
+  revisionRecords: z.array(z.never()).max(0).default([]),
+};
+
+const RegulatoryIdentityFindingSchema = z
   .object({
-    findings: z.array(FindingSchema),
+    ...identityFindingShape,
+    category: RegulatoryIdentityCategorySchema,
+    claimType: z.literal("regulatory_fact"),
+  })
+  .strict();
+
+const OfficialContextFindingSchema = z
+  .object({
+    ...identityFindingShape,
+    category: OfficialContextCategorySchema,
+    claimType: z.literal("official_explanation"),
+  })
+  .strict();
+
+const PendingIdentityFindingSchema = z
+  .object({
+    ...identityFindingShape,
+    category: z.literal("pending_confirmation:document_identity"),
+    claimType: z.literal("pending_confirmation"),
+    requiredReview: z.literal(true),
+  })
+  .strict();
+
+const AtomicRegulatoryFindingSchema = z
+  .object({
+    ...identityFindingShape,
+    category: z.literal("atomic_requirement"),
+    claimType: z.literal("regulatory_fact"),
+  })
+  .strict();
+
+const AtomicPendingFindingSchema = z
+  .object({
+    ...identityFindingShape,
+    category: z.literal("atomic_requirement"),
+    claimType: z.literal("pending_confirmation"),
+    requiredReview: z.literal(true),
+  })
+  .strict();
+
+const KeyMatterFindingSchema = z
+  .object({
+    ...identityFindingShape,
+    category: KeyMatterCategorySchema,
+    claimType: z.literal("regulatory_fact"),
+  })
+  .strict();
+
+const PendingKeyMatterFindingSchema = z
+  .object({
+    ...identityFindingShape,
+    category: z.literal("pending_confirmation:key_matter"),
+    claimType: z.literal("pending_confirmation"),
+    requiredReview: z.literal(true),
+  })
+  .strict();
+
+const RegulatoryDocumentIdentityResponseSchema = z
+  .object({
+    findings: z.array(
+      z.union([RegulatoryIdentityFindingSchema, PendingIdentityFindingSchema]),
+    ),
+    conflicts: z.array(SourceConflictSchema),
+  })
+  .strict();
+
+const OfficialDocumentIdentityResponseSchema = z
+  .object({
+    findings: z.array(
+      z.union([OfficialContextFindingSchema, PendingIdentityFindingSchema]),
+    ),
     conflicts: z.array(SourceConflictSchema),
   })
   .strict();
 
 const AtomicClausesResponseSchema = z
   .object({
-    findings: z.array(FindingSchema),
+    findings: z.array(
+      z.union([AtomicRegulatoryFindingSchema, AtomicPendingFindingSchema]),
+    ),
     atomicRequirements: z.array(AtomicRequirementSchema),
   })
   .strict();
 
 const KeyMattersResponseSchema = z
-  .object({ findings: z.array(FindingSchema) })
+  .object({
+    findings: z.array(
+      z.union([KeyMatterFindingSchema, PendingKeyMatterFindingSchema]),
+    ),
+  })
   .strict();
 
 const InstitutionImpactItemSchema = z
@@ -194,6 +310,8 @@ export const AnalysisRunMetadataSchema = z
     promptVersion: z.string().min(1),
     inputSourceIds: z.array(z.string().min(1)).min(1),
     responseHash: z.string().regex(/^[a-f0-9]{64}$/),
+    outputHash: z.string().regex(/^[a-f0-9]{64}$/),
+    scopeHash: z.string().regex(/^[a-f0-9]{64}$/),
     findingIds: z.array(z.string().min(1)),
     atomicRequirementIds: z.array(z.string().min(1)),
     inferenceRelationshipIds: z.array(z.string().min(1)),
@@ -204,7 +322,7 @@ export const AnalysisRunMetadataSchema = z
 export type AnalysisRunMetadata = z.infer<typeof AnalysisRunMetadataSchema>;
 
 const checkpointShape = {
-  checkpointVersion: z.literal(1),
+  checkpointVersion: z.literal(2),
   inputFingerprint: z.string().regex(/^[a-f0-9]{64}$/),
   model: z.string().min(1),
   hasOfficialInterpretation: z.boolean(),
@@ -492,6 +610,22 @@ const nodesFor = (chunks: readonly DocumentChunk[]): AnalysisNode[] => {
   const regulatoryChunks = chunks.filter(
     (chunk) => chunk.sourceType === "regulatory_text",
   );
+  const identityChunks = chunks.flatMap((chunk) => {
+    if (chunk.sourceType !== "official_interpretation") return [chunk];
+    return chunk.inputSourceIds.map((sourceId) => {
+      const units = chunk.units.filter((unit) => unit.sourceId === sourceId);
+      return {
+        ...chunk,
+        chunkId: `${chunk.chunkId}:${sourceId}`,
+        units,
+        inputSourceIds: [sourceId],
+        characterCount: units.reduce(
+          (total, unit) => total + unit.content.length,
+          0,
+        ),
+      };
+    });
+  });
   const definitions: Array<{
     stage: AnalysisStage;
     promptVersion: string;
@@ -500,7 +634,7 @@ const nodesFor = (chunks: readonly DocumentChunk[]): AnalysisNode[] => {
     {
       stage: "document_identity",
       promptVersion: DOCUMENT_IDENTITY_PROMPT_VERSION,
-      chunks,
+      chunks: identityChunks,
     },
     {
       stage: "atomic_clauses",
@@ -661,6 +795,64 @@ const scopeWithPrimaryFindings = (
   return scope;
 };
 
+interface NodeRequestContext {
+  scope: AuthorizedSourceScope;
+  inputSourceIds: string[];
+  primaryFindings: Finding[];
+}
+
+const requestContextForNode = (
+  node: AnalysisNode,
+  priorFindings: readonly Finding[],
+  officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
+): NodeRequestContext => {
+  if (node.chunk.sourceType !== "official_interpretation") {
+    return {
+      scope: scopeForChunk(node.chunk),
+      inputSourceIds: node.chunk.inputSourceIds,
+      primaryFindings: [],
+    };
+  }
+  const pairedRegulatorySourceIds = new Set(
+    node.chunk.inputSourceIds.flatMap(
+      (sourceId) => officialPrimaryContext[sourceId] ?? [],
+    ),
+  );
+  const primaryFindings = priorFindings.filter(
+    (finding) =>
+      finding.claimType === "regulatory_fact" &&
+      finding.sourceAnchors.length > 0 &&
+      finding.sourceAnchors.every((anchor) =>
+        pairedRegulatorySourceIds.has(anchor.sourceId),
+      ),
+  );
+  const scope = scopeWithPrimaryFindings(node.chunk, primaryFindings);
+  return { scope, inputSourceIds: [...scope.keys()], primaryFindings };
+};
+
+interface NodeOutputBundle {
+  findings: Finding[];
+  atomicRequirements: AtomicRequirement[];
+  inferenceRelationships: InferenceRelationship[];
+  conflicts: SourceConflict[];
+}
+
+const hashNodeOutput = (output: NodeOutputBundle): Promise<string> =>
+  sha256(canonicalJson(output));
+
+const hashAuthorizedScope = (scope: AuthorizedSourceScope): Promise<string> =>
+  sha256(
+    canonicalJson(
+      [...scope.entries()]
+        .sort(([left], [right]) => left.localeCompare(right))
+        .map(([sourceId, evidence]) => ({
+          sourceId,
+          sourceType: evidence.sourceType,
+          texts: evidence.texts,
+        })),
+    ),
+  );
+
 const anchorIsAuthorized = (
   anchor: SourceAnchor,
   scope: AuthorizedSourceScope,
@@ -696,29 +888,8 @@ const validateAnchors = (
   }
 };
 
-const SENSITIVE_REGULATORY_ASSERTION =
-  /生效|施行|废止|有效|失效|效力|适用|罚款|处罚|执法|监管措施|责令|没收|吊销|警告|限期|期限|截止|日期|日内|月内|年内|发布|印发|颁布|制定|主管|负责|发文|总局|委员会|人民银行|国务院|政府|\d{4}|(?:元|万元|亿元)|[%％]|比例/;
-const OFFICIAL_STATUS_ASSERTION =
-  /生效|施行|废止|现行有效|失效|效力状态|适用范围/;
-const SENSITIVE_CATEGORY =
-  /effect|status|applic|penalt|enforce|deadline|date|amount|authority|效力|适用|处罚|执法|期限|日期|金额|机关/i;
-const OFFICIAL_STATUS_CATEGORY = /effect|status|applic|效力|适用/i;
-
-const validateSensitiveClaim = (finding: Finding): void => {
-  if (
-    finding.claimType === "official_explanation" &&
-    (OFFICIAL_STATUS_CATEGORY.test(finding.category) ||
-      OFFICIAL_STATUS_ASSERTION.test(finding.statement))
-  ) {
-    throw new Error("官方解读不得建立或覆盖监管文件效力与适用状态");
-  }
-  if (
-    finding.claimType !== "regulatory_fact" ||
-    (!SENSITIVE_CATEGORY.test(finding.category) &&
-      !SENSITIVE_REGULATORY_ASSERTION.test(finding.statement))
-  ) {
-    return;
-  }
+const validateRegulatoryFactEvidence = (finding: Finding): void => {
+  if (finding.claimType !== "regulatory_fact") return;
   const statement = normalizedEvidenceText(finding.statement);
   const exactRegulatoryMatch = finding.sourceAnchors.some(
     (anchor) =>
@@ -727,7 +898,7 @@ const validateSensitiveClaim = (finding: Finding): void => {
   );
   if (!exactRegulatoryMatch) {
     throw new Error(
-      "敏感监管事实的陈述与 claimed value 必须在授权监管原文引用中确定性反向匹配",
+      "监管事实必须作为闭合结构化结论，且完整陈述必须在授权监管原文引用中确定性反向匹配",
     );
   }
 };
@@ -741,7 +912,64 @@ const validateFindings = (
       throw new Error("模型不得使用系统保留的 Finding ID");
     }
     validateAnchors(finding.sourceAnchors, scope);
-    validateSensitiveClaim(finding);
+    validateRegulatoryFactEvidence(finding);
+  }
+};
+
+const validateDocumentConflicts = (
+  conflicts: readonly SourceConflict[],
+  currentFindings: readonly Finding[],
+  primaryFindings: readonly Finding[],
+  officialSourceIds: readonly string[],
+  scope: AuthorizedSourceScope,
+): void => {
+  const currentById = new Map(
+    currentFindings.map((finding) => [finding.findingId, finding] as const),
+  );
+  const primaryById = new Map(
+    primaryFindings.map((finding) => [finding.findingId, finding] as const),
+  );
+  const officialIds = new Set(officialSourceIds);
+
+  for (const conflict of conflicts) {
+    validateAnchors(conflict.sourceAnchors, scope);
+    const regulatoryFinding = primaryById.get(conflict.regulatoryFindingId);
+    const interpretationFinding = currentById.get(
+      conflict.interpretationFindingId,
+    );
+    if (!regulatoryFinding || !interpretationFinding) {
+      throw new Error(
+        "来源冲突必须关联当前官方解读自己的显式监管原文配对与本节点解读 Finding",
+      );
+    }
+    if (interpretationFinding.claimType !== "official_explanation") {
+      throw new Error("来源冲突的解读 Finding 必须是 official_explanation");
+    }
+    const linkedAnchors = new Set(
+      [
+        ...regulatoryFinding.sourceAnchors,
+        ...interpretationFinding.sourceAnchors,
+      ].map(anchorIdentity),
+    );
+    if (
+      conflict.sourceAnchors.some(
+        (item) => !linkedAnchors.has(anchorIdentity(item)),
+      )
+    ) {
+      throw new Error("来源冲突锚点必须是两个关联 Finding 锚点的相等或子集");
+    }
+    if (
+      !conflict.sourceAnchors.some(
+        (item) => item.sourceType === "regulatory_text",
+      ) ||
+      !conflict.sourceAnchors.some(
+        (item) =>
+          item.sourceType === "official_interpretation" &&
+          officialIds.has(item.sourceId),
+      )
+    ) {
+      throw new Error("来源冲突必须保留当前配对的监管原文和官方解读锚点");
+    }
   }
 };
 
@@ -854,6 +1082,23 @@ const buildStructuredImpacts = (
     ) {
       throw new Error("机构影响引用了不存在或未授权的上游 Finding");
     }
+    const selectedParents = upstreamFindings.filter((finding) =>
+      impact.inferenceParents.includes(finding.findingId),
+    );
+    const authorizedParentAnchors = new Set(
+      selectedParents.flatMap((finding) =>
+        finding.sourceAnchors.map(anchorIdentity),
+      ),
+    );
+    if (
+      impact.sourceAnchors.some(
+        (item) => !authorizedParentAnchors.has(anchorIdentity(item)),
+      )
+    ) {
+      throw new Error(
+        "机构影响锚点必须是所选父 Finding 授权锚点并集的相等或子集",
+      );
+    }
     const label = IMPACT_LABELS[impact.category];
     const statement =
       impact.possibility === "potential"
@@ -890,6 +1135,138 @@ const buildStructuredImpacts = (
   }
   validateFindings(findings, scope);
   return { findings, relationships };
+};
+
+const validateStoredImpactOutput = (
+  output: NodeOutputBundle,
+  priorFindings: readonly Finding[],
+  scope: AuthorizedSourceScope,
+): void => {
+  const priorById = new Map(
+    priorFindings.map((finding) => [finding.findingId, finding] as const),
+  );
+  validateFindings(output.findings, scope);
+  if (output.atomicRequirements.length || output.conflicts.length) {
+    throw new Error("checkpoint 机构影响节点包含了非本阶段输出");
+  }
+  for (const finding of output.findings) {
+    if (
+      finding.claimType !== "ai_inference" ||
+      !finding.category.startsWith("institution_impact:") ||
+      !finding.requiredReview
+    ) {
+      throw new Error("checkpoint 机构影响 Finding 结构无效");
+    }
+    const selectedParents = finding.inferenceParents.map((id) =>
+      priorById.get(id),
+    );
+    if (selectedParents.some((parent) => !parent)) {
+      throw new Error("checkpoint 机构影响父 Finding 不存在");
+    }
+    const parentAnchors = new Set(
+      selectedParents.flatMap((parent) =>
+        parent!.sourceAnchors.map(anchorIdentity),
+      ),
+    );
+    if (
+      finding.sourceAnchors.some(
+        (item) => !parentAnchors.has(anchorIdentity(item)),
+      )
+    ) {
+      throw new Error("checkpoint 机构影响锚点超出所选父 Finding 范围");
+    }
+    const relationship = output.inferenceRelationships.find(
+      (item) => item.toFindingId === finding.findingId,
+    );
+    if (
+      !relationship ||
+      relationship.fromFindingIds.join("\u0000") !==
+        finding.inferenceParents.join("\u0000") ||
+      relationship.sourceAnchors.some(
+        (item) => !parentAnchors.has(anchorIdentity(item)),
+      )
+    ) {
+      throw new Error("checkpoint 机构影响关系未与 Finding 父项和锚点闭合");
+    }
+  }
+  if (output.inferenceRelationships.length !== output.findings.length) {
+    throw new Error("checkpoint 机构影响 Finding 与关系数量不一致");
+  }
+};
+
+const validateCompletedNodeOutput = (
+  node: AnalysisNode,
+  output: NodeOutputBundle,
+  priorFindings: readonly Finding[],
+  context: NodeRequestContext,
+): void => {
+  if (node.stage === "document_identity") {
+    if (
+      output.atomicRequirements.length ||
+      output.inferenceRelationships.length
+    ) {
+      throw new Error("checkpoint 文件身份节点包含了非本阶段输出");
+    }
+    for (const finding of output.findings) {
+      if (node.chunk.sourceType === "official_interpretation") {
+        z.union([
+          OfficialContextFindingSchema,
+          PendingIdentityFindingSchema,
+        ]).parse(finding);
+      } else {
+        z.union([
+          RegulatoryIdentityFindingSchema,
+          PendingIdentityFindingSchema,
+        ]).parse(finding);
+      }
+    }
+    validateFindings(output.findings, context.scope);
+    validateDocumentConflicts(
+      output.conflicts,
+      output.findings,
+      context.primaryFindings,
+      node.chunk.sourceType === "official_interpretation"
+        ? node.chunk.inputSourceIds
+        : [],
+      context.scope,
+    );
+    return;
+  }
+  if (node.stage === "atomic_clauses") {
+    if (output.inferenceRelationships.length || output.conflicts.length) {
+      throw new Error("checkpoint 原子化节点包含了非本阶段输出");
+    }
+    validateAtomicResponse(
+      AtomicClausesResponseSchema.parse({
+        findings: output.findings,
+        atomicRequirements: output.atomicRequirements,
+      }),
+      context.scope,
+    );
+    return;
+  }
+  if (node.stage === "key_matters") {
+    if (
+      output.atomicRequirements.length ||
+      output.inferenceRelationships.length ||
+      output.conflicts.length
+    ) {
+      throw new Error("checkpoint 重点事项节点包含了非本阶段输出");
+    }
+    KeyMattersResponseSchema.parse({ findings: output.findings });
+    validateFindings(output.findings, context.scope);
+    if (
+      output.findings.some(
+        (finding) =>
+          finding.claimType !== "regulatory_fact" &&
+          finding.claimType !== "pending_confirmation",
+      )
+    ) {
+      throw new Error("checkpoint 重点事项包含非法 claimType");
+    }
+    return;
+  }
+  validateStoredImpactOutput(output, priorFindings, context.scope);
 };
 
 const checkpointFrom = (state: AnalysisCheckpoint): AnalysisCheckpoint =>
@@ -1198,7 +1575,7 @@ const initialCheckpoint = (
   hasOfficialInterpretation: boolean,
 ): AnalysisCheckpoint =>
   checkpointFrom({
-    checkpointVersion: 1,
+    checkpointVersion: 2,
     inputFingerprint,
     model,
     hasOfficialInterpretation,
@@ -1213,13 +1590,18 @@ const initialCheckpoint = (
     lastSuccessfulNode: null,
   });
 
-const validateResume = (
+const idsMatch = (
+  actual: readonly string[],
+  expected: readonly string[],
+): boolean => actual.join("\u0000") === expected.join("\u0000");
+
+const validateResume = async (
   checkpoint: AnalysisCheckpoint,
   nodes: readonly AnalysisNode[],
   inputFingerprint: string,
   input: AnalysisInput,
   officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
-): void => {
+): Promise<void> => {
   if (
     checkpoint.inputFingerprint !== inputFingerprint ||
     checkpoint.model !== input.model.trim() ||
@@ -1238,43 +1620,100 @@ const validateResume = (
   ) {
     throw new Error("只能从最后一个连续成功节点重启分析");
   }
-  checkpoint.runs.forEach((run, index) => {
+  let findingOffset = 0;
+  let atomicOffset = 0;
+  let relationshipOffset = 0;
+  let conflictOffset = 0;
+
+  for (const [index, run] of checkpoint.runs.entries()) {
     const node = nodes[index];
-    const pairedRegulatorySourceIds = new Set(
-      node.chunk.sourceType === "official_interpretation"
-        ? node.chunk.inputSourceIds.flatMap(
-            (sourceId) => officialPrimaryContext[sourceId] ?? [],
-          )
-        : [],
+    const priorFindings = checkpoint.findings.slice(0, findingOffset);
+    const context = requestContextForNode(
+      node,
+      priorFindings,
+      officialPrimaryContext,
     );
-    const priorFindingIds = new Set(
-      checkpoint.runs
-        .slice(0, index)
-        .flatMap((priorRun) => priorRun.findingIds),
-    );
-    const primaryFindings = checkpoint.findings.filter(
-      (finding) =>
-        priorFindingIds.has(finding.findingId) &&
-        finding.claimType === "regulatory_fact" &&
-        finding.sourceAnchors.length > 0 &&
-        finding.sourceAnchors.every((anchor) =>
-          pairedRegulatorySourceIds.has(anchor.sourceId),
-        ),
-    );
-    const expectedInputSourceIds = [
-      ...(node.chunk.sourceType === "official_interpretation"
-        ? scopeWithPrimaryFindings(node.chunk, primaryFindings).keys()
-        : node.chunk.inputSourceIds),
-    ];
     if (
       run.model !== input.model.trim() ||
       run.promptVersion !== node.promptVersion ||
-      run.inputSourceIds.join("\u0000") !==
-        expectedInputSourceIds.join("\u0000")
+      !idsMatch(run.inputSourceIds, context.inputSourceIds)
     ) {
       throw new Error("重启节点的模型、提示词版本或输入来源已变化");
     }
-  });
+
+    const scopeHash = await hashAuthorizedScope(context.scope);
+    if (run.scopeHash !== scopeHash) {
+      throw new Error(
+        `checkpoint 完整性校验失败：节点 ${run.nodeId} 的授权范围哈希不一致`,
+      );
+    }
+
+    const findings = checkpoint.findings.slice(
+      findingOffset,
+      findingOffset + run.findingIds.length,
+    );
+    const atomicRequirements = checkpoint.atomicRequirements.slice(
+      atomicOffset,
+      atomicOffset + run.atomicRequirementIds.length,
+    );
+    const inferenceRelationships = checkpoint.inferenceRelationships.slice(
+      relationshipOffset,
+      relationshipOffset + run.inferenceRelationshipIds.length,
+    );
+    const conflicts = checkpoint.conflicts.slice(
+      conflictOffset,
+      conflictOffset + run.conflictIds.length,
+    );
+    if (
+      !idsMatch(
+        findings.map((finding) => finding.findingId),
+        run.findingIds,
+      ) ||
+      !idsMatch(
+        atomicRequirements.map((item) => item.requirementId),
+        run.atomicRequirementIds,
+      ) ||
+      !idsMatch(
+        inferenceRelationships.map((item) => item.relationshipId),
+        run.inferenceRelationshipIds,
+      ) ||
+      !idsMatch(
+        conflicts.map((conflict) => conflict.conflictId),
+        run.conflictIds,
+      )
+    ) {
+      throw new Error(
+        `checkpoint 完整性校验失败：节点 ${run.nodeId} 的输出 ID 绑定不一致`,
+      );
+    }
+
+    const output = {
+      findings,
+      atomicRequirements,
+      inferenceRelationships,
+      conflicts,
+    };
+    if (run.outputHash !== (await hashNodeOutput(output))) {
+      throw new Error(
+        `checkpoint 完整性校验失败：节点 ${run.nodeId} 的输出内容哈希不一致`,
+      );
+    }
+    validateCompletedNodeOutput(node, output, priorFindings, context);
+
+    findingOffset += findings.length;
+    atomicOffset += atomicRequirements.length;
+    relationshipOffset += inferenceRelationships.length;
+    conflictOffset += conflicts.length;
+  }
+
+  if (
+    findingOffset !== checkpoint.findings.length ||
+    atomicOffset !== checkpoint.atomicRequirements.length ||
+    relationshipOffset !== checkpoint.inferenceRelationships.length ||
+    conflictOffset !== checkpoint.conflicts.length
+  ) {
+    throw new Error("checkpoint 完整性校验失败：存在未绑定到已完成节点的输出");
+  }
 };
 
 export async function runAnalysis(
@@ -1327,7 +1766,7 @@ export async function runAnalysis(
         input.hasOfficialInterpretation,
       );
   if (input.resumeFrom)
-    validateResume(
+    await validateResume(
       checkpoint,
       nodes,
       inputFingerprint,
@@ -1347,58 +1786,54 @@ export async function runAnalysis(
     let inferenceRelationships: InferenceRelationship[] = [];
     let conflicts: SourceConflict[] = [];
     let response: unknown;
-    let requestInputSourceIds = node.chunk.inputSourceIds;
-    let requestScope: AuthorizedSourceScope = scopeForChunk(node.chunk);
+    const nodeContext = requestContextForNode(
+      node,
+      checkpoint.findings,
+      officialPrimaryContext,
+    );
+    const requestInputSourceIds = nodeContext.inputSourceIds;
+    const requestScope = nodeContext.scope;
 
     if (node.stage === "document_identity") {
-      const pairedRegulatorySourceIds = new Set(
-        node.chunk.sourceType === "official_interpretation"
-          ? node.chunk.inputSourceIds.flatMap(
-              (sourceId) => officialPrimaryContext[sourceId] ?? [],
-            )
-          : [],
+      const primaryFindings = nodeContext.primaryFindings;
+      const messages = buildDocumentIdentityMessages(
+        canonicalJson({
+          sourceChunk: serializeChunk(node.chunk),
+          primaryRegulatoryFindings: primaryFindings,
+        }),
       );
-      const primaryFindings =
+      response =
         node.chunk.sourceType === "official_interpretation"
-          ? checkpoint.findings.filter(
-              (finding) =>
-                finding.claimType === "regulatory_fact" &&
-                finding.sourceAnchors.length > 0 &&
-                finding.sourceAnchors.every((anchor) =>
-                  pairedRegulatorySourceIds.has(anchor.sourceId),
-                ),
-            )
-          : [];
-      requestScope = scopeWithPrimaryFindings(node.chunk, primaryFindings);
-      requestInputSourceIds = [...requestScope.keys()];
-      response = await input.gateway.requestStructured({
-        schema: DocumentIdentityResponseSchema,
-        schemaName: "analysis_document_identity_v1",
-        signal,
-        messages: buildDocumentIdentityMessages(
-          canonicalJson({
-            sourceChunk: serializeChunk(node.chunk),
-            primaryRegulatoryFindings: primaryFindings,
-          }),
-        ),
-      });
-      const parsed = DocumentIdentityResponseSchema.parse(response);
-      findings = parsed.findings;
+          ? await input.gateway.requestStructured({
+              schema: OfficialDocumentIdentityResponseSchema,
+              schemaName: "analysis_document_identity_v1",
+              signal,
+              messages,
+            })
+          : await input.gateway.requestStructured({
+              schema: RegulatoryDocumentIdentityResponseSchema,
+              schemaName: "analysis_document_identity_v1",
+              signal,
+              messages,
+            });
+      const parsed = z
+        .union([
+          OfficialDocumentIdentityResponseSchema,
+          RegulatoryDocumentIdentityResponseSchema,
+        ])
+        .parse(response);
+      findings = parsed.findings.map((finding) => FindingSchema.parse(finding));
       conflicts = parsed.conflicts;
       validateFindings(findings, requestScope);
-      conflicts.forEach((conflict) => {
-        validateAnchors(conflict.sourceAnchors, requestScope);
-        if (
-          !conflict.sourceAnchors.some(
-            (item) => item.sourceType === "regulatory_text",
-          ) ||
-          !conflict.sourceAnchors.some(
-            (item) => item.sourceType === "official_interpretation",
-          )
-        ) {
-          throw new Error("来源冲突必须同时保留监管原文和官方解读锚点");
-        }
-      });
+      validateDocumentConflicts(
+        conflicts,
+        findings,
+        primaryFindings,
+        node.chunk.sourceType === "official_interpretation"
+          ? node.chunk.inputSourceIds
+          : [],
+        requestScope,
+      );
     } else if (node.stage === "atomic_clauses") {
       response = await input.gateway.requestStructured({
         schema: AtomicClausesResponseSchema,
@@ -1422,8 +1857,9 @@ export async function runAnalysis(
             sourceChunk: serializeChunk(node.chunk),
             upstreamAtomicRequirements: checkpoint.atomicRequirements.filter(
               (requirement) =>
-                requirement.sourceAnchors.some((anchor) =>
-                  node.chunk.inputSourceIds.includes(anchor.sourceId),
+                requirement.sourceAnchors.length > 0 &&
+                requirement.sourceAnchors.every((anchor) =>
+                  anchorIsAuthorized(anchor, requestScope),
                 ),
             ),
           }),
@@ -1472,7 +1908,17 @@ export async function runAnalysis(
     }
 
     throwIfAborted(signal);
-    const responseHash = await sha256(canonicalJson(response));
+    const output = {
+      findings,
+      atomicRequirements,
+      inferenceRelationships,
+      conflicts,
+    };
+    const [responseHash, outputHash, scopeHash] = await Promise.all([
+      sha256(canonicalJson(response)),
+      hashNodeOutput(output),
+      hashAuthorizedScope(requestScope),
+    ]);
     checkpoint = checkpointFrom({
       ...checkpoint,
       findings: [...checkpoint.findings, ...findings],
@@ -1495,6 +1941,8 @@ export async function runAnalysis(
           promptVersion: node.promptVersion,
           inputSourceIds: requestInputSourceIds,
           responseHash,
+          outputHash,
+          scopeHash,
           findingIds: findings.map((finding) => finding.findingId),
           atomicRequirementIds: atomicRequirements.map(
             (requirement) => requirement.requirementId,

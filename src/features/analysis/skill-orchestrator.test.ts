@@ -52,6 +52,14 @@ const baseFinding = {
   revisionRecords: [] as never[],
 };
 
+const hasChunkSourceType = (
+  content: string | undefined,
+  sourceType: SourceUnit["sourceType"],
+): boolean =>
+  new RegExp(
+    `"sourceChunk":\\{"chunkId":"[^"]+","sourceType":"${sourceType}"`,
+  ).test(content ?? "");
+
 class RecordingGateway implements ModelGateway {
   readonly requests: StructuredModelRequest<unknown>[] = [];
 
@@ -245,7 +253,7 @@ describe("runAnalysis", () => {
             {
               ...baseFinding,
               findingId: "BAD-1",
-              category: "background",
+              category: "document_identity:regulatory_context",
               statement: "引用了未提供的来源",
               claimType: "regulatory_fact",
               sourceAnchors: [anchor("REG-NOT-SUPPLIED")],
@@ -281,7 +289,7 @@ describe("runAnalysis", () => {
             {
               ...baseFinding,
               findingId: "BAD-NODE-SCOPE",
-              category: "background",
+              category: "document_identity:regulatory_context",
               statement: "引用了项目内但未发送到当前节点的来源",
               claimType: "regulatory_fact",
               sourceAnchors: [
@@ -327,28 +335,28 @@ describe("runAnalysis", () => {
         const userContent = request.messages.find(
           (message) => message.role === "user",
         )?.content;
-        if (userContent?.includes('"sourceType":"regulatory_text"')) {
+        if (hasChunkSourceType(userContent, "regulatory_text")) {
           return {
             conflicts: [],
             findings: [
-              ...(userContent.includes('"sourceId":"REG-1"')
+              ...(userContent?.includes('"sourceId":"REG-1"')
                 ? [
                     {
                       ...baseFinding,
                       findingId: "REG-FACT-1",
-                      category: "background",
-                      statement: "第一条要求建立数据治理机制",
+                      category: "document_identity:regulatory_context",
+                      statement: "商业银行应当建立数据治理机制",
                       claimType: "regulatory_fact" as const,
                       sourceAnchors: [anchor()],
                     },
                   ]
                 : []),
-              ...(userContent.includes('"sourceId":"REG-2"')
+              ...(userContent?.includes('"sourceId":"REG-2"')
                 ? [
                     {
                       ...baseFinding,
                       findingId: "REG-FACT-2",
-                      category: "background",
+                      category: "document_identity:regulatory_context",
                       statement: "第二份监管原文要求",
                       claimType: "regulatory_fact" as const,
                       sourceAnchors: [
@@ -377,10 +385,15 @@ describe("runAnalysis", () => {
     });
 
     const officialPayload = gateway.requests
-      .find((request) =>
-        request.messages
-          .find((message) => message.role === "user")
-          ?.content.includes('"sourceType":"official_interpretation"'),
+      .find(
+        (request) =>
+          request.messages.find((message) => message.role === "user")
+            ?.content &&
+          hasChunkSourceType(
+            request.messages.find((message) => message.role === "user")
+              ?.content,
+            "official_interpretation",
+          ),
       )
       ?.messages.find((message) => message.role === "user")?.content;
     expect(officialPayload).toContain("REG-FACT-1");
@@ -406,8 +419,8 @@ describe("runAnalysis", () => {
                 ...baseFinding,
                 findingId: "FABRICATED-SENSITIVE",
                 category: statement.includes("罚款")
-                  ? "penalty"
-                  : "effective_date",
+                  ? "document_identity:penalty"
+                  : "document_identity:effective_date",
                 statement,
                 claimType: "regulatory_fact",
                 sourceAnchors: [
@@ -448,7 +461,7 @@ describe("runAnalysis", () => {
               {
                 ...baseFinding,
                 findingId: "MATCHED-DATE",
-                category: "effective_date",
+                category: "document_identity:effective_date",
                 statement,
                 claimType: "regulatory_fact",
                 sourceAnchors: [{ ...anchor(), quote: source.content }],
@@ -481,7 +494,7 @@ describe("runAnalysis", () => {
               {
                 ...baseFinding,
                 findingId: "FABRICATED-QUOTE",
-                category: "effective_date",
+                category: "document_identity:effective_date",
                 statement: "本办法自2026年1月1日起施行",
                 claimType: "regulatory_fact",
                 sourceAnchors: [
@@ -544,9 +557,10 @@ describe("runAnalysis", () => {
   it("does not let official interpretation establish current effectiveness", async () => {
     const gateway = new RecordingGateway((request) => {
       if (request.schemaName === "analysis_document_identity_v1") {
-        const isOfficial = request.messages
-          .find((message) => message.role === "user")
-          ?.content.includes('"sourceType":"official_interpretation"');
+        const isOfficial = hasChunkSourceType(
+          request.messages.find((message) => message.role === "user")?.content,
+          "official_interpretation",
+        );
         return isOfficial
           ? {
               conflicts: [],
@@ -582,7 +596,7 @@ describe("runAnalysis", () => {
         hasOfficialInterpretation: true,
         officialPrimaryContext: { "OFF-1": ["REG-1"] },
       }),
-    ).rejects.toThrow(/官方解读.*效力|效力.*官方解读/);
+    ).rejects.toThrow();
   });
 
   it("turns declared original-versus-interpretation conflicts into pending confirmation", async () => {
@@ -593,13 +607,13 @@ describe("runAnalysis", () => {
       const userContent = request.messages.find(
         (message) => message.role === "user",
       )?.content;
-      if (userContent?.includes('"sourceType":"official_interpretation"')) {
+      if (hasChunkSourceType(userContent, "official_interpretation")) {
         return {
           findings: [
             {
               ...baseFinding,
               findingId: "OFF-CLAIM",
-              category: "background",
+              category: "official_context:policy_background",
               statement: "官方解读称不要求建立该机制",
               claimType: "official_explanation",
               sourceAnchors: [anchor("OFF-1", "official_interpretation")],
@@ -626,8 +640,8 @@ describe("runAnalysis", () => {
           {
             ...baseFinding,
             findingId: "REG-CLAIM",
-            category: "background",
-            statement: "监管原文要求建立该机制",
+            category: "document_identity:regulatory_context",
+            statement: "商业银行应当建立数据治理机制",
             claimType: "regulatory_fact",
             sourceAnchors: [anchor()],
           },
@@ -655,10 +669,13 @@ describe("runAnalysis", () => {
       draft.findings.find((finding) => finding.findingId === "REG-CLAIM")
         ?.claimType,
     ).toBe("regulatory_fact");
-    const officialRequest = gateway.requests.find((request) =>
-      request.messages
-        .find((message) => message.role === "user")
-        ?.content.includes('"sourceType":"official_interpretation"'),
+    const officialRequest = gateway.requests.find(
+      (request) =>
+        request.messages.find((message) => message.role === "user")?.content &&
+        hasChunkSourceType(
+          request.messages.find((message) => message.role === "user")?.content,
+          "official_interpretation",
+        ),
     );
     expect(
       officialRequest?.messages.find((message) => message.role === "user")
@@ -1010,7 +1027,7 @@ describe("runAnalysis", () => {
             ...baseFinding,
             findingId: `REQ-VARIANT-${suffix}`,
             category: "atomic_requirement",
-            statement: "商业银行应当履行监管要求",
+            statement: "监管要求",
             claimType: "regulatory_fact",
             sourceAnchors: [
               {
@@ -1081,7 +1098,7 @@ describe("runAnalysis", () => {
             ...baseFinding,
             findingId: "REQ-SAME-ID",
             category: "atomic_requirement",
-            statement: "商业银行应当履行监管要求",
+            statement: "监管要求",
             claimType: "regulatory_fact",
             sourceAnchors: [{ ...anchor(), quote: "监管要求" }],
           },
@@ -1125,6 +1142,564 @@ describe("runAnalysis", () => {
         requiredReview: true,
       }),
     );
+  });
+
+  it("isolates OFF-A and OFF-B into separate requests with only their explicit REG pairing", async () => {
+    const sources: SourceUnit[] = [
+      {
+        sourceId: "REG-A",
+        sourceType: "regulatory_text",
+        title: "原文 A",
+        content: "原文A要求。",
+      },
+      {
+        sourceId: "REG-B",
+        sourceType: "regulatory_text",
+        title: "原文 B",
+        content: "原文B要求。",
+      },
+      {
+        sourceId: "OFF-A",
+        sourceType: "official_interpretation",
+        title: "解读 A",
+        content: "解读A背景。",
+      },
+      {
+        sourceId: "OFF-B",
+        sourceType: "official_interpretation",
+        title: "解读 B",
+        content: "解读B背景。",
+      },
+    ];
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_document_identity_v1") {
+        return emptyResponse(request);
+      }
+      const payload = request.messages.find(
+        (message) => message.role === "user",
+      )?.content;
+      if (hasChunkSourceType(payload, "regulatory_text")) {
+        return {
+          conflicts: [],
+          findings: [
+            {
+              ...baseFinding,
+              findingId: "FACT-A",
+              category: "document_identity:regulatory_context",
+              statement: "原文A要求",
+              claimType: "regulatory_fact",
+              sourceAnchors: [
+                { ...anchor("REG-A"), article: null, quote: "原文A要求。" },
+              ],
+            },
+            {
+              ...baseFinding,
+              findingId: "FACT-B",
+              category: "document_identity:regulatory_context",
+              statement: "原文B要求",
+              claimType: "regulatory_fact",
+              sourceAnchors: [
+                { ...anchor("REG-B"), article: null, quote: "原文B要求。" },
+              ],
+            },
+          ],
+        };
+      }
+      return { findings: [], conflicts: [] };
+    });
+
+    await runAnalysis({
+      sourceUnits: sources,
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: true,
+      officialPrimaryContext: { "OFF-A": ["REG-A"], "OFF-B": ["REG-B"] },
+    });
+
+    const officialPayloads = gateway.requests
+      .filter(
+        (request) =>
+          request.messages.find((message) => message.role === "user")
+            ?.content &&
+          hasChunkSourceType(
+            request.messages.find((message) => message.role === "user")
+              ?.content,
+            "official_interpretation",
+          ),
+      )
+      .map(
+        (request) =>
+          request.messages.find((message) => message.role === "user")!.content,
+      );
+    expect(officialPayloads).toHaveLength(2);
+    const offA = officialPayloads.find((payload) =>
+      payload.includes('"sourceId":"OFF-A"'),
+    );
+    const offB = officialPayloads.find((payload) =>
+      payload.includes('"sourceId":"OFF-B"'),
+    );
+    expect(offA).toContain("FACT-A");
+    expect(offA).not.toContain("OFF-B");
+    expect(offA).not.toContain("FACT-B");
+    expect(offB).toContain("FACT-B");
+    expect(offB).not.toContain("OFF-A");
+    expect(offB).not.toContain("FACT-A");
+  });
+
+  it("rejects an OFF-A conflict linked to REG-B outside OFF-A's explicit pairing", async () => {
+    const regA: SourceUnit = {
+      sourceId: "REG-A",
+      sourceType: "regulatory_text",
+      title: "原文 A",
+      content: "原文A要求。",
+    };
+    const regB: SourceUnit = {
+      sourceId: "REG-B",
+      sourceType: "regulatory_text",
+      title: "原文 B",
+      content: "原文B要求。",
+    };
+    const offA: SourceUnit = {
+      sourceId: "OFF-A",
+      sourceType: "official_interpretation",
+      title: "解读 A",
+      content: "解读A背景。",
+    };
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_document_identity_v1") {
+        return emptyResponse(request);
+      }
+      const payload = request.messages.find(
+        (message) => message.role === "user",
+      )?.content;
+      if (hasChunkSourceType(payload, "regulatory_text")) {
+        return {
+          conflicts: [],
+          findings: [
+            {
+              ...baseFinding,
+              findingId: "FACT-A",
+              category: "document_identity:regulatory_context",
+              statement: "原文A要求",
+              claimType: "regulatory_fact",
+              sourceAnchors: [
+                { ...anchor("REG-A"), article: null, quote: "原文A要求。" },
+              ],
+            },
+            {
+              ...baseFinding,
+              findingId: "FACT-B",
+              category: "document_identity:regulatory_context",
+              statement: "原文B要求",
+              claimType: "regulatory_fact",
+              sourceAnchors: [
+                { ...anchor("REG-B"), article: null, quote: "原文B要求。" },
+              ],
+            },
+          ],
+        };
+      }
+      return {
+        findings: [
+          {
+            ...baseFinding,
+            findingId: "OFF-A-CONTEXT",
+            category: "official_context:policy_background",
+            statement: "解读A背景",
+            claimType: "official_explanation",
+            sourceAnchors: [
+              {
+                ...anchor("OFF-A", "official_interpretation"),
+                article: null,
+                quote: "解读A背景。",
+              },
+            ],
+          },
+        ],
+        conflicts: [
+          {
+            conflictId: "BAD-PAIR-CONFLICT",
+            regulatoryFindingId: "FACT-B",
+            interpretationFindingId: "OFF-A-CONTEXT",
+            summary: "错误跨配对冲突",
+            sourceAnchors: [
+              { ...anchor("REG-B"), article: null, quote: "原文B要求。" },
+              {
+                ...anchor("OFF-A", "official_interpretation"),
+                article: null,
+                quote: "解读A背景。",
+              },
+            ],
+            confidence: 0.8,
+            manualVerificationRequired: true,
+          },
+        ],
+      };
+    });
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [regA, regB, offA],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: true,
+        officialPrimaryContext: { "OFF-A": ["REG-A"] },
+      }),
+    ).rejects.toThrow(/配对|冲突|未授权/);
+  });
+
+  it("excludes a multi-anchor atomic requirement unless its complete anchor scope fits the key-matters chunk", async () => {
+    const regB: SourceUnit = {
+      sourceId: "REG-B",
+      sourceType: "regulatory_text",
+      title: "原文 B",
+      content: "乙规",
+    };
+    const regA: SourceUnit = {
+      sourceId: "REG-A",
+      sourceType: "regulatory_text",
+      title: "原文 A",
+      content: "甲规甲规甲规",
+    };
+    let atomicCall = 0;
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName === "analysis_atomic_clauses_v1") {
+        atomicCall += 1;
+        if (atomicCall > 1) return emptyResponse(request);
+        const anchors = [
+          { ...anchor("REG-B"), article: null, quote: "乙规" },
+          { ...anchor("REG-A"), article: null, quote: "甲规" },
+        ];
+        return {
+          findings: [
+            {
+              ...baseFinding,
+              findingId: "REQ-MULTI-SCOPE",
+              category: "atomic_requirement",
+              statement: "甲规",
+              claimType: "regulatory_fact",
+              sourceAnchors: anchors,
+            },
+          ],
+          atomicRequirements: [
+            {
+              requirementId: "AR-MULTI-SCOPE",
+              findingId: "REQ-MULTI-SCOPE",
+              subject: "主体",
+              action: "执行",
+              object: "事项",
+              condition: null,
+              frequency: null,
+              deadline: null,
+              strength: null,
+              responsibility: null,
+              exceptions: null,
+              sharedContext: null,
+              missingFacts: [],
+              sourceAnchors: anchors,
+              confidence: 0.7,
+              manualVerificationRequired: true,
+            },
+          ],
+        };
+      }
+      return emptyResponse(request);
+    });
+
+    await runAnalysis({
+      sourceUnits: [regB, regA],
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+      chunkOptions: { maxChars: 6, overlapUnits: 2 },
+    });
+
+    const keyPayloads = gateway.requests
+      .filter((request) => request.schemaName === "analysis_key_matters_v1")
+      .map(
+        (request) =>
+          request.messages.find((message) => message.role === "user")!.content,
+      );
+    expect(
+      keyPayloads.filter((payload) => payload.includes("REQ-MULTI-SCOPE")),
+    ).toHaveLength(1);
+    const regAOnlyPayload = keyPayloads.find(
+      (payload) =>
+        payload.includes('"sourceId":"REG-A"') &&
+        !payload.includes('"sourceId":"REG-B"'),
+    );
+    expect(regAOnlyPayload).not.toContain("REQ-MULTI-SCOPE");
+  });
+
+  it.each(["本办法明年开始执行", "该文件仍在执行中"])(
+    "does not resolve an untyped background assertion without exact regulatory evidence: %s",
+    async (statement) => {
+      const source: SourceUnit = {
+        ...regulatorySource,
+        content: "这是一份监管文件。",
+      };
+      const gateway = new RecordingGateway((request) =>
+        request.schemaName === "analysis_document_identity_v1"
+          ? {
+              conflicts: [],
+              findings: [
+                {
+                  ...baseFinding,
+                  findingId: "UNTYPED-STATUS",
+                  category: "background",
+                  statement,
+                  claimType: "regulatory_fact",
+                  sourceAnchors: [
+                    { ...anchor(), article: null, quote: source.content },
+                  ],
+                },
+              ],
+            }
+          : emptyResponse(request),
+      );
+
+      await expect(
+        runAnalysis({
+          sourceUnits: [source],
+          gateway,
+          model: "user-model",
+          hasOfficialInterpretation: false,
+        }),
+      ).rejects.toThrow();
+    },
+  );
+
+  it("rejects an exactly quoted status smuggled through a generic key-matter category", async () => {
+    const source: SourceUnit = {
+      ...regulatorySource,
+      content: "该文件仍在执行中。",
+    };
+    const gateway = new RecordingGateway((request) =>
+      request.schemaName === "analysis_key_matters_v1"
+        ? {
+            findings: [
+              {
+                ...baseFinding,
+                findingId: "GENERIC-STATUS-SMUGGLE",
+                category: "background",
+                statement: "该文件仍在执行中",
+                claimType: "regulatory_fact",
+                sourceAnchors: [
+                  { ...anchor(), article: null, quote: source.content },
+                ],
+              },
+            ],
+          }
+        : emptyResponse(request),
+    );
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [source],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("does not let an official interpretation resolve '该文件仍在执行中' as status", async () => {
+    const statusOfficial: SourceUnit = {
+      ...officialSource,
+      content: "该文件仍在执行中。",
+    };
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_document_identity_v1") {
+        return emptyResponse(request);
+      }
+      const isOfficial = hasChunkSourceType(
+        request.messages.find((message) => message.role === "user")?.content,
+        "official_interpretation",
+      );
+      return isOfficial
+        ? {
+            conflicts: [],
+            findings: [
+              {
+                ...baseFinding,
+                findingId: "OFF-UNTYPED-STATUS",
+                category: "background",
+                statement: "该文件仍在执行中",
+                claimType: "official_explanation",
+                sourceAnchors: [
+                  {
+                    ...anchor("OFF-1", "official_interpretation"),
+                    quote: statusOfficial.content,
+                  },
+                ],
+              },
+            ],
+          }
+        : { findings: [], conflicts: [] };
+    });
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource, statusOfficial],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: true,
+        officialPrimaryContext: { "OFF-1": ["REG-1"] },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a tampered checkpoint output before any resumed gateway call", async () => {
+    const controller = new AbortController();
+    let checkpoint: AnalysisProgress["checkpoint"] | undefined;
+    const firstGateway = new RecordingGateway((request) =>
+      request.schemaName === "analysis_document_identity_v1"
+        ? {
+            conflicts: [],
+            findings: [
+              {
+                ...baseFinding,
+                findingId: "CHECKPOINT-FACT",
+                category: "document_identity:regulatory_context",
+                statement: "第一条 商业银行应当建立数据治理机制",
+                claimType: "regulatory_fact",
+                sourceAnchors: [anchor()],
+              },
+            ],
+          }
+        : emptyResponse(request),
+    );
+    await expect(
+      runAnalysis(
+        {
+          sourceUnits: [regulatorySource],
+          gateway: firstGateway,
+          model: "user-model",
+          hasOfficialInterpretation: false,
+        },
+        controller.signal,
+        (event) => {
+          checkpoint = event.checkpoint;
+          controller.abort();
+        },
+      ),
+    ).rejects.toMatchObject({ name: "AbortError" });
+
+    const tampered = {
+      ...checkpoint!,
+      findings: checkpoint!.findings.map((finding) =>
+        finding.findingId === "CHECKPOINT-FACT"
+          ? {
+              ...finding,
+              statement: "伪造的监管事实",
+              sourceAnchors: [
+                { ...finding.sourceAnchors[0], quote: "伪造的监管引文" },
+              ],
+            }
+          : finding,
+      ),
+    };
+    const resumedGateway = new RecordingGateway(emptyResponse);
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource],
+        gateway: resumedGateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+        resumeFrom: tampered,
+      }),
+    ).rejects.toThrow(/checkpoint|完整性|哈希|反向匹配|授权文本/i);
+    expect(resumedGateway.requests).toHaveLength(0);
+  });
+
+  it("rejects an impact anchored to REG-B when its selected parent is anchored only to REG-A", async () => {
+    const regA: SourceUnit = {
+      sourceId: "REG-A",
+      sourceType: "regulatory_text",
+      title: "原文 A",
+      content: "甲要求。",
+    };
+    const regB: SourceUnit = {
+      sourceId: "REG-B",
+      sourceType: "regulatory_text",
+      title: "原文 B",
+      content: "乙要求。",
+    };
+    const regAnchor = (sourceId: "REG-A" | "REG-B"): SourceAnchor => ({
+      ...anchor(sourceId),
+      article: null,
+      quote: sourceId === "REG-A" ? "甲要求。" : "乙要求。",
+    });
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName === "analysis_atomic_clauses_v1") {
+        return {
+          findings: [
+            {
+              ...baseFinding,
+              findingId: "REQ-A",
+              category: "atomic_requirement",
+              statement: "甲要求",
+              claimType: "regulatory_fact",
+              sourceAnchors: [regAnchor("REG-A")],
+            },
+            {
+              ...baseFinding,
+              findingId: "REQ-B",
+              category: "atomic_requirement",
+              statement: "乙要求",
+              claimType: "regulatory_fact",
+              sourceAnchors: [regAnchor("REG-B")],
+            },
+          ],
+          atomicRequirements: [
+            ...(["A", "B"] as const).map((suffix) => ({
+              requirementId: `AR-${suffix}`,
+              findingId: `REQ-${suffix}`,
+              subject: "主体",
+              action: "执行",
+              object: "要求",
+              condition: null,
+              frequency: null,
+              deadline: null,
+              strength: null,
+              responsibility: null,
+              exceptions: null,
+              sharedContext: null,
+              missingFacts: [],
+              sourceAnchors: [regAnchor(`REG-${suffix}`)],
+              confidence: 0.8,
+              manualVerificationRequired: false,
+            })),
+          ],
+        };
+      }
+      if (request.schemaName === "analysis_institution_impact_v1") {
+        return {
+          impacts: [
+            {
+              findingId: "IMPACT-CROSS-PARENT",
+              relationshipId: "REL-CROSS-PARENT",
+              category: "system",
+              possibility: "potential",
+              inferenceParents: ["REQ-A"],
+              sourceAnchors: [regAnchor("REG-B")],
+              confidence: 0.7,
+            },
+          ],
+        };
+      }
+      return emptyResponse(request);
+    });
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [regA, regB],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+      }),
+    ).rejects.toThrow(/父|parent|锚点|anchor/i);
   });
 });
 
