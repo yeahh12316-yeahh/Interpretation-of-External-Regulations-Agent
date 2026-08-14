@@ -1,6 +1,6 @@
 import type { Finding } from "../../domain/finding";
 import type { Project } from "../../domain/project";
-import type { SourceType } from "../../domain/source";
+import type { SourceType, SourceUnit } from "../../domain/source";
 import {
   hasPassedQualityGate,
   type QualityMetrics,
@@ -16,6 +16,8 @@ import {
 } from "./validate-finding";
 
 export interface SourceParseOutcome {
+  fileHash: string;
+  source: SourceUnit;
   sourceId: string;
   sourceType: SourceType;
   pageCount: number | null;
@@ -23,6 +25,8 @@ export interface SourceParseOutcome {
   failedPages: readonly { page: number; error: string }[];
   failedPageCount: number;
   parsedUnitCount: number;
+  totalCharacters: number;
+  orderedUnitDigest: string;
   ocrFailedPages: readonly number[];
   finalizationBlocked: boolean;
   extractionCoverage: number;
@@ -32,8 +36,7 @@ export interface SourceParseOutcome {
 /** Task 9 can pass this session boundary without expanding the strict Project schema. */
 export interface AnalysisEvidenceSession {
   project: Project;
-  parsedUnits: readonly ParsedSourceUnit[];
-  parseOutcomes: readonly SourceParseOutcome[];
+  parseResults: readonly ParseResult[];
   officialPrimarySourceIds?: OfficialPrimarySourceIds;
   atomicRequirements?: readonly AtomicRequirement[];
   reviewAudits?: readonly ReviewAudit[];
@@ -62,17 +65,26 @@ const stableValue = (value: unknown): string => {
 };
 
 export const reviewSnapshotHash = (finding: Finding): string => {
+  return stableDigest(finding);
+};
+
+const stableDigest = (value: unknown): string => {
   let hash = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(stableValue(finding))) {
+  for (const byte of new TextEncoder().encode(stableValue(value))) {
     hash ^= BigInt(byte);
     hash = BigInt.asUintN(64, hash * 0x100000001b3n);
   }
   return `fnv1a64:${hash.toString(16).padStart(16, "0")}`;
 };
 
+export const orderedUnitDigest = (units: readonly ParsedSourceUnit[]): string =>
+  stableDigest(units);
+
 export const parseOutcomeFromResult = (
   result: ParseResult,
 ): SourceParseOutcome => ({
+  fileHash: result.fileHash,
+  source: result.source,
   sourceId: result.source.sourceId,
   sourceType: result.source.sourceType,
   pageCount: result.pageCount,
@@ -80,6 +92,8 @@ export const parseOutcomeFromResult = (
   failedPages: result.failedPages,
   failedPageCount: result.quality.failedPageCount,
   parsedUnitCount: result.quality.parsedUnitCount,
+  totalCharacters: result.quality.totalCharacters,
+  orderedUnitDigest: orderedUnitDigest(result.units),
   ocrFailedPages: result.quality.ocrFailedPages,
   finalizationBlocked: result.quality.finalizationBlocked,
   extractionCoverage: result.quality.extractionCoverage,
@@ -117,8 +131,34 @@ const isValidReviewAudit = (finding: Finding, audit: ReviewAudit): boolean =>
   audit.beforeHash === reviewSnapshotHash(audit.beforeSnapshot) &&
   audit.afterHash === reviewSnapshotHash(audit.afterSnapshot) &&
   audit.beforeHash !== audit.afterHash &&
-  stableValue(audit.beforeSnapshot) !== stableValue(audit.afterSnapshot) &&
-  stableValue(audit.afterSnapshot) === stableValue(finding);
+  stableValue(audit.beforeSnapshot) !== stableValue(audit.afterSnapshot);
+
+const isValidReviewAuditChain = (
+  finding: Finding,
+  audits: readonly ReviewAudit[],
+): boolean => {
+  if (
+    audits.length === 0 ||
+    !audits.every((audit) => isValidReviewAudit(finding, audit))
+  ) {
+    return false;
+  }
+  for (let index = 0; index < audits.length; index += 1) {
+    if (
+      index > 0 &&
+      (Date.parse(audits[index - 1].reviewedAt) >=
+        Date.parse(audits[index].reviewedAt) ||
+        stableValue(audits[index - 1].afterSnapshot) !==
+          stableValue(audits[index].beforeSnapshot))
+    ) {
+      return false;
+    }
+  }
+  return (
+    stableValue(audits[audits.length - 1].afterSnapshot) ===
+    stableValue(finding)
+  );
+};
 
 const isReviewed = (
   finding: Finding,
@@ -127,7 +167,7 @@ const isReviewed = (
   if (finding.reviewStatus === "confirmed") return true;
   if (finding.reviewStatus === "modified") {
     const audits = auditsByFindingId.get(finding.findingId) ?? [];
-    return audits.length === 1 && isValidReviewAudit(finding, audits[0]);
+    return isValidReviewAuditChain(finding, audits);
   }
   if (!hasValidRevisionHistory(finding)) return false;
   return finding.reviewStatus === "deleted";
@@ -317,6 +357,10 @@ const parsingEvidenceComplete = (
     const outcome = outcomeById.get(source.sourceId);
     if (
       !outcome ||
+      typeof outcome.fileHash !== "string" ||
+      !/^[0-9a-f]{64}$/iu.test(outcome.fileHash) ||
+      !outcome.source ||
+      stableValue(outcome.source) !== stableValue(source) ||
       typeof outcome.sourceId !== "string" ||
       outcome.sourceId.length === 0 ||
       outcome.sourceType !== source.sourceType ||
@@ -328,6 +372,9 @@ const parsingEvidenceComplete = (
       outcome.failedPageCount < 0 ||
       !Number.isInteger(outcome.parsedUnitCount) ||
       outcome.parsedUnitCount < 0 ||
+      !Number.isInteger(outcome.totalCharacters) ||
+      outcome.totalCharacters < 0 ||
+      typeof outcome.orderedUnitDigest !== "string" ||
       typeof outcome.finalizationBlocked !== "boolean" ||
       !Number.isFinite(outcome.extractionCoverage) ||
       (outcome.pageCount !== null && !Number.isInteger(outcome.pageCount))
@@ -339,15 +386,25 @@ const parsingEvidenceComplete = (
         unit.sourceId === source.sourceId &&
         unit.sourceType === source.sourceType,
     );
-    const outcomeUnitKeys = outcome.units.map(stableValue).sort();
-    const sessionUnitKeys = sourceUnits.map(stableValue).sort();
+    const outcomeUnitKeys = outcome.units.map(stableValue);
+    const sessionUnitKeys = sourceUnits.map(stableValue);
+    const reconstructedContent = outcome.units
+      .map((unit) => unit.text.trim())
+      .filter(Boolean)
+      .join("\n\n")
+      .replace(/\r\n?/gu, "\n")
+      .trim();
+    const authoritativeContent = source.content.replace(/\r\n?/gu, "\n").trim();
     if (
       outcome.finalizationBlocked !== false ||
       outcome.failedPages.length > 0 ||
       outcome.failedPageCount !== outcome.failedPages.length ||
       outcome.parsedUnitCount !== outcome.units.length ||
       outcome.parsedUnitCount !== sourceUnits.length ||
+      outcome.totalCharacters !== source.content.length ||
+      outcome.orderedUnitDigest !== orderedUnitDigest(outcome.units) ||
       outcomeUnitKeys.join("\u0000") !== sessionUnitKeys.join("\u0000") ||
+      reconstructedContent !== authoritativeContent ||
       outcome.units.some(
         (unit) =>
           unit.sourceId !== source.sourceId ||
@@ -443,24 +500,54 @@ export function canFinalize(
   );
 }
 
+const evidenceFromSession = (
+  session: AnalysisEvidenceSession,
+): {
+  parsedUnits: readonly ParsedSourceUnit[] | undefined;
+  parseOutcomes: readonly SourceParseOutcome[] | undefined;
+} => {
+  if (
+    !Array.isArray(session.parseResults) ||
+    session.parseResults.some(
+      (result) =>
+        !result ||
+        !result.source ||
+        !Array.isArray(result.units) ||
+        !result.quality,
+    )
+  ) {
+    return { parsedUnits: undefined, parseOutcomes: undefined };
+  }
+  return {
+    parsedUnits: session.parseResults.flatMap(({ units }) => units),
+    parseOutcomes: session.parseResults.map(parseOutcomeFromResult),
+  };
+};
+
 export const calculateSessionQuality = (
   session: AnalysisEvidenceSession,
-): QualityMetrics =>
-  calculateQuality(
+): QualityMetrics => {
+  const { parsedUnits, parseOutcomes } = evidenceFromSession(session);
+  return calculateQuality(
     session.project,
-    session.parsedUnits,
-    session.parseOutcomes,
+    parsedUnits,
+    parseOutcomes,
     session.officialPrimarySourceIds,
     session.atomicRequirements,
     session.reviewAudits,
   );
+};
 
-export const canFinalizeSession = (session: AnalysisEvidenceSession): boolean =>
-  canFinalize(
+export const canFinalizeSession = (
+  session: AnalysisEvidenceSession,
+): boolean => {
+  const { parsedUnits, parseOutcomes } = evidenceFromSession(session);
+  return canFinalize(
     session.project,
-    session.parsedUnits,
-    session.parseOutcomes,
+    parsedUnits,
+    parseOutcomes,
     session.officialPrimarySourceIds,
     session.atomicRequirements,
     session.reviewAudits,
   );
+};

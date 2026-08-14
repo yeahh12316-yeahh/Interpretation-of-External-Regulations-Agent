@@ -238,15 +238,15 @@ const currencyExponent = (unit: string): number | undefined =>
     万亿元: 12,
   })[unit];
 
-interface NumberMatch {
+interface ProtectedMatch {
   start: number;
   end: number;
   token: string;
 }
 
-export const extractNumbers = (value: string): string[] => {
+const numberMatches = (value: string): ProtectedMatch[] => {
   const normalized = value.normalize("NFKC");
-  const matches: NumberMatch[] = [];
+  const matches: ProtectedMatch[] = [];
   const overlaps = (start: number, end: number) =>
     matches.some((item) => start < item.end && end > item.start);
   const add = (match: RegExpMatchArray, token: string | null) => {
@@ -306,53 +306,136 @@ export const extractNumbers = (value: string): string[] => {
     add(match, normalizedDecimal(match[0]));
   }
 
-  return unique(
-    matches
-      .sort((left, right) => left.start - right.start)
-      .map(({ token }) => token),
-  );
+  return matches.sort((left, right) => left.start - right.start);
 };
 
-const NON_MODAL_COMPOUNDS =
-  /响应|供应|适应|对应|相应|应用|应急|应对|应付|应邀|应聘|应答|应验|反应/gu;
+export const extractNumbers = (value: string): string[] =>
+  numberMatches(value).map(({ token }) => token);
 
-export const extractModalTerms = (value: string): string[] => {
+const FREE_PROSE_MODAL_PATTERN = /严禁|不得|禁止|必须|应当|可以|不应|宜/gu;
+
+export const extractModalTerms = (value: string): string[] =>
+  value.normalize("NFKC").match(FREE_PROSE_MODAL_PATTERN) ?? [];
+
+const canonicalModal = (term: string): string | null =>
+  ({
+    可以: "can",
+    宜: "recommend",
+    应: "should",
+    应当: "should",
+    须: "must",
+    必须: "must",
+    不应: "should_not",
+    不得: "must_not",
+    禁止: "prohibit",
+    严禁: "strict_prohibit",
+  })[term] ?? null;
+
+export const canonicalAtomicStrength = (strength: string): string | null =>
+  canonicalModal(strength.normalize("NFKC").trim());
+
+const dateMatches = (value: string): ProtectedMatch[] => {
   const normalized = value.normalize("NFKC");
-  const excluded = [...normalized.matchAll(NON_MODAL_COMPOUNDS)].map(
-    (match) => [match.index, match.index + match[0].length] as const,
+  const matches: ProtectedMatch[] = [];
+  const add = (match: RegExpMatchArray, token: string | null) => {
+    const start = match.index ?? -1;
+    if (start < 0 || !token) return;
+    const end = start + match[0].length;
+    if (matches.some((item) => start < item.end && end > item.start)) return;
+    matches.push({ start, end, token });
+  };
+  const collect = (
+    pattern: RegExp,
+    convert: (match: RegExpMatchArray) => string | null,
+  ) => {
+    for (const match of normalized.matchAll(pattern))
+      add(match, convert(match));
+  };
+
+  collect(/\b(\d{4})[-/.](\d{1,2})[-/.](\d{1,2})\b/gu, (match) =>
+    dateToken(Number(match[1]), Number(match[2]), Number(match[3])),
   );
-  return [
-    ...normalized.matchAll(/严禁|不得|禁止|必须|应当|可以|不应|宜|须|应/gu),
-  ]
-    .filter(
-      (match) =>
-        !excluded.some(
-          ([start, end]) => match.index >= start && match.index < end,
-        ),
-    )
-    .map(([term]) => term);
+  collect(/(\d{4})年\s*(\d{1,2})月\s*(\d{1,2})日/gu, (match) =>
+    dateToken(Number(match[1]), Number(match[2]), Number(match[3])),
+  );
+  collect(
+    /([〇零一二三四五六七八九]{4})年\s*([〇零一二三四五六七八九十]{1,3})月\s*([〇零一二三四五六七八九十]{1,3})日/gu,
+    (match) => {
+      const year = chineseNumber(match[1]);
+      const month = chineseNumber(match[2]);
+      const day = chineseNumber(match[3]);
+      return year === null || month === null || day === null
+        ? null
+        : dateToken(year, month, day);
+    },
+  );
+  collect(/(\d{4})年\s*(\d{1,2})月/gu, (match) =>
+    dateToken(Number(match[1]), Number(match[2])),
+  );
+  collect(
+    /([〇零一二三四五六七八九]{4})年\s*([〇零一二三四五六七八九十]{1,3})月/gu,
+    (match) => {
+      const year = chineseNumber(match[1]);
+      const month = chineseNumber(match[2]);
+      return year === null || month === null ? null : dateToken(year, month);
+    },
+  );
+  collect(/\b(\d{4})年/gu, (match) => dateToken(Number(match[1])));
+  collect(/([〇零一二三四五六七八九]{4})年/gu, (match) => {
+    const year = chineseNumber(match[1]);
+    return year === null ? null : dateToken(year);
+  });
+  return matches.sort((left, right) => left.start - right.start);
+};
+
+const typedNumberToken = (token: string): string => {
+  if (token.endsWith("美元")) return `<AMOUNT:USD:${token.slice(0, -2)}> `;
+  if (token.endsWith("元")) return `<AMOUNT:CNY:${token.slice(0, -1)}> `;
+  if (token.endsWith("比例")) return `<RATIO:${token.slice(0, -2)}> `;
+  const count = token.match(/^(.+?)(项|个|次|笔|家|人|倍|年|月|日|条)$/u);
+  if (count) return `<COUNT:${count[2]}:${count[1]}> `;
+  return `<NUMBER:${token}> `;
 };
 
 export const protectedClaimSkeleton = (value: string): string => {
   const normalized = value.normalize("NFKC");
-  const datePattern =
-    /(?:\d{4}[-/.年]\s*\d{1,2}[-/.月]\s*\d{1,2}日?|[〇零一二三四五六七八九]{4}年\s*[〇零一二三四五六七八九十]{1,3}月\s*[〇零一二三四五六七八九十]{1,3}日)/gu;
-  const ratioPattern = new RegExp(
-    `(?:百分之|千分之)\\s*${VALUE_PATTERN}`,
-    "gu",
+  const dates = dateMatches(normalized);
+  const numbers = numberMatches(normalized).filter(
+    (number) =>
+      !dates.some((date) => number.start < date.end && number.end > date.start),
   );
-  const unitPattern = new RegExp(
-    `${VALUE_PATTERN}\\s*(?:${NUMBER_UNIT})`,
-    "gu",
-  );
-  return normalizeText(
-    normalized
-      .replace(datePattern, "¤日期¤")
-      .replace(ratioPattern, "¤数值¤")
-      .replace(unitPattern, "¤数值¤")
-      .replace(/\d+(?:,\d{3})*(?:\.\d+)?/gu, "¤数值¤")
-      .replace(/严禁|不得|禁止|必须|应当|可以|不应|宜|须|应/gu, "¤模态¤"),
-  );
+  const modals: ProtectedMatch[] = [
+    ...normalized.matchAll(FREE_PROSE_MODAL_PATTERN),
+  ].flatMap((match) => {
+    const modal = canonicalModal(match[0]);
+    return modal === null
+      ? []
+      : [
+          {
+            start: match.index,
+            end: match.index + match[0].length,
+            token: `<MODAL:${modal}> `,
+          },
+        ];
+  });
+  const occurrences = [
+    ...dates.map((match) => ({ ...match, token: `<DATE:${match.token}> ` })),
+    ...numbers.map((match) => ({
+      ...match,
+      token: typedNumberToken(match.token),
+    })),
+    ...modals,
+  ].sort((left, right) => left.start - right.start || right.end - left.end);
+
+  let cursor = 0;
+  const parts: string[] = [];
+  for (const occurrence of occurrences) {
+    if (occurrence.start < cursor) continue;
+    parts.push(normalized.slice(cursor, occurrence.start), occurrence.token);
+    cursor = occurrence.end;
+  }
+  parts.push(normalized.slice(cursor));
+  return normalizeText(parts.join(""));
 };
 
 export interface TextRange {

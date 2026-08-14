@@ -20,7 +20,7 @@ const source = {
   sourceType: "regulatory_text" as const,
   title: "合成监管文件",
   content:
-    "第一页 合成首页。\n第二页 合成中页。\n第十条 金融机构必须完成年度复核。",
+    "第一页 合成首页。\n\n第二页 合成中页。\n\n第十条 金融机构必须完成年度复核。",
 };
 
 const pageUnits: ParsedSourceUnit[] = [
@@ -57,23 +57,30 @@ const pageUnits: ParsedSourceUnit[] = [
 ];
 const unit = pageUnits[2];
 
-const completeOutcome = {
-  sourceId: "REG-1",
-  sourceType: "regulatory_text" as const,
+const completeParseResult: ParseResult = {
+  fileHash: "a".repeat(64),
+  source,
   pageCount: 3,
   successfulPages: [1, 2, 3],
-  failedPages: [] as Array<{ page: number; error: string }>,
-  failedPageCount: 0,
-  parsedUnitCount: 3,
-  ocrFailedPages: [] as number[],
-  finalizationBlocked: false,
-  extractionCoverage: 1,
+  failedPages: [],
   units: pageUnits,
+  ocrReviews: [],
+  anchors: [],
+  quality: {
+    totalCharacters: source.content.length,
+    parsedUnitCount: 3,
+    failedPageCount: 0,
+    lowTextPages: [],
+    ocrFailedPages: [],
+    finalizationBlocked: false,
+    extractionCoverage: 1,
+  },
 };
+const completeOutcome = parseOutcomeFromResult(completeParseResult);
 
 const fact: Finding = {
   findingId: "FACT-1",
-  category: "atomic_requirement",
+  category: "key_matter:core_requirement",
   statement: "金融机构必须完成年度复核。",
   claimType: "regulatory_fact",
   sourceAnchors: [
@@ -130,11 +137,7 @@ describe("calculateQuality", () => {
       requiredReviewCompletionRate: 1,
     });
     expect(canFinalize(project(), pageUnits, [completeOutcome])).toBe(true);
-    const session = {
-      project: project(),
-      parsedUnits: pageUnits,
-      parseOutcomes: [completeOutcome],
-    };
+    const session = { project: project(), parseResults: [completeParseResult] };
     expect(calculateSessionQuality(session)).toEqual(
       calculateQuality(project(), pageUnits, [completeOutcome]),
     );
@@ -142,27 +145,112 @@ describe("calculateQuality", () => {
   });
 
   test("adapts the Task 4 parse result into the strict evidence session boundary", () => {
-    const parseResult: ParseResult = {
-      fileHash: "synthetic-sha256",
+    const outcome = parseOutcomeFromResult(completeParseResult);
+    expect(outcome).toMatchObject({
+      fileHash: "a".repeat(64),
       source,
+      sourceId: "REG-1",
+      sourceType: "regulatory_text",
       pageCount: 3,
       successfulPages: [1, 2, 3],
       failedPages: [],
+      failedPageCount: 0,
+      parsedUnitCount: 3,
+      totalCharacters: source.content.length,
+      ocrFailedPages: [],
+      finalizationBlocked: false,
+      extractionCoverage: 1,
       units: pageUnits,
-      ocrReviews: [],
-      anchors: fact.sourceAnchors,
+    });
+    expect(outcome.orderedUnitDigest).toMatch(/^fnv1a64:[0-9a-f]{16}$/u);
+    expect(
+      parseOutcomeFromResult({
+        ...completeParseResult,
+        units: [...pageUnits].reverse(),
+      }).orderedUnitDigest,
+    ).not.toBe(outcome.orderedUnitDigest);
+  });
+
+  test("rejects omitted, reordered, or duplicated paragraphs on the same successful page", () => {
+    const samePageSource = {
+      sourceId: "REG-SAME-PAGE",
+      sourceType: "regulatory_text" as const,
+      title: "合成同页双段文件.pdf",
+      content: "第一段说明适用主体。\n\n第二段说明办理流程。",
+    };
+    const samePageUnits: ParsedSourceUnit[] = [
+      {
+        sourceId: samePageSource.sourceId,
+        sourceType: samePageSource.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 0,
+        text: "第一段说明适用主体。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: samePageSource.sourceId,
+        sourceType: samePageSource.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 1,
+        text: "第二段说明办理流程。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const samePageFinding: Finding = {
+      ...fact,
+      statement: samePageUnits[1].text,
+      sourceAnchors: [
+        {
+          sourceId: samePageSource.sourceId,
+          sourceType: samePageSource.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 1,
+          quote: samePageUnits[1].text,
+        },
+      ],
+    };
+    const samePageProject: Project = {
+      ...project([samePageFinding]),
+      sourceUnits: [samePageSource],
+    };
+    const samePageResult: ParseResult = {
+      ...completeParseResult,
+      fileHash: "b".repeat(64),
+      source: samePageSource,
+      pageCount: 1,
+      successfulPages: [1],
+      units: samePageUnits,
+      anchors: samePageFinding.sourceAnchors,
       quality: {
-        totalCharacters: source.content.length,
-        parsedUnitCount: 3,
-        failedPageCount: 0,
-        lowTextPages: [],
-        ocrFailedPages: [],
-        finalizationBlocked: false,
-        extractionCoverage: 1,
+        ...completeParseResult.quality,
+        totalCharacters: samePageSource.content.length,
+        parsedUnitCount: 2,
       },
     };
 
-    expect(parseOutcomeFromResult(parseResult)).toEqual(completeOutcome);
+    expect(
+      canFinalizeSession({
+        project: samePageProject,
+        parseResults: [samePageResult],
+      }),
+    ).toBe(true);
+    for (const units of [
+      [samePageUnits[0]],
+      [...samePageUnits].reverse(),
+      [samePageUnits[0], samePageUnits[0], samePageUnits[1]],
+    ]) {
+      expect(
+        canFinalizeSession({
+          project: samePageProject,
+          parseResults: [{ ...samePageResult, units }],
+        }),
+      ).toBe(false);
+    }
   });
 
   test("requires a complete parse outcome for every source instead of trusting parsingCompleted", () => {
@@ -219,6 +307,19 @@ describe("calculateQuality", () => {
     expect(metrics.citationReverseCheckRate).toBe(0);
     expect(metrics.unsupportedFindingCount).toBeGreaterThan(0);
     expect(canFinalize(project(), undefined)).toBe(false);
+  });
+
+  test("fails closed instead of throwing when imported session parse results are absent", () => {
+    const malformedSession = {
+      project: project(),
+      parseResults: undefined,
+    } as unknown as Parameters<typeof calculateSessionQuality>[0];
+
+    expect(() => calculateSessionQuality(malformedSession)).not.toThrow();
+    expect(
+      calculateSessionQuality(malformedSession).citationReverseCheckRate,
+    ).toBe(0);
+    expect(canFinalizeSession(malformedSession)).toBe(false);
   });
 
   test("requires parsing completion and complete parsed source coverage", () => {
@@ -290,25 +391,95 @@ describe("calculateQuality", () => {
       ...project([docxFinding]),
       sourceUnits: [docxSource],
     };
-    const docxOutcome: SourceParseOutcome = {
-      sourceId: docxSource.sourceId,
-      sourceType: docxSource.sourceType,
+    const docxOutcome: SourceParseOutcome = parseOutcomeFromResult({
+      ...completeParseResult,
+      fileHash: "c".repeat(64),
+      source: docxSource,
       pageCount: null,
       successfulPages: [],
       failedPages: [],
-      failedPageCount: 0,
-      parsedUnitCount: 1,
-      ocrFailedPages: [],
-      finalizationBlocked: false,
-      extractionCoverage: 1,
       units: [docxUnit],
-    };
+      anchors: docxFinding.sourceAnchors,
+      quality: {
+        ...completeParseResult.quality,
+        totalCharacters: docxSource.content.length,
+        parsedUnitCount: 1,
+      },
+    });
 
     expect(canFinalize(docxProject, [docxUnit], [docxOutcome])).toBe(true);
     expect(
       canFinalize(docxProject, [{ ...docxUnit, page: 1 }], [docxOutcome]),
     ).toBe(false);
   });
+
+  test.each([
+    { method: "docx_xml" as const, page: null, pageCount: null },
+    { method: "plain_text" as const, page: null, pageCount: null },
+    { method: "ocr" as const, page: 1, pageCount: 1 },
+  ])(
+    "accepts a complete $method Task 4 ParseResult without inventing page semantics",
+    ({ method, page, pageCount }) => {
+      const formatSource = {
+        sourceId: `REG-${method}`,
+        sourceType: "regulatory_text" as const,
+        title: `合成${method}监管材料`,
+        content: "机构必须留存完整记录。",
+      };
+      const formatUnit: ParsedSourceUnit = {
+        sourceId: formatSource.sourceId,
+        sourceType: formatSource.sourceType,
+        page,
+        article: null,
+        paragraphIndex: 0,
+        text: formatSource.content,
+        extractionMethod: method,
+        confidence: 1,
+        ...(method === "ocr"
+          ? { reviewStatus: "corrected" as const, lowConfidenceCharacters: [] }
+          : {}),
+      };
+      const formatFinding: Finding = {
+        ...fact,
+        statement: formatSource.content,
+        sourceAnchors: [
+          {
+            sourceId: formatSource.sourceId,
+            sourceType: formatSource.sourceType,
+            page,
+            article: null,
+            paragraphIndex: 0,
+            quote: formatSource.content,
+          },
+        ],
+      };
+      const formatProject: Project = {
+        ...project([formatFinding]),
+        sourceUnits: [formatSource],
+      };
+      const formatResult: ParseResult = {
+        ...completeParseResult,
+        fileHash: method === "docx_xml" ? "d".repeat(64) : "e".repeat(64),
+        source: formatSource,
+        pageCount,
+        successfulPages: page === null ? [] : [page],
+        units: [formatUnit],
+        anchors: formatFinding.sourceAnchors,
+        quality: {
+          ...completeParseResult.quality,
+          totalCharacters: formatSource.content.length,
+          parsedUnitCount: 1,
+        },
+      };
+
+      expect(
+        canFinalizeSession({
+          project: formatProject,
+          parseResults: [formatResult],
+        }),
+      ).toBe(true);
+    },
+  );
 
   test("blocks unresolved low-confidence OCR evidence", () => {
     const ocrUnits: ParsedSourceUnit[] = [
@@ -414,12 +585,24 @@ describe("calculateQuality", () => {
     ).toBe(0);
   });
 
-  test("accepts only a structured review audit whose hashes and after snapshot match the finding", () => {
+  test("accepts an append-only structured review audit chain and rejects gaps, reorder, forks, or tamper", () => {
     const before: Finding = {
       ...fact,
       statement: "金融机构应当完成年度复核。",
       reviewStatus: "unreviewed",
       revisionRecords: [],
+    };
+    const middle: Finding = {
+      ...fact,
+      statement: "金融机构应当完成年度复核并留痕。",
+      reviewStatus: "modified",
+      revisionRecords: [
+        {
+          revisedBy: "reviewer-1",
+          revisedAt: "2026-08-14T08:00:00.000Z",
+          changeSummary: "首次人工复核。",
+        },
+      ],
     };
     const after: Finding = {
       ...fact,
@@ -427,26 +610,35 @@ describe("calculateQuality", () => {
       revisionRecords: [
         {
           revisedBy: "reviewer-1",
-          revisedAt: "2026-08-14T08:00:00.000Z",
-          changeSummary: "人工复核后修改。",
+          revisedAt: "2026-08-14T09:00:00.000Z",
+          changeSummary: "二次人工复核。",
         },
       ],
     };
-    const audit: ReviewAudit = {
-      findingId: after.findingId,
+    const firstAudit: ReviewAudit = {
+      findingId: middle.findingId,
       beforeSnapshot: before,
       beforeHash: reviewSnapshotHash(before),
+      afterSnapshot: middle,
+      afterHash: reviewSnapshotHash(middle),
+      reason: "首次补充留痕要求。",
+      reviewer: "reviewer-1",
+      reviewedAt: "2026-08-14T08:00:00.000Z",
+    };
+    const secondAudit: ReviewAudit = {
+      findingId: after.findingId,
+      beforeSnapshot: middle,
+      beforeHash: reviewSnapshotHash(middle),
       afterSnapshot: after,
       afterHash: reviewSnapshotHash(after),
       reason: "依据权威原文纠正模态强度。",
       reviewer: "reviewer-1",
-      reviewedAt: "2026-08-14T08:00:00.000Z",
+      reviewedAt: "2026-08-14T09:00:00.000Z",
     };
     const session = {
       project: project([after]),
-      parsedUnits: pageUnits,
-      parseOutcomes: [completeOutcome],
-      reviewAudits: [audit],
+      parseResults: [completeParseResult],
+      reviewAudits: [firstAudit, secondAudit],
     };
     expect(calculateSessionQuality(session).requiredReviewCompletionRate).toBe(
       1,
@@ -454,19 +646,45 @@ describe("calculateQuality", () => {
     expect(canFinalizeSession(session)).toBe(true);
 
     const wrongAfter = {
-      ...audit,
+      ...secondAudit,
       afterSnapshot: { ...after, statement: "被篡改的结论。" },
     };
     expect(
-      calculateSessionQuality({ ...session, reviewAudits: [wrongAfter] })
-        .requiredReviewCompletionRate,
+      calculateSessionQuality({
+        ...session,
+        reviewAudits: [firstAudit, wrongAfter],
+      }).requiredReviewCompletionRate,
     ).toBe(0);
     expect(
       calculateSessionQuality({
         ...session,
-        reviewAudits: [{ ...audit, beforeHash: audit.afterHash }],
+        reviewAudits: [
+          firstAudit,
+          { ...secondAudit, beforeHash: secondAudit.afterHash },
+        ],
       }).requiredReviewCompletionRate,
     ).toBe(0);
+    const gap = {
+      ...secondAudit,
+      beforeSnapshot: before,
+      beforeHash: reviewSnapshotHash(before),
+    };
+    const fork = {
+      ...secondAudit,
+      beforeSnapshot: { ...middle, statement: "分叉版本。" },
+      beforeHash: reviewSnapshotHash({ ...middle, statement: "分叉版本。" }),
+    };
+    for (const invalidAudits of [
+      [secondAudit, firstAudit],
+      [firstAudit, gap],
+      [firstAudit, fork],
+      [firstAudit, { ...secondAudit, reviewedAt: firstAudit.reviewedAt }],
+    ]) {
+      expect(
+        calculateSessionQuality({ ...session, reviewAudits: invalidAudits })
+          .requiredReviewCompletionRate,
+      ).toBe(0);
+    }
   });
 
   test("detects an institution-impact conclusion that is not marked as AI inference", () => {

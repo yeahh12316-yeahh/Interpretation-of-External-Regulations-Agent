@@ -149,12 +149,19 @@ describe("validateFinding", () => {
     expect(results.quote_match.passed).toBe(false);
   });
 
-  test("extracts amount units, Chinese dates, and the complete modal vocabulary", () => {
+  test("extracts ordered protected values and excludes ambiguous single-character prose modals", () => {
     expect(
       extractNumbers(
         "上限为１亿元，不是１万元，共十项，比例１０％，另有百分之十，误差千分之一点五。",
       ),
-    ).toEqual(["100000000元", "10000元", "10项", "0.1比例", "0.0015比例"]);
+    ).toEqual([
+      "100000000元",
+      "10000元",
+      "10项",
+      "0.1比例",
+      "0.1比例",
+      "0.0015比例",
+    ]);
     expect(extractNumbers("人民币一点五亿元")).toEqual(["150000000元"]);
     expect(extractNumbers("一万亿元与一百万元")).toEqual([
       "1000000000000元",
@@ -163,22 +170,88 @@ describe("validateFinding", () => {
     expect(extractDates("二〇二六年一月一日生效")).toContain("2026-01-01");
     expect(
       extractModalTerms("可以、宜、应、须、应当、必须、不得、禁止、严禁"),
-    ).toEqual([
-      "可以",
-      "宜",
-      "应",
-      "须",
-      "应当",
-      "必须",
-      "不得",
-      "禁止",
-      "严禁",
-    ]);
+    ).toEqual(["可以", "宜", "应当", "必须", "不得", "禁止", "严禁"]);
     expect(
       extractModalTerms(
-        "响应、供应、适应、对应、相应与应用均不是模态词；机构应建立制度，可以办理。",
+        "响应、供应、适应、对应、相应、应诉、应收、应变均不是模态词；机构应建立制度，可以办理。",
       ),
-    ).toEqual(["应", "可以"]);
+    ).toEqual(["可以"]);
+  });
+
+  test("rejects swapping protected values between clause subjects or changing multiplicity", () => {
+    const evidenceText =
+      "甲机构不得在2026年1月1日超过1亿元；乙机构可以在2027年1月1日超过1万元。";
+    const evidenceSource: SourceUnit = {
+      sourceId: "REG-ORDERED",
+      sourceType: "regulatory_text",
+      title: "合成顺序文件",
+      content: evidenceText,
+    };
+    const evidenceUnit: ParsedSourceUnit = {
+      sourceId: evidenceSource.sourceId,
+      sourceType: evidenceSource.sourceType,
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: evidenceText,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const swapped = finding({
+      statement:
+        "甲机构不得在2026年1月1日超过1万元；乙机构可以在2027年1月1日超过1亿元。",
+      sourceAnchors: [
+        {
+          sourceId: evidenceSource.sourceId,
+          sourceType: evidenceSource.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: evidenceText,
+        },
+      ],
+    });
+    const results = resultFor(
+      swapped,
+      createSourceIndex({
+        sources: [evidenceSource],
+        parsedUnits: [evidenceUnit],
+        findings: [swapped],
+      }),
+    );
+
+    expect(results.modal_strength.passed).toBe(false);
+    expect(results.numbers.passed).toBe(false);
+
+    const datesSwapped = finding({
+      ...swapped,
+      statement:
+        "甲机构不得在2027年1月1日超过1亿元；乙机构可以在2026年1月1日超过1万元。",
+    });
+    const dateResults = resultFor(
+      datesSwapped,
+      createSourceIndex({
+        sources: [evidenceSource],
+        parsedUnits: [evidenceUnit],
+        findings: [datesSwapped],
+      }),
+    );
+    expect(dateResults.dates.passed).toBe(false);
+
+    const duplicated = finding({
+      ...swapped,
+      statement:
+        "甲机构不得在2026年1月1日超过1亿元和1亿元；乙机构可以在2027年1月1日超过1万元。",
+    });
+    const duplicateResults = resultFor(
+      duplicated,
+      createSourceIndex({
+        sources: [evidenceSource],
+        parsedUnits: [evidenceUnit],
+        findings: [duplicated],
+      }),
+    );
+    expect(duplicateResults.numbers.passed).toBe(false);
   });
 
   test("keeps quote matching independent from contradictory modal, date, and amount evidence", () => {
@@ -268,7 +341,7 @@ describe("validateFinding", () => {
     );
 
     expect(results.quote_match.passed).toBe(true);
-    expect(results.numbers.passed).toBe(true);
+    expect(results.numbers.passed).toBe(false);
     expect(results.modal_strength.passed).toBe(false);
   });
 
@@ -384,6 +457,14 @@ describe("validateFinding", () => {
     expect(resultFor(strictFinding, wrongStrength).modal_strength.passed).toBe(
       false,
     );
+    const missingAtomic = createSourceIndex({
+      sources: [strictSource],
+      parsedUnits: [strictUnit],
+      findings: [strictFinding],
+    });
+    expect(resultFor(strictFinding, missingAtomic).modal_strength.passed).toBe(
+      false,
+    );
     const correctStrength = createSourceIndex({
       sources: [strictSource],
       parsedUnits: [strictUnit],
@@ -392,6 +473,58 @@ describe("validateFinding", () => {
     });
     expect(
       resultFor(strictFinding, correctStrength).modal_strength.passed,
+    ).toBe(true);
+
+    const singleStrengthFinding = finding({
+      category: "atomic_requirement",
+      statement: "机构应建立管理制度。",
+      sourceAnchors: [
+        {
+          sourceId: "REG-SINGLE-STRENGTH",
+          sourceType: "regulatory_text",
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: "机构应建立管理制度。",
+        },
+      ],
+    });
+    const singleStrengthSource: SourceUnit = {
+      sourceId: "REG-SINGLE-STRENGTH",
+      sourceType: "regulatory_text",
+      title: "合成单字强度文件",
+      content: singleStrengthFinding.statement,
+    };
+    const singleStrengthUnit: ParsedSourceUnit = {
+      sourceId: singleStrengthSource.sourceId,
+      sourceType: singleStrengthSource.sourceType,
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: singleStrengthFinding.statement,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const singleStrengthAtomic: AtomicRequirement = {
+      ...atomic,
+      findingId: singleStrengthFinding.findingId,
+      subject: "机构",
+      action: "建立",
+      object: "管理制度",
+      condition: null,
+      deadline: null,
+      strength: "应",
+      sourceAnchors: singleStrengthFinding.sourceAnchors,
+    };
+    const singleStrengthIndex = createSourceIndex({
+      sources: [singleStrengthSource],
+      parsedUnits: [singleStrengthUnit],
+      findings: [singleStrengthFinding],
+      atomicRequirements: [singleStrengthAtomic],
+    });
+    expect(
+      resultFor(singleStrengthFinding, singleStrengthIndex).modal_strength
+        .passed,
     ).toBe(true);
   });
 

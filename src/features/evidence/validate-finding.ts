@@ -3,6 +3,7 @@ import type { SourceAnchor, SourceUnit } from "../../domain/source";
 import type { AtomicRequirement } from "../analysis/skill-orchestrator";
 import type { ParsedSourceUnit } from "../parsing/build-anchors";
 import {
+  canonicalAtomicStrength,
   extractDates,
   extractModalTerms,
   extractNumbers,
@@ -182,10 +183,23 @@ const everyAnchor = (
   predicate: (anchor: SourceAnchor) => boolean,
 ): boolean => anchors.length > 0 && anchors.every(predicate);
 
-const tokensAreAuthorized = (
+const tokensAreAuthorizedInOrder = (
   statementTokens: readonly string[],
   evidenceTokens: readonly string[],
-): boolean => statementTokens.every((token) => evidenceTokens.includes(token));
+): boolean => {
+  let evidenceIndex = 0;
+  for (const statementToken of statementTokens) {
+    while (
+      evidenceIndex < evidenceTokens.length &&
+      evidenceTokens[evidenceIndex] !== statementToken
+    ) {
+      evidenceIndex += 1;
+    }
+    if (evidenceIndex === evidenceTokens.length) return false;
+    evidenceIndex += 1;
+  }
+  return true;
+};
 
 const evidenceFor = (finding: Finding, index: SourceIndex): string => {
   const parentEvidence =
@@ -222,6 +236,63 @@ const officialWrapperValid = (finding: Finding): boolean => {
   );
 };
 
+const anchorSetMatches = (
+  finding: Finding,
+  requirement: AtomicRequirement,
+): boolean => {
+  const requirementAnchors = new Set(requirement.sourceAnchors.map(anchorKey));
+  return (
+    requirementAnchors.size === finding.sourceAnchors.length &&
+    finding.sourceAnchors.every((anchor) =>
+      requirementAnchors.has(anchorKey(anchor)),
+    )
+  );
+};
+
+const structuredStrengthLocated = (
+  text: string,
+  requirement: AtomicRequirement,
+): boolean => {
+  if (!requirement.strength) return extractModalTerms(text).length === 0;
+  const strength = normalizeText(requirement.strength);
+  if (!canonicalAtomicStrength(strength)) return false;
+  const subject = requirement.subject
+    ? normalizeText(requirement.subject)
+    : null;
+  const action = requirement.action ? normalizeText(requirement.action) : null;
+  const object = requirement.object ? normalizeText(requirement.object) : null;
+  if (!subject || !action || !object) return false;
+  const normalized = normalizeText(text);
+  let subjectIndex = normalized.indexOf(subject);
+  while (subjectIndex >= 0) {
+    const strengthIndex = normalized.indexOf(
+      strength,
+      subjectIndex + subject.length,
+    );
+    const actionIndex =
+      strengthIndex < 0
+        ? -1
+        : normalized.indexOf(action, strengthIndex + strength.length);
+    const objectIndex =
+      actionIndex < 0
+        ? -1
+        : normalized.indexOf(object, actionIndex + action.length);
+    if (strengthIndex >= 0 && actionIndex >= 0 && objectIndex >= 0) return true;
+    subjectIndex = normalized.indexOf(subject, subjectIndex + subject.length);
+  }
+  return false;
+};
+
+const protectedSkeletonSupported = (
+  finding: Finding,
+  text: string = finding.statement,
+): boolean => {
+  const statementSkeleton = protectedClaimSkeleton(text);
+  return finding.sourceAnchors.some((anchor) =>
+    protectedClaimSkeleton(anchor.quote).includes(statementSkeleton),
+  );
+};
+
 const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
   if (
     finding.claimType === "ai_inference" ||
@@ -232,47 +303,45 @@ const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
   if (finding.claimType === "official_explanation") {
     return officialWrapperValid(finding);
   }
-  const evidenceTerms = extractModalTerms(evidenceFor(finding, index)).sort();
-  const statementTerms = extractModalTerms(finding.statement).sort();
+  const evidenceTerms = extractModalTerms(evidenceFor(finding, index));
+  const statementTerms = extractModalTerms(finding.statement);
   const hasProtectedClaim =
     statementTerms.length > 0 ||
     extractDates(finding.statement).length > 0 ||
     extractNumbers(finding.statement).length > 0;
-  if (
-    hasProtectedClaim &&
-    !finding.sourceAnchors.some((anchor) =>
-      protectedClaimSkeleton(anchor.quote).includes(
-        protectedClaimSkeleton(finding.statement),
-      ),
-    )
-  ) {
+  if (hasProtectedClaim && !protectedSkeletonSupported(finding)) {
     return false;
   }
   if (finding.category === "atomic_requirement") {
     const requirements =
       index.atomicRequirementsByFindingId.get(finding.findingId) ?? [];
-    if (requirements.length > 0) {
-      if (requirements.length !== 1) return false;
-      const [requirement] = requirements;
-      const requirementAnchors = new Set(
-        requirement.sourceAnchors.map(anchorKey),
-      );
-      if (
-        requirementAnchors.size !== finding.sourceAnchors.length ||
-        finding.sourceAnchors.some(
-          (anchor) => !requirementAnchors.has(anchorKey(anchor)),
-        )
-      ) {
-        return false;
-      }
-      const structuredTerms = extractModalTerms(
-        requirement.strength ?? "",
-      ).sort();
-      return (
-        structuredTerms.join("\u0000") === statementTerms.join("\u0000") &&
-        structuredTerms.join("\u0000") === evidenceTerms.join("\u0000")
-      );
+    if (requirements.length !== 1) return false;
+    const [requirement] = requirements;
+    if (!anchorSetMatches(finding, requirement)) return false;
+    const structuredStrength = requirement.strength
+      ? canonicalAtomicStrength(requirement.strength)
+      : null;
+    if (requirement.strength && !structuredStrength) return false;
+    if (
+      !structuredStrengthLocated(finding.statement, requirement) ||
+      !finding.sourceAnchors.every((anchor) =>
+        structuredStrengthLocated(anchor.quote, requirement),
+      )
+    ) {
+      return false;
     }
+    if (requirement.strength === null) {
+      return statementTerms.length === 0 && evidenceTerms.length === 0;
+    }
+    if (["应", "须"].includes(requirement.strength.normalize("NFKC"))) {
+      return statementTerms.length === 0 && evidenceTerms.length === 0;
+    }
+    const structuredTerms = extractModalTerms(requirement.strength);
+    return (
+      structuredTerms.length === 1 &&
+      structuredTerms.join("\u0000") === statementTerms.join("\u0000") &&
+      structuredTerms.join("\u0000") === evidenceTerms.join("\u0000")
+    );
   }
   return evidenceTerms.join("\u0000") === statementTerms.join("\u0000");
 };
@@ -401,14 +470,16 @@ export function validateFinding(
       : finding.statement;
   const statementDates = extractDates(protectedClaimText);
   const statementNumbers = extractNumbers(protectedClaimText);
-  const datesPassed = tokensAreAuthorized(
-    statementDates,
-    extractDates(evidence),
-  );
-  const numbersPassed = tokensAreAuthorized(
-    statementNumbers,
-    extractNumbers(evidence),
-  );
+  const protectedAssociationPassed =
+    statementDates.length === 0 && statementNumbers.length === 0
+      ? true
+      : protectedSkeletonSupported(finding, protectedClaimText);
+  const datesPassed =
+    protectedAssociationPassed &&
+    tokensAreAuthorizedInOrder(statementDates, extractDates(evidence));
+  const numbersPassed =
+    protectedAssociationPassed &&
+    tokensAreAuthorizedInOrder(statementNumbers, extractNumbers(evidence));
   const inferencePassed = inferenceProvenanceMatches(finding, index);
 
   return [
