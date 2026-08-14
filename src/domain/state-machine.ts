@@ -1,4 +1,5 @@
 import type { Project, WorkflowStep } from './project';
+import { hasPassedQualityGate } from './quality';
 
 export type TransitionResult =
   | { allowed: true }
@@ -13,7 +14,10 @@ const hasCompletedRequiredReviews = (project: Project) =>
   project.findings
     .filter((finding) => finding.requiredReview)
     .every(
-      (finding) => finding.reviewStatus === 'confirmed' || finding.reviewStatus === 'modified',
+      (finding) =>
+        finding.reviewStatus === 'confirmed' ||
+        finding.reviewStatus === 'modified' ||
+        (finding.reviewStatus === 'deleted' && finding.revisionRecords.length > 0),
     );
 
 /**
@@ -31,15 +35,28 @@ export function canTransition(project: Project, nextStep: WorkflowStep): Transit
   }
 
   if (nextStep === 'analysis') {
-    return project.parsingCompleted
-      ? { allowed: true }
-      : { allowed: false, reason: '请先完成文件解析' };
+    if (!project.parsingCompleted) {
+      return { allowed: false, reason: '请先完成文件解析' };
+    }
+    return hasRegulatoryFile(project) ? { allowed: true } : { allowed: false, reason: '请先上传监管文件' };
   }
 
   if (nextStep === 'review') {
-    return hasAnalysisResults(project)
-      ? { allowed: true }
-      : { allowed: false, reason: '请先完成分析' };
+    if (!hasRegulatoryFile(project)) {
+      return { allowed: false, reason: '请先上传监管文件' };
+    }
+    if (!project.parsingCompleted) {
+      return { allowed: false, reason: '请先完成文件解析' };
+    }
+    return hasAnalysisResults(project) ? { allowed: true } : { allowed: false, reason: '请先完成分析' };
+  }
+
+  if (!hasRegulatoryFile(project)) {
+    return { allowed: false, reason: '请先上传监管文件' };
+  }
+
+  if (!project.parsingCompleted) {
+    return { allowed: false, reason: '请先完成文件解析' };
   }
 
   if (!hasAnalysisResults(project)) {
@@ -50,7 +67,7 @@ export function canTransition(project: Project, nextStep: WorkflowStep): Transit
     return { allowed: false, reason: '请先完成必审事项复核' };
   }
 
-  return project.qualityMetrics.qualityGatePassed
+  return hasPassedQualityGate(project.qualityMetrics)
     ? { allowed: true }
     : { allowed: false, reason: '请先通过质量门槛' };
 }

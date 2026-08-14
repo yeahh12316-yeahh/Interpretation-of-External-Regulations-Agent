@@ -81,6 +81,14 @@ export const FindingSchema = z
         message: '人工判断必须保留修订记录',
       });
     }
+
+    if (finding.reviewStatus === 'deleted' && finding.revisionRecords.length === 0) {
+      context.addIssue({
+        code: 'custom',
+        path: ['revisionRecords'],
+        message: '已删除结论必须保留修订记录',
+      });
+    }
   });
 
 const SourceUnitSchema = z
@@ -94,10 +102,11 @@ const SourceUnitSchema = z
 
 const QualityMetricsSchema = z
   .object({
-    qualityGatePassed: z.boolean(),
-    sourceAnchorCoverage: z.number().min(0).max(1).optional(),
-    inferenceTraceability: z.number().min(0).max(1).optional(),
-    requiredReviewCompletion: z.number().min(0).max(1).optional(),
+    factCitationCoverage: z.number().min(0).max(1),
+    citationReverseCheckRate: z.number().min(0).max(1),
+    unsupportedFindingCount: z.number().int().nonnegative(),
+    inferenceMarkingRate: z.number().min(0).max(1),
+    requiredReviewCompletionRate: z.number().min(0).max(1),
   })
   .strict();
 
@@ -111,7 +120,68 @@ export const ProjectSchema = z
     findings: z.array(FindingSchema),
     qualityMetrics: QualityMetricsSchema,
   })
-  .strict();
+  .strict()
+  .superRefine((project, context) => {
+    const sourceById = new Map<string, (typeof project.sourceUnits)[number]>();
+    for (const [sourceIndex, source] of project.sourceUnits.entries()) {
+      if (sourceById.has(source.sourceId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['sourceUnits', sourceIndex, 'sourceId'],
+          message: '来源 ID 必须唯一',
+        });
+      }
+      sourceById.set(source.sourceId, source);
+    }
+
+    const findingIndexById = new Map<string, number>();
+    for (const [findingIndex, finding] of project.findings.entries()) {
+      if (findingIndexById.has(finding.findingId)) {
+        context.addIssue({
+          code: 'custom',
+          path: ['findings', findingIndex, 'findingId'],
+          message: '结论 ID 必须唯一',
+        });
+      }
+      findingIndexById.set(finding.findingId, findingIndex);
+
+      for (const [anchorIndex, anchor] of finding.sourceAnchors.entries()) {
+        const source = sourceById.get(anchor.sourceId);
+        if (!source) {
+          context.addIssue({
+            code: 'custom',
+            path: ['findings', findingIndex, 'sourceAnchors', anchorIndex, 'sourceId'],
+            message: '结论锚点必须引用项目内的来源',
+          });
+        } else if (source.sourceType !== anchor.sourceType) {
+          context.addIssue({
+            code: 'custom',
+            path: ['findings', findingIndex, 'sourceAnchors', anchorIndex, 'sourceType'],
+            message: '结论锚点来源类型必须与来源单元一致',
+          });
+        }
+      }
+    }
+
+    for (const [findingIndex, finding] of project.findings.entries()) {
+      for (const [parentIndex, parentId] of finding.inferenceParents.entries()) {
+        const upstreamIndex = findingIndexById.get(parentId);
+        if (upstreamIndex === undefined) {
+          context.addIssue({
+            code: 'custom',
+            path: ['findings', findingIndex, 'inferenceParents', parentIndex],
+            message: 'AI 推导父结论必须存在于当前项目',
+          });
+        } else if (parentId === finding.findingId || upstreamIndex >= findingIndex) {
+          context.addIssue({
+            code: 'custom',
+            path: ['findings', findingIndex, 'inferenceParents', parentIndex],
+            message: 'AI 推导父结论必须是非自身的上游结论',
+          });
+        }
+      }
+    }
+  });
 
 type _FindingSchemaMatchesDomain = z.infer<typeof FindingSchema> extends Finding ? true : never;
 type _ProjectSchemaMatchesDomain = z.infer<typeof ProjectSchema> extends Project ? true : never;

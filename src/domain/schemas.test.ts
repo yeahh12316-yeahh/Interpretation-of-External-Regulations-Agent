@@ -11,6 +11,43 @@ const regulatoryAnchor = {
   quote: '金融机构应当建立相关制度。',
 };
 
+const passingQualityMetrics = {
+  factCitationCoverage: 1,
+  citationReverseCheckRate: 1,
+  unsupportedFindingCount: 0,
+  inferenceMarkingRate: 1,
+  requiredReviewCompletionRate: 1,
+};
+
+const regulatorySource = {
+  sourceId: 'SRC-REG-1',
+  sourceType: 'regulatory_text',
+  title: '监管文件',
+  content: '金融机构应当建立相关制度。',
+};
+
+const regulatoryFact = {
+  findingId: 'F1',
+  category: '治理',
+  statement: '应建立制度',
+  claimType: 'regulatory_fact' as const,
+  sourceAnchors: [regulatoryAnchor],
+  inferenceParents: [],
+  reviewStatus: 'confirmed' as const,
+  requiredReview: true,
+  revisionRecords: [],
+};
+
+const validProject = () => ({
+  projectId: 'P1',
+  projectName: '外规解读',
+  workflowStep: 'review' as const,
+  sourceUnits: [regulatorySource],
+  parsingCompleted: true,
+  findings: [regulatoryFact],
+  qualityMetrics: passingQualityMetrics,
+});
+
 describe('FindingSchema', () => {
   test('rejects a regulatory fact without a regulatory-text anchor', () => {
     expect(() =>
@@ -74,6 +111,10 @@ describe('FindingSchema', () => {
 });
 
 describe('ProjectSchema', () => {
+  test('accepts a project with all five deterministic quality metrics', () => {
+    expect(() => ProjectSchema.parse(validProject())).not.toThrow();
+  });
+
   test('rejects API keys from domain persistence', () => {
     expect(() =>
       ProjectSchema.parse({
@@ -83,8 +124,102 @@ describe('ProjectSchema', () => {
         sourceUnits: [],
         parsingCompleted: false,
         findings: [],
-        qualityMetrics: { qualityGatePassed: false },
+        qualityMetrics: passingQualityMetrics,
         apiKey: 'sk-not-allowed',
+      }),
+    ).toThrow();
+  });
+
+  test('rejects an anchor whose source ID does not exist in the project', () => {
+    expect(() =>
+      ProjectSchema.parse({
+        ...validProject(),
+        findings: [
+          {
+            ...regulatoryFact,
+            sourceAnchors: [{ ...regulatoryAnchor, sourceId: 'SRC-MISSING' }],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  test('rejects an anchor whose declared source type disagrees with its source unit', () => {
+    expect(() =>
+      ProjectSchema.parse({
+        ...validProject(),
+        findings: [
+          {
+            ...regulatoryFact,
+            sourceAnchors: [
+              { ...regulatoryAnchor, sourceType: 'official_interpretation' as const },
+            ],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  test('rejects an AI inference that references a missing parent finding', () => {
+    expect(() =>
+      ProjectSchema.parse({
+        ...validProject(),
+        findings: [
+          regulatoryFact,
+          {
+            findingId: 'F2',
+            category: '影响分析',
+            statement: '建议建立制度映射台账',
+            claimType: 'ai_inference',
+            sourceAnchors: [],
+            inferenceParents: ['F-MISSING'],
+            reviewStatus: 'unreviewed',
+            requiredReview: false,
+            revisionRecords: [],
+          },
+        ],
+      }),
+    ).toThrow();
+  });
+
+  test('rejects an AI inference that references itself or a downstream finding', () => {
+    expect(() =>
+      ProjectSchema.parse({
+        ...validProject(),
+        findings: [
+          {
+            findingId: 'F1',
+            category: '影响分析',
+            statement: '建议建立制度映射台账',
+            claimType: 'ai_inference',
+            sourceAnchors: [],
+            inferenceParents: ['F1'],
+            reviewStatus: 'unreviewed',
+            requiredReview: false,
+            revisionRecords: [],
+          },
+          regulatoryFact,
+        ],
+      }),
+    ).toThrow();
+
+    expect(() =>
+      ProjectSchema.parse({
+        ...validProject(),
+        findings: [
+          {
+            findingId: 'F2',
+            category: '影响分析',
+            statement: '建议建立制度映射台账',
+            claimType: 'ai_inference',
+            sourceAnchors: [],
+            inferenceParents: ['F1'],
+            reviewStatus: 'unreviewed',
+            requiredReview: false,
+            revisionRecords: [],
+          },
+          regulatoryFact,
+        ],
       }),
     ).toThrow();
   });

@@ -3,6 +3,21 @@ import { describe, expect, test } from 'vitest';
 import type { Project } from './project';
 import { canTransition } from './state-machine';
 
+const passingQualityMetrics = {
+  factCitationCoverage: 1,
+  citationReverseCheckRate: 1,
+  unsupportedFindingCount: 0,
+  inferenceMarkingRate: 1,
+  requiredReviewCompletionRate: 1,
+};
+
+const regulatorySource = {
+  sourceId: 'SRC-REG-1',
+  sourceType: 'regulatory_text' as const,
+  title: '监管文件',
+  content: '金融机构应当建立相关制度。',
+};
+
 const emptyProject: Project = {
   projectId: 'P1',
   projectName: '外规解读',
@@ -10,7 +25,13 @@ const emptyProject: Project = {
   sourceUnits: [],
   parsingCompleted: false,
   findings: [],
-  qualityMetrics: { qualityGatePassed: false },
+  qualityMetrics: {
+    factCitationCoverage: 0,
+    citationReverseCheckRate: 0,
+    unsupportedFindingCount: 1,
+    inferenceMarkingRate: 0,
+    requiredReviewCompletionRate: 0,
+  },
 };
 
 describe('canTransition', () => {
@@ -18,6 +39,13 @@ describe('canTransition', () => {
     expect(canTransition(emptyProject, 'analysis')).toEqual({
       allowed: false,
       reason: '请先完成文件解析',
+    });
+  });
+
+  test('blocks analysis when parsing is claimed complete without a regulatory source', () => {
+    expect(canTransition({ ...emptyProject, parsingCompleted: true }, 'analysis')).toEqual({
+      allowed: false,
+      reason: '请先上传监管文件',
     });
   });
 
@@ -31,10 +59,39 @@ describe('canTransition', () => {
   test('blocks review until analysis produces findings', () => {
     expect(
       canTransition(
-        { ...emptyProject, parsingCompleted: true, workflowStep: 'analysis' },
+        {
+          ...emptyProject,
+          sourceUnits: [regulatorySource],
+          parsingCompleted: true,
+          workflowStep: 'analysis',
+        },
         'review',
       ),
     ).toEqual({ allowed: false, reason: '请先完成分析' });
+  });
+
+  test('blocks review until the regulatory file is parsed even when findings exist', () => {
+    expect(
+      canTransition(
+        {
+          ...emptyProject,
+          findings: [
+            {
+              findingId: 'F1',
+              category: '治理',
+              statement: '应建立制度',
+              claimType: 'regulatory_fact',
+              sourceAnchors: [],
+              inferenceParents: [],
+              reviewStatus: 'confirmed',
+              requiredReview: true,
+              revisionRecords: [],
+            },
+          ],
+        },
+        'review',
+      ),
+    ).toEqual({ allowed: false, reason: '请先上传监管文件' });
   });
 
   test('blocks report until required reviews are completed', () => {
@@ -42,6 +99,7 @@ describe('canTransition', () => {
       canTransition(
         {
           ...emptyProject,
+          sourceUnits: [regulatorySource],
           parsingCompleted: true,
           workflowStep: 'review',
           findings: [
@@ -68,6 +126,7 @@ describe('canTransition', () => {
       canTransition(
         {
           ...emptyProject,
+          sourceUnits: [regulatorySource],
           parsingCompleted: true,
           workflowStep: 'review',
           findings: [
@@ -94,9 +153,10 @@ describe('canTransition', () => {
       canTransition(
         {
           ...emptyProject,
+          sourceUnits: [regulatorySource],
           parsingCompleted: true,
           workflowStep: 'review',
-          qualityMetrics: { qualityGatePassed: true },
+          qualityMetrics: passingQualityMetrics,
           findings: [
             {
               findingId: 'F1',
@@ -114,5 +174,67 @@ describe('canTransition', () => {
         'report',
       ),
     ).toEqual({ allowed: true });
+  });
+
+  test('counts a required finding with properly recorded deletion as reviewed', () => {
+    expect(
+      canTransition(
+        {
+          ...emptyProject,
+          sourceUnits: [regulatorySource],
+          parsingCompleted: true,
+          workflowStep: 'review',
+          qualityMetrics: passingQualityMetrics,
+          findings: [
+            {
+              findingId: 'F1',
+              category: '治理',
+              statement: '历史保留的已删结论',
+              claimType: 'pending_confirmation',
+              sourceAnchors: [],
+              inferenceParents: [],
+              reviewStatus: 'deleted',
+              requiredReview: true,
+              revisionRecords: [
+                {
+                  revisedBy: 'reviewer',
+                  revisedAt: '2026-08-14T08:00:00.000Z',
+                  changeSummary: '人工复核后删除',
+                },
+              ],
+            },
+          ],
+        },
+        'report',
+      ),
+    ).toEqual({ allowed: true });
+  });
+
+  test('does not allow a passing-looking report while any deterministic quality metric fails', () => {
+    expect(
+      canTransition(
+        {
+          ...emptyProject,
+          sourceUnits: [regulatorySource],
+          parsingCompleted: true,
+          workflowStep: 'review',
+          qualityMetrics: { ...passingQualityMetrics, unsupportedFindingCount: 1 },
+          findings: [
+            {
+              findingId: 'F1',
+              category: '治理',
+              statement: '应建立制度',
+              claimType: 'regulatory_fact',
+              sourceAnchors: [],
+              inferenceParents: [],
+              reviewStatus: 'confirmed',
+              requiredReview: true,
+              revisionRecords: [],
+            },
+          ],
+        },
+        'report',
+      ),
+    ).toEqual({ allowed: false, reason: '请先通过质量门槛' });
   });
 });
