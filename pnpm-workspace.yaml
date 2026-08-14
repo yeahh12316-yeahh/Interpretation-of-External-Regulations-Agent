@@ -2,9 +2,3 @@ allowBuilds:
   esbuild: true
   msw: true
   tesseract.js: true
-
-supportedArchitectures:
-  os:
-    - darwin
-  cpu:
-    - arm64
