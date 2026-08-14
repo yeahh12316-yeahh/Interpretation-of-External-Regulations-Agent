@@ -509,6 +509,8 @@ export interface AnalysisInput {
   officialPrimaryContext?: Readonly<Record<string, readonly string[]>>;
   resumeFrom?: AnalysisCheckpoint;
   chunkOptions?: Partial<ChunkOptions>;
+  /** Exact stage allowlist used by Task 9 controlled reanalysis. */
+  stages?: readonly AnalysisStage[];
 }
 
 export interface AnalysisProgress {
@@ -1949,7 +1951,20 @@ export async function runAnalysis(
     sourceById,
   );
   const chunks = chunkDocument(input.sourceUnits, chunkOptions);
-  const nodes = nodesFor(chunks);
+  const requestedStages = input.stages;
+  if (
+    requestedStages &&
+    (requestedStages.length === 0 ||
+      new Set(requestedStages).size !== requestedStages.length ||
+      requestedStages.some(
+        (stage) => !AnalysisStageSchema.options.includes(stage),
+      ))
+  ) {
+    throw new Error("重分析阶段范围必须为非空、唯一的受控阶段集合");
+  }
+  const nodes = nodesFor(chunks).filter(
+    (node) => !requestedStages || requestedStages.includes(node.stage),
+  );
   const inputFingerprint = await executionPlanFingerprint(
     input.sourceUnits,
     chunkOptions,

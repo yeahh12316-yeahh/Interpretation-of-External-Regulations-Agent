@@ -38,10 +38,12 @@ const fileType = (file: File): string =>
 
 export interface MaterialUploadProps {
   parseFile?: typeof parseDocument;
+  onParsed?: (result: ParseResult) => void;
 }
 
 export function MaterialUpload({
   parseFile = parseDocument,
+  onParsed,
 }: MaterialUploadProps = {}): JSX.Element {
   const [uploads, setUploads] = useState<Record<SourceType, UploadState>>({
     regulatory_text: EMPTY_STATE,
@@ -85,6 +87,7 @@ export function MaterialUpload({
           file,
           result,
         });
+        onParsed?.(result);
       }
     } catch (error) {
       if (

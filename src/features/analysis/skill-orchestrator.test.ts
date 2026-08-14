@@ -157,6 +157,21 @@ const emptyResponse = (request: StructuredModelRequest<unknown>): unknown => {
 };
 
 describe("runAnalysis", () => {
+  it("executes only the exact requested stage scope for controlled reanalysis", async () => {
+    const gateway = new RecordingGateway(successfulResponse);
+    const draft = await runAnalysis({
+      sourceUnits: [regulatorySource],
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+      stages: ["atomic_clauses"],
+    });
+    expect(gateway.requests.map(({ schemaName }) => schemaName)).toEqual([
+      "analysis_atomic_clauses_v1",
+    ]);
+    expect(draft.findings.map(({ findingId }) => findingId)).toContain("REQ-1");
+  });
+
   it("runs stages in order, preserves atomic/inference provenance, and records restart metadata", async () => {
     const gateway = new RecordingGateway(successfulResponse);
     const progress: AnalysisProgress[] = [];
