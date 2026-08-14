@@ -91,7 +91,7 @@ export const FindingSchema = z
     }
   });
 
-const SourceUnitSchema = z
+export const SourceUnitSchema = z
   .object({
     sourceId: z.string().min(1),
     sourceType: SourceTypeSchema,

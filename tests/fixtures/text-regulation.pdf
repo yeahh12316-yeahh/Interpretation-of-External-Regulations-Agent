@@ -1,0 +1,113 @@
+%PDF-1.7
+% synthetic fixture
+1 0 obj
+<< /Type /Catalog /Pages 2 0 R >>
+endobj
+2 0 obj
+<< /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
+endobj
+3 0 obj
+<< /Length 135 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+<000100020003000400050006000700080009000A000B000C000D000E000F00100006001100120013001400150016001700180019> Tj
+ET
+endstream
+endobj
+4 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 7 0 R >> >> /Contents 3 0 R >>
+endobj
+5 0 obj
+<< /Length 107 >>
+stream
+BT
+/F1 12 Tf
+72 720 Td
+<0001001A0003000400050006000700080009000A001B001C001D001E00130014001F00200019> Tj
+ET
+endstream
+endobj
+6 0 obj
+<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 7 0 R >> >> /Contents 5 0 R >>
+endobj
+7 0 obj
+<< /Type /Font /Subtype /Type0 /BaseFont /SyntheticRegulation /Encoding /Identity-H /DescendantFonts [8 0 R] /ToUnicode 9 0 R >>
+endobj
+8 0 obj
+<< /Type /Font /Subtype /CIDFontType2 /BaseFont /SyntheticRegulation /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 10 0 R /DW 1000 /CIDToGIDMap /Identity >>
+endobj
+9 0 obj
+<< /Length 774 >>
+stream
+/CIDInit /ProcSet findresource begin
+12 dict begin
+begincmap
+/CIDSystemInfo << /Registry (Adobe) /Ordering (UCS) /Supplement 0 >> def
+/CMapName /Synthetic-Regulation def
+/CMapType 2 def
+1 begincodespacerange
+<0000> <FFFF>
+endcodespacerange
+32 beginbfchar
+<0001> <7B2C>
+<0002> <4E00>
+<0003> <6761>
+<0004> <0020>
+<0005> <5546>
+<0006> <4E1A>
+<0007> <94F6>
+<0008> <884C>
+<0009> <5E94>
+<000A> <5F53>
+<000B> <5EFA>
+<000C> <7ACB>
+<000D> <8986>
+<000E> <76D6>
+<000F> <5168>
+<0010> <90E8>
+<0011> <52A1>
+<0012> <7684>
+<0013> <98CE>
+<0014> <9669>
+<0015> <7BA1>
+<0016> <7406>
+<0017> <5236>
+<0018> <5EA6>
+<0019> <3002>
+<001A> <4E8C>
+<001B> <5B9A>
+<001C> <671F>
+<001D> <5F00>
+<001E> <5C55>
+<001F> <8BC4>
+<0020> <4F30>
+endbfchar
+endcmap
+CMapName currentdict /CMap defineresource pop
+end
+end
+endstream
+endobj
+10 0 obj
+<< /Type /FontDescriptor /FontName /SyntheticRegulation /Flags 4 /FontBBox [0 -200 1000 900] /ItalicAngle 0 /Ascent 880 /Descent -120 /CapHeight 700 /StemV 80 >>
+endobj
+xref
+0 11
+0000000000 65535 f
+0000000029 00000 n
+0000000078 00000 n
+0000000141 00000 n
+0000000327 00000 n
+0000000453 00000 n
+0000000611 00000 n
+0000000737 00000 n
+0000000881 00000 n
+0000001097 00000 n
+0000001922 00000 n
+trailer
+<< /Size 11 /Root 1 0 R >>
+startxref
+2100
+%%EOF

@@ -1,6 +1,6 @@
 import { describe, expect, test } from 'vitest';
 
-import { FindingSchema, ProjectSchema } from './schemas';
+import { FindingSchema, ProjectSchema, SourceUnitSchema } from './schemas';
 
 const regulatoryAnchor = {
   sourceId: 'SRC-REG-1',
@@ -46,6 +46,33 @@ const validProject = () => ({
   parsingCompleted: true,
   findings: [regulatoryFact],
   qualityMetrics: passingQualityMetrics,
+});
+
+describe('SourceUnitSchema', () => {
+  test('keeps uploaded sources within the existing strict source contract', () => {
+    expect(
+      SourceUnitSchema.parse({
+        sourceId: 'SRC-REG-1',
+        sourceType: 'regulatory_text',
+        title: '监管文件.txt',
+        content: '第一条 商业银行应当建立风险管理制度。',
+      }),
+    ).toEqual({
+      sourceId: 'SRC-REG-1',
+      sourceType: 'regulatory_text',
+      title: '监管文件.txt',
+      content: '第一条 商业银行应当建立风险管理制度。',
+    });
+
+    expect(() =>
+      SourceUnitSchema.parse({
+        sourceId: 'SRC-REG-1',
+        sourceType: 'regulation',
+        title: '监管文件.txt',
+        content: '第一条 商业银行应当建立风险管理制度。',
+      }),
+    ).toThrow();
+  });
 });
 
 describe('FindingSchema', () => {
