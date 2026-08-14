@@ -97,6 +97,27 @@ const storedReviewSchema = z
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === "object" && value !== null && !Array.isArray(value);
 
+const reviewRevision = (review: OcrPageResult): string =>
+  JSON.stringify([
+    review.unitId,
+    review.sourceId,
+    review.sourceType,
+    review.page,
+    review.method,
+    review.confidence,
+    review.text,
+    review.originalOcrText,
+    review.correctedText,
+    review.reviewStatus,
+    review.reviewedAt,
+    review.reviewedBy,
+    review.correctionHistory,
+    review.boundingBox,
+    review.regions,
+    review.lowConfidenceCharacters,
+    review.error ?? null,
+  ]);
+
 const writeStoredReview = (page: OcrPageResult): void => {
   try {
     localStorage.setItem(
@@ -282,40 +303,46 @@ export function OcrReview({
   const [review, setReview] = useState<OcrPageResult>(restored);
   const [draft, setDraft] = useState(review.correctedText ?? review.text);
   const hydratedRevision = useRef<string | null>(null);
+  const latestPage = useRef(page);
+  const latestResult = useRef(result);
+  const latestOnHydrate = useRef(onHydrate);
+  latestPage.current = page;
+  latestResult.current = result;
+  latestOnHydrate.current = onHydrate;
+  const reviewIdentity = page.unitId;
+  const authoritativeReviewRevision = reviewRevision(page);
 
   useEffect(() => {
-    const storedReview = readStoredReview(page.unitId);
-    const nextReview = storedReview ?? page;
+    const currentPage = latestPage.current;
+    const storedReview = readStoredReview(currentPage.unitId);
+    const nextReview = storedReview ?? currentPage;
     setReview(nextReview);
     setDraft(nextReview.correctedText ?? nextReview.text);
     if (!storedReview) {
-      writeStoredReview(page);
+      writeStoredReview(currentPage);
       hydratedRevision.current = null;
       return;
     }
 
     const storedCorrectionIsMissingFromResult =
       storedReview.reviewStatus === "corrected" &&
-      (page.reviewStatus !== "corrected" ||
-        page.text !== storedReview.text ||
-        page.reviewedAt !== storedReview.reviewedAt ||
-        page.correctionHistory.length !==
+      (currentPage.reviewStatus !== "corrected" ||
+        currentPage.text !== storedReview.text ||
+        currentPage.reviewedAt !== storedReview.reviewedAt ||
+        currentPage.correctionHistory.length !==
           storedReview.correctionHistory.length);
     if (!storedCorrectionIsMissingFromResult) {
       hydratedRevision.current = null;
       return;
     }
 
-    const revision = JSON.stringify([
-      storedReview.unitId,
-      storedReview.reviewedAt,
-      storedReview.correctedText,
-      storedReview.correctionHistory.length,
-    ]);
+    const revision = reviewRevision(storedReview);
     if (hydratedRevision.current === revision) return;
     hydratedRevision.current = revision;
-    onHydrate(resultWithReviewState(result, storedReview));
-  }, [onHydrate, page, result]);
+    latestOnHydrate.current(
+      resultWithReviewState(latestResult.current, storedReview),
+    );
+  }, [authoritativeReviewRevision, reviewIdentity]);
 
   if (review.reviewStatus === "failed") {
     return (

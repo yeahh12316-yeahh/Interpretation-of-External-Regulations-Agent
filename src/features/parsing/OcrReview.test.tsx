@@ -146,6 +146,53 @@ describe("applyOcrCorrection", () => {
 });
 
 describe("OcrReview", () => {
+  test("preserves an unsaved draft across unrelated parent rerenders", () => {
+    const page = ocrPage(1);
+    const nextPage = ocrPage(2, "第二页 OCR 文本");
+    const result = parseResultWith(page, nextPage);
+    const rerenderedResult = {
+      ...result,
+      source: { ...result.source },
+      ocrReviews: result.ocrReviews.map((review) => ({ ...review })),
+    };
+    const view = render(
+      <OcrReview
+        result={result}
+        reviewId={page.unitId}
+        reviewer="复核员甲"
+        onHydrate={vi.fn()}
+      />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "OCR 纠错文本" }), {
+      target: { value: "尚未保存的人工草稿" },
+    });
+
+    view.rerender(
+      <OcrReview
+        result={rerenderedResult}
+        reviewId={page.unitId}
+        reviewer="复核员甲"
+        onHydrate={() => undefined}
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
+      "尚未保存的人工草稿",
+    );
+
+    view.rerender(
+      <OcrReview
+        result={rerenderedResult}
+        reviewId={nextPage.unitId}
+        reviewer="复核员甲"
+        onHydrate={() => undefined}
+      />,
+    );
+    expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
+      "第二页 OCR 文本",
+    );
+  });
+
   test("hydrates a persisted correction into the authoritative ParseResult without duplicating history", async () => {
     const page = ocrPage(1);
     const result = parseResultWith(page);
