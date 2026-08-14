@@ -19,15 +19,19 @@ export type ValidationRule =
   | "locator_paragraph"
   | "locator_article"
   | "quote_match"
+  | "atomic_structure"
   | "modal_strength"
   | "dates"
   | "numbers"
   | "inference_parent";
 
 export type ValidationSeverity = "info" | "warning" | "error";
+export type ValidationStatus = "passed" | "failed" | "manual_review_required";
 
 export interface ValidationResult {
   rule: ValidationRule;
+  status: ValidationStatus;
+  /** Compatibility projection only. `status` is authoritative. */
   passed: boolean;
   message: string;
   severity: ValidationSeverity;
@@ -116,16 +120,36 @@ export function createSourceIndex({
 
 const result = (
   rule: ValidationRule,
-  passed: boolean,
+  statusOrPassed: ValidationStatus | boolean,
   success: string,
   failure: string,
   failureSeverity: ValidationSeverity = "error",
-): ValidationResult => ({
-  rule,
-  passed,
-  message: passed ? success : failure,
-  severity: passed ? "info" : failureSeverity,
-});
+  manualMessage = "该规则无法由确定性证据自动证明，需人工确认。",
+): ValidationResult => {
+  const status: ValidationStatus =
+    typeof statusOrPassed === "boolean"
+      ? statusOrPassed
+        ? "passed"
+        : "failed"
+      : statusOrPassed;
+  return {
+    rule,
+    status,
+    passed: status === "passed",
+    message:
+      status === "passed"
+        ? success
+        : status === "manual_review_required"
+          ? manualMessage
+          : failure,
+    severity:
+      status === "passed"
+        ? "info"
+        : status === "manual_review_required"
+          ? "warning"
+          : failureSeverity,
+  };
+};
 
 const unitsForAnchor = (
   anchor: SourceAnchor,
@@ -250,111 +274,180 @@ const anchorSetMatches = (
   );
 };
 
-const structuredModifierValues = (
-  requirement: AtomicRequirement,
-): readonly string[] =>
-  [
-    requirement.condition,
-    requirement.frequency,
-    requirement.deadline,
-    requirement.responsibility,
-    requirement.exceptions,
-    requirement.sharedContext,
-  ].flatMap((value) => {
-    if (!value) return [];
-    const normalized = normalizeText(value).replace(/[\p{P}\s]/gu, "");
-    return normalized ? [normalized] : [];
-  });
+const ATOMIC_FIELD_ORDER = [
+  "subject",
+  "strength",
+  "action",
+  "object",
+  "condition",
+  "frequency",
+  "deadline",
+  "responsibility",
+  "exceptions",
+  "sharedContext",
+] as const;
 
-const gapUsesOnlyStructuredModifiers = (
-  gap: string,
-  requirement: AtomicRequirement,
-): boolean => {
-  const compactGap = normalizeText(gap).replace(/[\p{P}\s]/gu, "");
-  if (!compactGap) return true;
-  const modifiers = [...new Set(structuredModifierValues(requirement))];
-  const matches = (remaining: string, available: readonly string[]): boolean =>
-    remaining.length === 0 ||
-    available.some(
-      (modifier, index) =>
-        remaining.startsWith(modifier) &&
-        matches(remaining.slice(modifier.length), [
-          ...available.slice(0, index),
-          ...available.slice(index + 1),
-        ]),
-    );
-  return matches(compactGap, modifiers);
+type AtomicFieldName = (typeof ATOMIC_FIELD_ORDER)[number];
+
+interface AtomicAllocation {
+  field: AtomicFieldName;
+  start: number;
+  end: number;
+}
+
+interface AtomicStructureResult {
+  status: ValidationStatus;
+  message: string;
+}
+
+const compactAtomicText = (value: string): string =>
+  normalizeText(value).replace(/\p{P}/gu, "");
+
+const occurrencesOf = (text: string, value: string): AtomicAllocation[] => {
+  const matches: AtomicAllocation[] = [];
+  let start = text.indexOf(value);
+  while (start >= 0) {
+    matches.push({ field: "subject", start, end: start + value.length });
+    start = text.indexOf(value, start + 1);
+  }
+  return matches;
 };
 
-const structuredStrengthLocated = (
-  text: string,
-  requirement: AtomicRequirement,
-): boolean => {
-  if (!requirement.strength) return extractModalTerms(text).length === 0;
-  const strength = normalizeText(requirement.strength);
-  if (!canonicalAtomicStrength(strength)) return false;
-  const subject = requirement.subject
-    ? normalizeText(requirement.subject)
-    : null;
-  const action = requirement.action ? normalizeText(requirement.action) : null;
-  const object = requirement.object ? normalizeText(requirement.object) : null;
-  if (!subject || !action || !object) return false;
-  const normalized = normalizeText(text);
-  if (strength === "应" || strength === "须") {
-    let subjectIndex = normalized.indexOf(subject);
-    while (subjectIndex >= 0) {
-      const subjectEnd = subjectIndex + subject.length;
-      let strengthIndex = normalized.indexOf(strength, subjectEnd);
-      while (strengthIndex >= 0) {
-        const strengthEnd = strengthIndex + strength.length;
-        const actionIndex = normalized.indexOf(action, strengthEnd);
-        if (actionIndex >= strengthEnd) {
-          const actionEnd = actionIndex + action.length;
-          const objectIndex = normalized.indexOf(object, actionEnd);
-          if (
-            subjectIndex >= 0 &&
-            strengthIndex >= subjectEnd &&
-            actionIndex >= strengthEnd &&
-            objectIndex >= actionEnd &&
-            gapUsesOnlyStructuredModifiers(
-              normalized.slice(subjectEnd, strengthIndex),
-              requirement,
-            ) &&
-            gapUsesOnlyStructuredModifiers(
-              normalized.slice(strengthEnd, actionIndex),
-              requirement,
-            )
-          ) {
-            return true;
-          }
-        }
-        strengthIndex = normalized.indexOf(
-          strength,
-          strengthIndex + strength.length,
-        );
+const atomicStructure = (
+  finding: Finding,
+  index: SourceIndex,
+): AtomicStructureResult => {
+  if (finding.category !== "atomic_requirement") {
+    return { status: "passed", message: "该结论不适用原子结构校验。" };
+  }
+  const requirements =
+    index.atomicRequirementsByFindingId.get(finding.findingId) ?? [];
+  if (requirements.length !== 1) {
+    return {
+      status: "failed",
+      message: "原子要求缺少唯一的结构化记录。",
+    };
+  }
+  const [requirement] = requirements;
+  if (
+    requirement.manualVerificationRequired ||
+    ["应", "须"].includes(requirement.strength?.normalize("NFKC") ?? "")
+  ) {
+    return {
+      status: "manual_review_required",
+      message: "单字强度或上游人工复核标记不能由词法规则自动证明。",
+    };
+  }
+  if (!anchorSetMatches(finding, requirement)) {
+    return {
+      status: "failed",
+      message: "原子要求与当前来源引用不一致。",
+    };
+  }
+  if (finding.sourceAnchors.length !== 1) {
+    return {
+      status: "manual_review_required",
+      message: "原子要求跨多个引用，无法确定唯一的无损字段分配。",
+    };
+  }
+  const quote = finding.sourceAnchors[0].quote;
+  if (normalizeText(finding.statement) !== normalizeText(quote)) {
+    return {
+      status: "manual_review_required",
+      message: "原子结论不是来源引用的确定性等值文本，需人工确认。",
+    };
+  }
+  if (!requirement.strength || !canonicalAtomicStrength(requirement.strength)) {
+    return {
+      status: "manual_review_required",
+      message: "原子要求强度缺失或无法确定分类，需人工确认。",
+    };
+  }
+  const text = compactAtomicText(quote);
+  const fields = ATOMIC_FIELD_ORDER.flatMap((field) => {
+    const rawValue = requirement[field];
+    if (!rawValue) return [];
+    const value = compactAtomicText(rawValue);
+    return value ? [{ field, value }] : [];
+  });
+  if (
+    !requirement.subject ||
+    !requirement.action ||
+    !requirement.object ||
+    fields.some(
+      ({ field, value }) => field !== "strength" && value.length === 1,
+    )
+  ) {
+    return {
+      status: "manual_review_required",
+      message: "原子字段缺失或可拆分为歧义单字，需人工确认。",
+    };
+  }
+  const candidates = fields.map(({ field, value }) => ({
+    field,
+    matches: occurrencesOf(text, value).map((match) => ({ ...match, field })),
+  }));
+  if (candidates.some(({ matches }) => matches.length === 0)) {
+    return {
+      status: "failed",
+      message: "至少一个原子字段无法在当前来源引用中精确匹配。",
+    };
+  }
+
+  const solutions: AtomicAllocation[][] = [];
+  let allocationBudgetExceeded = false;
+  let allocationAttempts = 0;
+  const allocate = (fieldIndex: number, selected: AtomicAllocation[]) => {
+    if (solutions.length > 1 || allocationBudgetExceeded) return;
+    if (fieldIndex === candidates.length) {
+      const covered = new Set<number>();
+      selected.forEach(({ start, end }) => {
+        for (let index = start; index < end; index += 1) covered.add(index);
+      });
+      const byField = new Map(selected.map((item) => [item.field, item]));
+      const core = ["subject", "strength", "action", "object"]
+        .map((field) => byField.get(field as AtomicFieldName))
+        .filter((item): item is AtomicAllocation => item !== undefined);
+      const coreOrdered = core.every(
+        (item, index) => index === 0 || core[index - 1].end <= item.start,
+      );
+      if (covered.size === text.length && core.length === 4 && coreOrdered) {
+        solutions.push(selected);
       }
-      subjectIndex = normalized.indexOf(subject, subjectIndex + subject.length);
+      return;
     }
-    return false;
+    for (const match of candidates[fieldIndex].matches) {
+      allocationAttempts += 1;
+      if (allocationAttempts > 10_000) {
+        allocationBudgetExceeded = true;
+        return;
+      }
+      if (
+        selected.some(
+          (item) => match.start < item.end && match.end > item.start,
+        )
+      ) {
+        continue;
+      }
+      allocate(fieldIndex + 1, [...selected, match]);
+    }
+  };
+  allocate(0, []);
+
+  if (solutions.length !== 1 || allocationBudgetExceeded) {
+    return {
+      status: "manual_review_required",
+      message: allocationBudgetExceeded
+        ? "原子字段候选过多，无法确定唯一分配，需人工确认。"
+        : solutions.length === 0
+          ? "原子字段不能对来源引用形成唯一、无重叠、无遗漏的覆盖。"
+          : "原子字段存在多种分配或已标记需人工复核。",
+    };
   }
-  let subjectIndex = normalized.indexOf(subject);
-  while (subjectIndex >= 0) {
-    const strengthIndex = normalized.indexOf(
-      strength,
-      subjectIndex + subject.length,
-    );
-    const actionIndex =
-      strengthIndex < 0
-        ? -1
-        : normalized.indexOf(action, strengthIndex + strength.length);
-    const objectIndex =
-      actionIndex < 0
-        ? -1
-        : normalized.indexOf(object, actionIndex + action.length);
-    if (strengthIndex >= 0 && actionIndex >= 0 && objectIndex >= 0) return true;
-    subjectIndex = normalized.indexOf(subject, subjectIndex + subject.length);
-  }
-  return false;
+  return {
+    status: "passed",
+    message: "原子字段已对来源引用形成唯一、无重叠、无遗漏的自动覆盖。",
+  };
 };
 
 const protectedSkeletonSupported = (
@@ -367,15 +460,19 @@ const protectedSkeletonSupported = (
   );
 };
 
-const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
+const modalTermsPreserved = (
+  finding: Finding,
+  index: SourceIndex,
+  structure: AtomicStructureResult,
+): ValidationStatus => {
   if (
     finding.claimType === "ai_inference" ||
     finding.claimType === "human_judgment"
   ) {
-    return true;
+    return "passed";
   }
   if (finding.claimType === "official_explanation") {
-    return officialWrapperValid(finding);
+    return officialWrapperValid(finding) ? "passed" : "failed";
   }
   const evidenceTerms = extractModalTerms(evidenceFor(finding, index));
   const statementTerms = extractModalTerms(finding.statement);
@@ -390,44 +487,42 @@ const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
     extractDates(finding.statement).length > 0 ||
     extractNumbers(finding.statement).length > 0;
   if (hasProtectedClaim && !protectedSkeletonSupported(finding)) {
-    return false;
+    return "failed";
   }
   if (finding.category === "atomic_requirement") {
     const requirements =
       index.atomicRequirementsByFindingId.get(finding.findingId) ?? [];
-    if (requirements.length !== 1) return false;
+    if (requirements.length !== 1) return "failed";
     const [requirement] = requirements;
-    if (!anchorSetMatches(finding, requirement)) return false;
+    if (
+      requirement.manualVerificationRequired ||
+      ["应", "须"].includes(requirement.strength?.normalize("NFKC") ?? "")
+    ) {
+      return "manual_review_required";
+    }
+    if (!anchorSetMatches(finding, requirement)) return "failed";
     const structuredStrength = requirement.strength
       ? canonicalAtomicStrength(requirement.strength)
       : null;
-    if (requirement.strength && !structuredStrength) return false;
-    if (
-      !structuredStrengthLocated(finding.statement, requirement) ||
-      !finding.sourceAnchors.every((anchor) =>
-        structuredStrengthLocated(anchor.quote, requirement),
-      )
-    ) {
-      return false;
-    }
+    if (requirement.strength && !structuredStrength) return "failed";
+    if (structure.status !== "passed") return structure.status;
     if (requirement.strength === null) {
-      return statementTerms.length === 0 && evidenceTerms.length === 0;
-    }
-    if (["应", "须"].includes(requirement.strength.normalize("NFKC"))) {
-      return statementTerms.length === 0 && evidenceTerms.length === 0;
+      return statementTerms.length === 0 && evidenceTerms.length === 0
+        ? "passed"
+        : "failed";
     }
     const structuredTerms = extractModalTerms(requirement.strength);
-    return (
-      structuredTerms.length === 1 &&
+    return structuredTerms.length === 1 &&
       structuredTerms.join("\u0000") === statementTerms.join("\u0000") &&
       structuredTerms.join("\u0000") === evidenceTerms.join("\u0000")
-    );
+      ? "passed"
+      : "failed";
   }
-  return (
-    evidenceTerms.join("\u0000") === statementTerms.join("\u0000") &&
+  return evidenceTerms.join("\u0000") === statementTerms.join("\u0000") &&
     evidenceSingleCharacterContexts.join("\u0000") ===
       statementSingleCharacterContexts.join("\u0000")
-  );
+    ? "passed"
+    : "failed";
 };
 
 const sourceTypeMatchesClaim = (finding: Finding): boolean => {
@@ -565,6 +660,7 @@ export function validateFinding(
     protectedAssociationPassed &&
     tokensAreAuthorizedInOrder(statementNumbers, extractNumbers(evidence));
   const inferencePassed = inferenceProvenanceMatches(finding, index);
+  const structure = atomicStructure(finding, index);
 
   return [
     result(
@@ -604,8 +700,16 @@ export function validateFinding(
       "引用未在权威解析定位中反向匹配，待校验。",
     ),
     result(
+      "atomic_structure",
+      structure.status,
+      structure.message,
+      structure.message,
+      "error",
+      structure.message,
+    ),
+    result(
       "modal_strength",
-      modalTermsPreserved(finding, index),
+      modalTermsPreserved(finding, index, structure),
       "可以、宜、应、须、应当、必须、不得、禁止、严禁等方向与强度保持一致。",
       "结论新增、遗漏或改变了监管方向或强度词。",
     ),

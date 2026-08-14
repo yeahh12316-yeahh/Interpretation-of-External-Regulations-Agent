@@ -149,6 +149,22 @@
   border-left-color: #c00000;
 }
 
+.validation-list li[data-resolution="manual_review_pending"] {
+  border-left-color: #b26a00;
+  background: #fff8e8;
+}
+
+.validation-list li[data-resolution="manual_rejected"],
+.validation-list li[data-resolution="failed"] {
+  border-left-color: #c00000;
+  background: #fff1f1;
+}
+
+.validation-list li[data-resolution="manual_confirmed"] {
+  border-left-color: #2472a4;
+  background: #f0f7fb;
+}
+
 .validation-list p {
   margin: var(--space-1) 0 0;
   color: #444;

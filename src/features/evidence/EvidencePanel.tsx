@@ -2,6 +2,7 @@ import { type JSX, useCallback, useEffect, useMemo, useState } from "react";
 
 import type { ClaimType, Finding } from "../../domain/finding";
 import type { SourceUnit } from "../../domain/source";
+import type { AtomicRequirement } from "../analysis/skill-orchestrator";
 import type { ParsedSourceUnit } from "../parsing/build-anchors";
 import "./evidence.css";
 import { findNormalizedTextRange } from "./normalize-text";
@@ -11,6 +12,10 @@ import {
   validateFinding,
 } from "./validate-finding";
 import { ValidationDetails } from "./ValidationDetails";
+import {
+  resolveValidationResults,
+  type RuleReviewAttestation,
+} from "./review-attestation";
 
 const CLAIM_LABELS: Record<ClaimType, string> = {
   regulatory_fact: "监管事实",
@@ -25,6 +30,8 @@ export interface EvidencePanelProps {
   findings: readonly Finding[];
   sources: readonly SourceUnit[];
   parsedUnits: readonly ParsedSourceUnit[];
+  atomicRequirements?: readonly AtomicRequirement[];
+  ruleReviewAttestations?: readonly RuleReviewAttestation[];
 }
 
 const HighlightedExcerpt = ({
@@ -52,6 +59,8 @@ export function EvidencePanel({
   findings,
   sources,
   parsedUnits,
+  atomicRequirements = [],
+  ruleReviewAttestations = [],
 }: EvidencePanelProps): JSX.Element {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const closeDetails = useCallback(() => setDetailsOpen(false), []);
@@ -61,12 +70,26 @@ export function EvidencePanel({
     ({ findingId }) => findingId === selectedFindingId,
   );
   const index = useMemo(
-    () => createSourceIndex({ sources, parsedUnits, findings }),
-    [findings, parsedUnits, sources],
+    () =>
+      createSourceIndex({
+        sources,
+        parsedUnits,
+        findings,
+        atomicRequirements,
+      }),
+    [atomicRequirements, findings, parsedUnits, sources],
   );
   const results = useMemo(
-    () => (finding ? validateFinding(finding, index) : []),
-    [finding, index],
+    () =>
+      finding
+        ? resolveValidationResults(
+            finding,
+            validateFinding(finding, index),
+            atomicRequirements,
+            ruleReviewAttestations,
+          )
+        : [],
+    [atomicRequirements, finding, index, ruleReviewAttestations],
   );
 
   if (!finding) {

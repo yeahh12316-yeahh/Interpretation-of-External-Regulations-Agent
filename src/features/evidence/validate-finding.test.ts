@@ -556,8 +556,8 @@ describe("validateFinding", () => {
       atomicRequirements: [{ ...atomic, strength: "严禁" }],
     });
     expect(
-      resultFor(strictFinding, correctStrength).modal_strength.passed,
-    ).toBe(true);
+      resultFor(strictFinding, correctStrength).modal_strength.status,
+    ).toBe("manual_review_required");
 
     const singleStrengthFinding = finding({
       category: "atomic_requirement",
@@ -608,8 +608,8 @@ describe("validateFinding", () => {
     });
     expect(
       resultFor(singleStrengthFinding, singleStrengthIndex).modal_strength
-        .passed,
-    ).toBe(true);
+        .status,
+    ).toBe("manual_review_required");
 
     const singleCharacterCases = [
       {
@@ -744,9 +744,199 @@ describe("validateFinding", () => {
         findings: [caseFinding],
         atomicRequirements: [caseRequirement],
       });
-      expect(resultFor(caseFinding, caseIndexValue).modal_strength.passed).toBe(
-        item.expected,
+      expect(resultFor(caseFinding, caseIndexValue).modal_strength.status).toBe(
+        "manual_review_required",
       );
+    }
+  });
+
+  test("requires manual review for single-character atomic strength and lexical compositions", () => {
+    const validateAtomic = (
+      text: string,
+      fields: Partial<AtomicRequirement>,
+    ) => {
+      const sourceId = `REG-ATOMIC-${text}`;
+      const source: SourceUnit = {
+        sourceId,
+        sourceType: "regulatory_text",
+        title: "合成原子结构文件",
+        content: text,
+      };
+      const anchor = {
+        sourceId,
+        sourceType: "regulatory_text" as const,
+        page: 1,
+        article: null,
+        paragraphIndex: 0,
+        quote: text,
+      };
+      const candidate = finding({
+        category: "atomic_requirement",
+        statement: text,
+        sourceAnchors: [anchor],
+      });
+      const requirement: AtomicRequirement = {
+        requirementId: `AR-${sourceId}`,
+        findingId: candidate.findingId,
+        subject: "机构",
+        action: "建立",
+        object: "制度",
+        condition: null,
+        frequency: null,
+        deadline: null,
+        strength: "应",
+        responsibility: null,
+        exceptions: null,
+        sharedContext: null,
+        missingFacts: [],
+        sourceAnchors: [anchor],
+        confidence: 1,
+        manualVerificationRequired: false,
+        ...fields,
+      };
+      return resultFor(
+        candidate,
+        createSourceIndex({
+          sources: [source],
+          parsedUnits: [
+            {
+              sourceId,
+              sourceType: "regulatory_text",
+              page: 1,
+              article: null,
+              paragraphIndex: 0,
+              text,
+              extractionMethod: "text_layer",
+              confidence: 1,
+            },
+          ],
+          findings: [candidate],
+          atomicRequirements: [requirement],
+        }),
+      );
+    };
+
+    for (const [text, fields] of [
+      ["机构应建立制度。", {}],
+      [
+        "机构相应办理业务。",
+        { condition: "相", action: "办理", object: "业务" },
+      ],
+      [
+        "机构办事须知。",
+        { condition: "办事", strength: "须", action: "知", object: null },
+      ],
+    ] as const) {
+      const results = validateAtomic(text, fields);
+      expect(results.modal_strength).toMatchObject({
+        status: "manual_review_required",
+        passed: false,
+      });
+      expect(results.atomic_structure).toMatchObject({
+        status: "manual_review_required",
+        passed: false,
+      });
+    }
+  });
+
+  test("only auto-passes a longer atomic strength with unique lossless source coverage", () => {
+    const cases = [
+      {
+        text: "机构不得开展业务。",
+        fields: { strength: "不得", action: "开展", object: "业务" },
+        expected: "passed",
+      },
+      {
+        text: "机构必须及时报告事项。",
+        fields: {
+          strength: "必须",
+          frequency: "及时",
+          sharedContext: "及时",
+          action: "报告",
+          object: "事项",
+        },
+        expected: "manual_review_required",
+      },
+      {
+        text: "机构不得开展未经授权的业务。",
+        fields: { strength: "不得", action: "开展", object: "业务" },
+        expected: "manual_review_required",
+      },
+      {
+        text: "A B不得开展业务。",
+        fields: {
+          subject: "AB",
+          strength: "不得",
+          action: "开展",
+          object: "业务",
+        },
+        expected: "failed",
+      },
+    ] as const;
+
+    for (const [caseIndex, item] of cases.entries()) {
+      const sourceId = `REG-LOSSLESS-${caseIndex}`;
+      const source: SourceUnit = {
+        sourceId,
+        sourceType: "regulatory_text",
+        title: "合成无损覆盖文件",
+        content: item.text,
+      };
+      const anchor = {
+        sourceId,
+        sourceType: "regulatory_text" as const,
+        page: 1,
+        article: null,
+        paragraphIndex: 0,
+        quote: item.text,
+      };
+      const candidate = finding({
+        category: "atomic_requirement",
+        statement: item.text,
+        sourceAnchors: [anchor],
+      });
+      const requirement: AtomicRequirement = {
+        requirementId: `AR-${caseIndex}`,
+        findingId: candidate.findingId,
+        subject: "subject" in item.fields ? item.fields.subject : "机构",
+        action: item.fields.action,
+        object: item.fields.object,
+        condition: null,
+        frequency: "frequency" in item.fields ? item.fields.frequency : null,
+        deadline: null,
+        strength: item.fields.strength,
+        responsibility: null,
+        exceptions: null,
+        sharedContext:
+          "sharedContext" in item.fields ? item.fields.sharedContext : null,
+        missingFacts: [],
+        sourceAnchors: [anchor],
+        confidence: 1,
+        manualVerificationRequired: false,
+      };
+      const results = resultFor(
+        candidate,
+        createSourceIndex({
+          sources: [source],
+          parsedUnits: [
+            {
+              sourceId,
+              sourceType: "regulatory_text",
+              page: 1,
+              article: null,
+              paragraphIndex: 0,
+              text: item.text,
+              extractionMethod: "text_layer",
+              confidence: 1,
+            },
+          ],
+          findings: [candidate],
+          atomicRequirements: [requirement],
+        }),
+      );
+
+      expect(results.atomic_structure.status).toBe(item.expected);
+      expect(results.modal_strength.status).toBe(item.expected);
     }
   });
 
@@ -1121,6 +1311,9 @@ describe("validateFinding", () => {
       expect.arrayContaining([
         expect.objectContaining({
           rule: "source_id",
+          status: expect.stringMatching(
+            /^(passed|failed|manual_review_required)$/,
+          ),
           passed: expect.any(Boolean),
           message: expect.any(String),
           severity: expect.stringMatching(/^(info|warning|error)$/),
@@ -1139,6 +1332,7 @@ describe("validateFinding", () => {
       "locator_paragraph",
       "locator_article",
       "quote_match",
+      "atomic_structure",
       "modal_strength",
       "dates",
       "numbers",

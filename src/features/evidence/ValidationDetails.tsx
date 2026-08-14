@@ -1,6 +1,10 @@
 import { type JSX, useEffect, useRef } from "react";
 
-import type { ValidationResult, ValidationRule } from "./validate-finding";
+import type { ValidationRule } from "./validate-finding";
+import type {
+  ResolvedValidationResult,
+  ValidationResolution,
+} from "./review-attestation";
 
 const RULE_LABELS: Record<ValidationRule, string> = {
   source_id: "来源 ID",
@@ -9,15 +13,24 @@ const RULE_LABELS: Record<ValidationRule, string> = {
   locator_paragraph: "段落定位",
   locator_article: "条款定位",
   quote_match: "引用反向匹配",
+  atomic_structure: "原子结构覆盖",
   modal_strength: "监管强度词",
   dates: "日期一致性",
   numbers: "数字与比例",
   inference_parent: "推导父项",
 };
 
+const RESOLUTION_LABELS: Record<ValidationResolution, string> = {
+  automatic_passed: "自动通过",
+  failed: "校验失败",
+  manual_review_pending: "需人工确认",
+  manual_confirmed: "人工已确认",
+  manual_rejected: "人工否决",
+};
+
 export interface ValidationDetailsProps {
   open: boolean;
-  results: readonly ValidationResult[];
+  results: readonly ResolvedValidationResult[];
   onClose: () => void;
 }
 
@@ -98,11 +111,15 @@ export function ValidationDetails({
         </div>
         <ul className="validation-list">
           {results.map((item) => (
-            <li data-severity={item.severity} key={item.rule}>
+            <li
+              data-resolution={item.resolution}
+              data-severity={item.severity}
+              key={item.rule}
+            >
               <div>
                 <strong>{RULE_LABELS[item.rule]}</strong>
                 <span className="validation-state">
-                  {item.passed ? "通过" : "未通过"}
+                  {RESOLUTION_LABELS[item.resolution]}
                 </span>
               </div>
               <p>{item.message}</p>

@@ -6,8 +6,10 @@ import { describe, expect, test, vi } from "vitest";
 
 import type { Finding } from "../../domain/finding";
 import type { SourceUnit } from "../../domain/source";
+import type { AtomicRequirement } from "../analysis/skill-orchestrator";
 import type { ParsedSourceUnit } from "../parsing/build-anchors";
 import { EvidencePanel } from "./EvidencePanel";
+import { ruleReviewBinding } from "./review-attestation";
 
 const sources: SourceUnit[] = [
   {
@@ -150,10 +152,130 @@ describe("EvidencePanel", () => {
     fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
     expect(screen.getByRole("dialog", { name: "证据校验详情" })).toBeVisible();
     expect(screen.getByText("引用反向匹配")).toBeVisible();
-    expect(screen.getAllByText("通过").length).toBeGreaterThan(0);
+    expect(screen.getAllByText("自动通过").length).toBeGreaterThan(0);
 
     fireEvent.click(screen.getByRole("button", { name: "关闭校验详情" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  test("distinguishes pending, confirmed, rejected, and failed validation outcomes", () => {
+    const manualSource: SourceUnit = {
+      sourceId: "REG-MANUAL",
+      sourceType: "regulatory_text",
+      title: "合成人工确认材料.txt",
+      content: "机构应建立制度。",
+    };
+    const manualUnit: ParsedSourceUnit = {
+      sourceId: manualSource.sourceId,
+      sourceType: manualSource.sourceType,
+      page: null,
+      article: null,
+      paragraphIndex: 0,
+      text: manualSource.content,
+      extractionMethod: "plain_text",
+      confidence: 1,
+    };
+    const manualFinding: Finding = {
+      ...findings[0],
+      findingId: "F-MANUAL",
+      statement: manualSource.content,
+      sourceAnchors: [
+        {
+          sourceId: manualSource.sourceId,
+          sourceType: manualSource.sourceType,
+          page: null,
+          article: null,
+          paragraphIndex: 0,
+          quote: manualSource.content,
+        },
+      ],
+    };
+    const requirement: AtomicRequirement = {
+      requirementId: "AR-MANUAL",
+      findingId: manualFinding.findingId,
+      subject: "机构",
+      strength: "应",
+      action: "建立",
+      object: "制度",
+      condition: null,
+      frequency: null,
+      deadline: null,
+      responsibility: null,
+      exceptions: null,
+      sharedContext: null,
+      missingFacts: [],
+      sourceAnchors: manualFinding.sourceAnchors,
+      confidence: 1,
+      manualVerificationRequired: false,
+    };
+    const binding = ruleReviewBinding(manualFinding, requirement);
+    const baseAttestation = {
+      ...binding,
+      reviewer: "复核员",
+      reviewedAt: "2026-08-15T01:00:00.000Z",
+      reason: "已逐字核对原文与结构化字段。",
+    };
+    const { rerender } = render(
+      <EvidencePanel
+        atomicRequirements={[requirement]}
+        selectedFindingId={manualFinding.findingId}
+        findings={[manualFinding]}
+        sources={[manualSource]}
+        parsedUnits={[manualUnit]}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
+    expect(screen.getAllByText("需人工确认")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "关闭校验详情" }));
+
+    const confirmed = (["atomic_structure", "modal_strength"] as const).map(
+      (rule) => ({ ...baseAttestation, rule, decision: "confirmed" as const }),
+    );
+    rerender(
+      <EvidencePanel
+        atomicRequirements={[requirement]}
+        ruleReviewAttestations={confirmed}
+        selectedFindingId={manualFinding.findingId}
+        findings={[manualFinding]}
+        sources={[manualSource]}
+        parsedUnits={[manualUnit]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
+    expect(screen.getAllByText("人工已确认")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "关闭校验详情" }));
+
+    rerender(
+      <EvidencePanel
+        atomicRequirements={[requirement]}
+        ruleReviewAttestations={confirmed.map((attestation) => ({
+          ...attestation,
+          decision: "rejected" as const,
+        }))}
+        selectedFindingId={manualFinding.findingId}
+        findings={[manualFinding]}
+        sources={[manualSource]}
+        parsedUnits={[manualUnit]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
+    expect(screen.getAllByText("人工否决")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "关闭校验详情" }));
+
+    rerender(
+      <EvidencePanel
+        atomicRequirements={[requirement]}
+        ruleReviewAttestations={confirmed}
+        selectedFindingId={manualFinding.findingId}
+        findings={[{ ...manualFinding, sourceAnchors: [] }]}
+        sources={[manualSource]}
+        parsedUnits={[manualUnit]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
+    expect(screen.getAllByText("校验失败").length).toBeGreaterThan(0);
+    expect(screen.queryByText("人工已确认")).not.toBeInTheDocument();
   });
 
   test("never presents an asserted locator when it conflicts with parsed evidence", () => {

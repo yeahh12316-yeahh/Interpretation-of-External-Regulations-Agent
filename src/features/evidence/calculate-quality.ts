@@ -17,6 +17,18 @@ import {
   type OfficialPrimarySourceIds,
   validateFinding,
 } from "./validate-finding";
+import { evidenceDigest, stableValue } from "./evidence-hash";
+import {
+  resolveValidationResults,
+  type RuleReviewAttestation,
+  type ValidationResolution,
+} from "./review-attestation";
+
+export {
+  RuleReviewAttestationSchema,
+  ruleReviewBinding,
+  type RuleReviewAttestation,
+} from "./review-attestation";
 
 export interface SourceParseOutcome {
   fileHash: string;
@@ -46,6 +58,15 @@ export interface AnalysisEvidenceSession {
   officialPrimarySourceIds?: OfficialPrimarySourceIds;
   atomicRequirements?: readonly AtomicRequirement[];
   reviewAudits?: readonly ReviewAudit[];
+  ruleReviewAttestations?: readonly RuleReviewAttestation[];
+}
+
+export interface EvidenceQualityMetrics extends QualityMetrics {
+  automaticValidationRuleCount: number;
+  manualConfirmedValidationRuleCount: number;
+  manualReviewPendingRuleCount: number;
+  manualRejectedValidationRuleCount: number;
+  failedValidationRuleCount: number;
 }
 
 export interface ReviewAudit {
@@ -117,32 +138,12 @@ const OcrPageResultSchema = z
 
 const OcrReviewsSchema = z.array(OcrPageResultSchema);
 
-const stableValue = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`)
-      .join(",")}}`;
-  }
-  return JSON.stringify(value) ?? "undefined";
-};
-
 export const reviewSnapshotHash = (finding: Finding): string => {
-  return stableDigest(finding);
-};
-
-const stableDigest = (value: unknown): string => {
-  let hash = 0xcbf29ce484222325n;
-  for (const byte of new TextEncoder().encode(stableValue(value))) {
-    hash ^= BigInt(byte);
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
-  }
-  return `fnv1a64:${hash.toString(16).padStart(16, "0")}`;
+  return evidenceDigest(finding);
 };
 
 export const orderedUnitDigest = (units: readonly ParsedSourceUnit[]): string =>
-  stableDigest(units);
+  evidenceDigest(units);
 
 export const parseOutcomeFromResult = (
   result: ParseResult,
@@ -270,6 +271,7 @@ const failedSupportRules = new Set([
   "locator_paragraph",
   "locator_article",
   "quote_match",
+  "atomic_structure",
   "modal_strength",
   "dates",
   "numbers",
@@ -283,7 +285,8 @@ export function calculateQuality(
   officialPrimarySourceIds?: OfficialPrimarySourceIds,
   atomicRequirements: readonly AtomicRequirement[] = [],
   reviewAudits: readonly ReviewAudit[] = [],
-): QualityMetrics {
+  ruleReviewAttestations: readonly RuleReviewAttestation[] = [],
+): EvidenceQualityMetrics {
   const activeFindings = project.findings.filter(
     (finding) => finding.reviewStatus !== "deleted",
   );
@@ -303,7 +306,12 @@ export function calculateQuality(
   const validations = new Map(
     evidenceFindings.map((finding) => [
       finding.findingId,
-      validateFinding(finding, index),
+      resolveValidationResults(
+        finding,
+        validateFinding(finding, index),
+        atomicRequirements,
+        ruleReviewAttestations,
+      ),
     ]),
   );
   const parseComplete = parsingEvidenceComplete(
@@ -313,7 +321,9 @@ export function calculateQuality(
   );
   const reversePassed = parseComplete
     ? evidenceFindings.filter((finding) =>
-        validations.get(finding.findingId)?.every(({ passed }) => passed),
+        validations
+          .get(finding.findingId)
+          ?.every(({ effectivePassed }) => effectivePassed),
       ).length
     : 0;
   let unsupportedFindingCount = activeFindings.filter((finding) => {
@@ -322,7 +332,10 @@ export function calculateQuality(
     if (!hasCitation(finding, project)) return true;
     return validations
       .get(finding.findingId)
-      ?.some(({ rule, passed }) => failedSupportRules.has(rule) && !passed);
+      ?.some(
+        ({ rule, effectivePassed }) =>
+          failedSupportRules.has(rule) && !effectivePassed,
+      );
   }).length;
   if (!parseComplete) {
     unsupportedFindingCount = Math.max(
@@ -341,7 +354,7 @@ export function calculateQuality(
       finding.claimType === "ai_inference" &&
       validations
         .get(finding.findingId)
-        ?.find(({ rule }) => rule === "inference_parent")?.passed,
+        ?.find(({ rule }) => rule === "inference_parent")?.effectivePassed,
   ).length;
   const requiredReviews = project.findings.filter(
     ({ requiredReview }) => requiredReview,
@@ -354,6 +367,22 @@ export function calculateQuality(
       ],
     ),
   );
+
+  const resolutionCounts = [...validations.values()]
+    .flat()
+    .reduce<Record<ValidationResolution, number>>(
+      (counts, validation) => ({
+        ...counts,
+        [validation.resolution]: counts[validation.resolution] + 1,
+      }),
+      {
+        automatic_passed: 0,
+        manual_confirmed: 0,
+        manual_review_pending: 0,
+        manual_rejected: 0,
+        failed: 0,
+      },
+    );
 
   return {
     factCitationCoverage: ratio(
@@ -375,6 +404,11 @@ export function calculateQuality(
       requiredReviews.length,
       1,
     ),
+    automaticValidationRuleCount: resolutionCounts.automatic_passed,
+    manualConfirmedValidationRuleCount: resolutionCounts.manual_confirmed,
+    manualReviewPendingRuleCount: resolutionCounts.manual_review_pending,
+    manualRejectedValidationRuleCount: resolutionCounts.manual_rejected,
+    failedValidationRuleCount: resolutionCounts.failed,
   };
 }
 
@@ -644,6 +678,7 @@ export function canFinalize(
   officialPrimarySourceIds?: OfficialPrimarySourceIds,
   atomicRequirements: readonly AtomicRequirement[] = [],
   reviewAudits: readonly ReviewAudit[] = [],
+  ruleReviewAttestations: readonly RuleReviewAttestation[] = [],
 ): boolean {
   if (!parsingEvidenceComplete(project, parsedUnits, parseOutcomes))
     return false;
@@ -659,6 +694,7 @@ export function canFinalize(
       officialPrimarySourceIds,
       atomicRequirements,
       reviewAudits,
+      ruleReviewAttestations,
     ),
   );
 }
@@ -689,7 +725,7 @@ const evidenceFromSession = (
 
 export const calculateSessionQuality = (
   session: AnalysisEvidenceSession,
-): QualityMetrics => {
+): EvidenceQualityMetrics => {
   const { parsedUnits, parseOutcomes } = evidenceFromSession(session);
   return calculateQuality(
     session.project,
@@ -698,6 +734,7 @@ export const calculateSessionQuality = (
     session.officialPrimarySourceIds,
     session.atomicRequirements,
     session.reviewAudits,
+    session.ruleReviewAttestations,
   );
 };
 
@@ -712,5 +749,6 @@ export const canFinalizeSession = (
     session.officialPrimarySourceIds,
     session.atomicRequirements,
     session.reviewAudits,
+    session.ruleReviewAttestations,
   );
 };

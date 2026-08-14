@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { Finding } from "../../domain/finding";
 import type { Project } from "../../domain/project";
+import type { AtomicRequirement } from "../analysis/skill-orchestrator";
 import { buildAnchors, type ParsedSourceUnit } from "../parsing/build-anchors";
 import type { ParseResult } from "../parsing/parse-document";
 import type { OcrPageResult } from "../parsing/ocr/ocr-pipeline";
@@ -12,6 +13,7 @@ import {
   canFinalizeSession,
   parseOutcomeFromResult,
   reviewSnapshotHash,
+  ruleReviewBinding,
   type ReviewAudit,
   type SourceParseOutcome,
 } from "./calculate-quality";
@@ -136,6 +138,11 @@ describe("calculateQuality", () => {
       unsupportedFindingCount: 0,
       inferenceMarkingRate: 1,
       requiredReviewCompletionRate: 1,
+      automaticValidationRuleCount: 22,
+      manualConfirmedValidationRuleCount: 0,
+      manualReviewPendingRuleCount: 0,
+      manualRejectedValidationRuleCount: 0,
+      failedValidationRuleCount: 0,
     });
     expect(canFinalize(project(), pageUnits, [completeOutcome])).toBe(true);
     const session = { project: project(), parseResults: [completeParseResult] };
@@ -143,6 +150,173 @@ describe("calculateQuality", () => {
       calculateQuality(project(), pageUnits, [completeOutcome]),
     );
     expect(canFinalizeSession(session)).toBe(true);
+  });
+
+  test("requires current rule-bound attestations before ambiguous atomic evidence can finalize", () => {
+    const atomicSource = {
+      sourceId: "REG-ATTEST",
+      sourceType: "regulatory_text" as const,
+      title: "合成人工确认材料",
+      content: "机构应建立制度。",
+    };
+    const atomicUnit: ParsedSourceUnit = {
+      sourceId: atomicSource.sourceId,
+      sourceType: atomicSource.sourceType,
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: atomicSource.content,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const atomicFinding: Finding = {
+      ...fact,
+      findingId: "FACT-ATTEST",
+      category: "atomic_requirement",
+      statement: atomicSource.content,
+      sourceAnchors: [
+        {
+          sourceId: atomicSource.sourceId,
+          sourceType: atomicSource.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: atomicSource.content,
+        },
+      ],
+    };
+    const atomicRequirement: AtomicRequirement = {
+      requirementId: "AR-ATTEST",
+      findingId: atomicFinding.findingId,
+      subject: "机构",
+      action: "建立",
+      object: "制度",
+      condition: null,
+      frequency: null,
+      deadline: null,
+      strength: "应",
+      responsibility: null,
+      exceptions: null,
+      sharedContext: null,
+      missingFacts: [],
+      sourceAnchors: atomicFinding.sourceAnchors,
+      confidence: 1,
+      manualVerificationRequired: false,
+    };
+    const atomicProject: Project = {
+      ...project([atomicFinding]),
+      sourceUnits: [atomicSource],
+    };
+    const atomicResult: ParseResult = {
+      ...completeParseResult,
+      fileHash: "f".repeat(64),
+      source: atomicSource,
+      pageCount: 1,
+      successfulPages: [1],
+      units: [atomicUnit],
+      anchors: buildAnchors([atomicUnit]),
+      quality: {
+        ...completeParseResult.quality,
+        totalCharacters: atomicSource.content.length,
+        parsedUnitCount: 1,
+      },
+    };
+    const binding = {
+      ...ruleReviewBinding(atomicFinding, atomicRequirement),
+      reviewer: "reviewer-attest",
+      reviewedAt: "2026-08-15T00:00:00.000Z",
+      reason: "已逐字核对原文并确认单字强度语义。",
+    };
+    const attestations = [
+      {
+        ...binding,
+        rule: "atomic_structure" as const,
+        decision: "confirmed" as const,
+      },
+      {
+        ...binding,
+        rule: "modal_strength" as const,
+        decision: "confirmed" as const,
+      },
+    ];
+    const session = {
+      project: atomicProject,
+      parseResults: [atomicResult],
+      atomicRequirements: [atomicRequirement],
+      ruleReviewAttestations: [],
+    } as Parameters<typeof calculateSessionQuality>[0] & {
+      ruleReviewAttestations: readonly (typeof attestations)[number][];
+    };
+
+    const pending = calculateSessionQuality(session);
+    expect(pending).toMatchObject({
+      automaticValidationRuleCount: 9,
+      manualConfirmedValidationRuleCount: 0,
+      manualReviewPendingRuleCount: 2,
+      manualRejectedValidationRuleCount: 0,
+      failedValidationRuleCount: 0,
+      citationReverseCheckRate: 0,
+      unsupportedFindingCount: 1,
+    });
+    expect(canFinalizeSession(session)).toBe(false);
+
+    const confirmedSession = {
+      ...session,
+      ruleReviewAttestations: attestations,
+    };
+    expect(calculateSessionQuality(confirmedSession)).toMatchObject({
+      automaticValidationRuleCount: 9,
+      manualConfirmedValidationRuleCount: 2,
+      manualReviewPendingRuleCount: 0,
+      manualRejectedValidationRuleCount: 0,
+      failedValidationRuleCount: 0,
+      citationReverseCheckRate: 1,
+      unsupportedFindingCount: 0,
+    });
+    expect(canFinalizeSession(confirmedSession)).toBe(true);
+
+    const staleAtomic = { ...atomicRequirement, frequency: "每年" };
+    expect(
+      canFinalizeSession({
+        ...confirmedSession,
+        atomicRequirements: [staleAtomic],
+      }),
+    ).toBe(false);
+    expect(
+      canFinalizeSession({
+        ...confirmedSession,
+        ruleReviewAttestations: attestations.map((attestation) => ({
+          ...attestation,
+          decision: "rejected" as const,
+        })),
+      }),
+    ).toBe(false);
+    expect(
+      canFinalizeSession({
+        ...confirmedSession,
+        ruleReviewAttestations: [
+          attestations[0],
+          { ...attestations[0], rule: "source_id" },
+        ],
+      }),
+    ).toBe(false);
+
+    const changedFinding = {
+      ...atomicFinding,
+      sourceAnchors: [
+        { ...atomicFinding.sourceAnchors[0], quote: "机构不得建立制度。" },
+      ],
+    };
+    expect(
+      canFinalizeSession({
+        ...confirmedSession,
+        project: { ...atomicProject, findings: [changedFinding] },
+        ruleReviewAttestations: attestations.map((attestation) => ({
+          ...attestation,
+          ...ruleReviewBinding(changedFinding, atomicRequirement),
+        })),
+      }),
+    ).toBe(false);
   });
 
   test("adapts the Task 4 parse result into the strict evidence session boundary", () => {
