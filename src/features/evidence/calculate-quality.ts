@@ -20,12 +20,13 @@ import {
 import { evidenceDigest, stableValue } from "./evidence-hash";
 import {
   resolveValidationResults,
-  type RuleReviewAttestation,
   type ValidationResolution,
 } from "./review-attestation";
 
 export {
   RuleReviewAttestationSchema,
+  RuleReviewAttestationsSchema,
+  parseRuleReviewAttestations,
   ruleReviewBinding,
   type RuleReviewAttestation,
 } from "./review-attestation";
@@ -58,7 +59,7 @@ export interface AnalysisEvidenceSession {
   officialPrimarySourceIds?: OfficialPrimarySourceIds;
   atomicRequirements?: readonly AtomicRequirement[];
   reviewAudits?: readonly ReviewAudit[];
-  ruleReviewAttestations?: readonly RuleReviewAttestation[];
+  ruleReviewAttestations?: unknown;
 }
 
 export interface EvidenceQualityMetrics extends QualityMetrics {
@@ -67,6 +68,7 @@ export interface EvidenceQualityMetrics extends QualityMetrics {
   manualReviewPendingRuleCount: number;
   manualRejectedValidationRuleCount: number;
   failedValidationRuleCount: number;
+  attestationIntegrityFailureCount: number;
 }
 
 export interface ReviewAudit {
@@ -285,7 +287,7 @@ export function calculateQuality(
   officialPrimarySourceIds?: OfficialPrimarySourceIds,
   atomicRequirements: readonly AtomicRequirement[] = [],
   reviewAudits: readonly ReviewAudit[] = [],
-  ruleReviewAttestations: readonly RuleReviewAttestation[] = [],
+  ruleReviewAttestations: unknown = [],
 ): EvidenceQualityMetrics {
   const activeFindings = project.findings.filter(
     (finding) => finding.reviewStatus !== "deleted",
@@ -380,9 +382,23 @@ export function calculateQuality(
         manual_confirmed: 0,
         manual_review_pending: 0,
         manual_rejected: 0,
+        attestation_integrity_failed: 0,
         failed: 0,
       },
     );
+  const attestationIntegrityKeys = new Set(
+    [...validations.entries()].flatMap(([findingId, results]) =>
+      results.flatMap((validation) =>
+        validation.resolution === "attestation_integrity_failed"
+          ? [
+              validation.rule === "attestation_integrity"
+                ? "attestation_import"
+                : `${findingId}:${validation.rule}`,
+            ]
+          : [],
+      ),
+    ),
+  );
 
   return {
     factCitationCoverage: ratio(
@@ -409,6 +425,7 @@ export function calculateQuality(
     manualReviewPendingRuleCount: resolutionCounts.manual_review_pending,
     manualRejectedValidationRuleCount: resolutionCounts.manual_rejected,
     failedValidationRuleCount: resolutionCounts.failed,
+    attestationIntegrityFailureCount: attestationIntegrityKeys.size,
   };
 }
 
@@ -678,7 +695,7 @@ export function canFinalize(
   officialPrimarySourceIds?: OfficialPrimarySourceIds,
   atomicRequirements: readonly AtomicRequirement[] = [],
   reviewAudits: readonly ReviewAudit[] = [],
-  ruleReviewAttestations: readonly RuleReviewAttestation[] = [],
+  ruleReviewAttestations: unknown = [],
 ): boolean {
   if (!parsingEvidenceComplete(project, parsedUnits, parseOutcomes))
     return false;
@@ -686,16 +703,18 @@ export function canFinalize(
     ({ reviewStatus }) => reviewStatus !== "deleted",
   );
   if (activeFindings.length === 0) return false;
-  return hasPassedQualityGate(
-    calculateQuality(
-      project,
-      parsedUnits,
-      parseOutcomes,
-      officialPrimarySourceIds,
-      atomicRequirements,
-      reviewAudits,
-      ruleReviewAttestations,
-    ),
+  const quality = calculateQuality(
+    project,
+    parsedUnits,
+    parseOutcomes,
+    officialPrimarySourceIds,
+    atomicRequirements,
+    reviewAudits,
+    ruleReviewAttestations,
+  );
+  return (
+    quality.attestationIntegrityFailureCount === 0 &&
+    hasPassedQualityGate(quality)
   );
 }
 

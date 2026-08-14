@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, within } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 
@@ -158,6 +158,43 @@ describe("EvidencePanel", () => {
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
   });
 
+  test("uses the same official-to-primary pairing boundary as quality validation", () => {
+    const excerpt = "官方解读说明不得删除记录。";
+    const officialFinding: Finding = {
+      ...findings[1],
+      category: "official_context:policy_background",
+      statement: `官方解读材料摘录（政策背景）：“${excerpt}”。该摘录仅作为官方说明材料，不建立或覆盖监管文件效力、适用性或其他法律结论，须经人工合规复核。`,
+      sourceAnchors: [{ ...findings[1].sourceAnchors[0], quote: excerpt }],
+      inferenceParents: [findings[0].findingId],
+    };
+    const { rerender } = render(
+      <EvidencePanel
+        selectedFindingId={officialFinding.findingId}
+        findings={[findings[0], officialFinding]}
+        sources={sources}
+        parsedUnits={parsedUnits}
+      />,
+    );
+
+    fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
+    let provenanceRule = screen.getByText("推导父项").closest("li");
+    expect(provenanceRule).not.toBeNull();
+    expect(within(provenanceRule!).getByText("校验失败")).toBeVisible();
+
+    rerender(
+      <EvidencePanel
+        officialPrimarySourceIds={{ "OFF-1": ["REG-1"] }}
+        selectedFindingId={officialFinding.findingId}
+        findings={[findings[0], officialFinding]}
+        sources={sources}
+        parsedUnits={parsedUnits}
+      />,
+    );
+    provenanceRule = screen.getByText("推导父项").closest("li");
+    expect(provenanceRule).not.toBeNull();
+    expect(within(provenanceRule!).getByText("自动通过")).toBeVisible();
+  });
+
   test("distinguishes pending, confirmed, rejected, and failed validation outcomes", () => {
     const manualSource: SourceUnit = {
       sourceId: "REG-MANUAL",
@@ -261,6 +298,23 @@ describe("EvidencePanel", () => {
     );
     fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
     expect(screen.getAllByText("人工否决")).toHaveLength(2);
+    fireEvent.click(screen.getByRole("button", { name: "关闭校验详情" }));
+
+    rerender(
+      <EvidencePanel
+        atomicRequirements={[requirement]}
+        ruleReviewAttestations={[...confirmed, { ...confirmed[0], reason: "" }]}
+        selectedFindingId={manualFinding.findingId}
+        findings={[manualFinding]}
+        sources={[manualSource]}
+        parsedUnits={[manualUnit]}
+      />,
+    );
+    fireEvent.click(screen.getByRole("button", { name: "查看校验详情" }));
+    expect(screen.getByText("确认记录完整性失败")).toBeVisible();
+    expect(
+      screen.getByText(/人工确认记录重复、陈旧、冲突或格式无效/u),
+    ).toBeVisible();
     fireEvent.click(screen.getByRole("button", { name: "关闭校验详情" }));
 
     rerender(

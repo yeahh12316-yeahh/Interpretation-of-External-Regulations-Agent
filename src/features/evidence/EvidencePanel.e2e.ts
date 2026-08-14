@@ -39,6 +39,8 @@ test("keeps evidence usable at 1024px and updates real locator details", async (
   const closeButton = dialog.getByRole("button", { name: "关闭校验详情" });
   await expect(closeButton).toBeFocused();
   await expect(dialog.getByText("引用反向匹配")).toBeVisible();
+  const provenanceRule = dialog.locator("li").filter({ hasText: "推导父项" });
+  await expect(provenanceRule.getByText("自动通过")).toBeVisible();
   const dialogBox = await dialog.boundingBox();
   expect(dialogBox).not.toBeNull();
   expect(dialogBox!.x).toBeGreaterThanOrEqual(0);
@@ -46,4 +48,12 @@ test("keeps evidence usable at 1024px and updates real locator details", async (
   await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
   await expect(detailsTrigger).toBeFocused();
+
+  await page.getByRole("button", { name: "移除官方配对" }).click();
+  await detailsTrigger.click();
+  await expect(provenanceRule.getByText("校验失败")).toBeVisible();
+  await page.keyboard.press("Escape");
+  await page.getByRole("button", { name: "恢复官方配对" }).click();
+  await detailsTrigger.click();
+  await expect(provenanceRule.getByText("自动通过")).toBeVisible();
 });

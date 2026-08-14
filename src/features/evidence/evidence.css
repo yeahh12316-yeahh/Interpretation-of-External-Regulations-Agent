@@ -155,6 +155,7 @@
 }
 
 .validation-list li[data-resolution="manual_rejected"],
+.validation-list li[data-resolution="attestation_integrity_failed"],
 .validation-list li[data-resolution="failed"] {
   border-left-color: #c00000;
   background: #fff1f1;

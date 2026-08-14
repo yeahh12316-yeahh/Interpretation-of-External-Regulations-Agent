@@ -143,6 +143,7 @@ describe("calculateQuality", () => {
       manualReviewPendingRuleCount: 0,
       manualRejectedValidationRuleCount: 0,
       failedValidationRuleCount: 0,
+      attestationIntegrityFailureCount: 0,
     });
     expect(canFinalize(project(), pageUnits, [completeOutcome])).toBe(true);
     const session = { project: project(), parseResults: [completeParseResult] };
@@ -275,6 +276,67 @@ describe("calculateQuality", () => {
     });
     expect(canFinalizeSession(confirmedSession)).toBe(true);
 
+    const automaticRejectionSession = {
+      ...confirmedSession,
+      ruleReviewAttestations: [
+        ...attestations,
+        {
+          ...binding,
+          rule: "source_id" as const,
+          decision: "rejected" as const,
+        },
+      ],
+    };
+    expect(calculateSessionQuality(automaticRejectionSession)).toMatchObject({
+      automaticValidationRuleCount: 8,
+      manualConfirmedValidationRuleCount: 2,
+      manualRejectedValidationRuleCount: 1,
+      citationReverseCheckRate: 0,
+    });
+    expect(canFinalizeSession(automaticRejectionSession)).toBe(false);
+
+    for (const malformed of [
+      null,
+      {},
+      [null],
+      [{}],
+      [
+        {
+          ...attestations[0],
+          sourceEvidenceHash: { nested: "invalid" },
+        },
+      ],
+    ]) {
+      const malformedSession = {
+        ...confirmedSession,
+        ruleReviewAttestations: malformed,
+      } as unknown as Parameters<typeof calculateSessionQuality>[0];
+      expect(() => calculateSessionQuality(malformedSession)).not.toThrow();
+      expect(calculateSessionQuality(malformedSession)).toMatchObject({
+        attestationIntegrityFailureCount: 1,
+        citationReverseCheckRate: 0,
+      });
+      expect(canFinalizeSession(malformedSession)).toBe(false);
+    }
+
+    for (const duplicate of [
+      { ...attestations[0], reason: "" },
+      {
+        ...attestations[0],
+        sourceEvidenceHash: `fnv1a64:${"4".repeat(16)}`,
+      },
+    ]) {
+      const invalidDuplicateSession = {
+        ...confirmedSession,
+        ruleReviewAttestations: [...attestations, duplicate],
+      };
+      expect(calculateSessionQuality(invalidDuplicateSession)).toMatchObject({
+        attestationIntegrityFailureCount: 1,
+        citationReverseCheckRate: 0,
+      });
+      expect(canFinalizeSession(invalidDuplicateSession)).toBe(false);
+    }
+
     const staleAtomic = { ...atomicRequirement, frequency: "每年" };
     expect(
       canFinalizeSession({
@@ -347,6 +409,96 @@ describe("calculateQuality", () => {
         units: [...pageUnits].reverse(),
       }).orderedUnitDigest,
     ).not.toBe(outcome.orderedUnitDigest);
+  });
+
+  test("fails official provenance without pairing and passes the same rule with exact Task 7 pairing", () => {
+    const officialSource = {
+      sourceId: "OFF-QUALITY",
+      sourceType: "official_interpretation" as const,
+      title: "合成官方说明",
+      content: "官方说明政策目标。",
+    };
+    const officialUnit: ParsedSourceUnit = {
+      sourceId: officialSource.sourceId,
+      sourceType: officialSource.sourceType,
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: officialSource.content,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const officialFinding: Finding = {
+      findingId: "OFF-FINDING",
+      category: "official_context:policy_background",
+      statement: `官方解读材料摘录（政策背景）：“${officialSource.content}”。该摘录仅作为官方说明材料，不建立或覆盖监管文件效力、适用性或其他法律结论，须经人工合规复核。`,
+      claimType: "official_explanation",
+      sourceAnchors: [
+        {
+          sourceId: officialSource.sourceId,
+          sourceType: officialSource.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: officialSource.content,
+        },
+      ],
+      inferenceParents: [fact.findingId],
+      reviewStatus: "confirmed",
+      requiredReview: true,
+      revisionRecords: [],
+    };
+    const officialParseResult: ParseResult = {
+      fileHash: "e".repeat(64),
+      source: officialSource,
+      pageCount: 1,
+      successfulPages: [1],
+      failedPages: [],
+      units: [officialUnit],
+      ocrReviews: [],
+      anchors: buildAnchors([officialUnit]),
+      quality: {
+        totalCharacters: officialSource.content.length,
+        parsedUnitCount: 1,
+        failedPageCount: 0,
+        lowTextPages: [],
+        ocrFailedPages: [],
+        finalizationBlocked: false,
+        extractionCoverage: 1,
+      },
+    };
+    const officialProject: Project = {
+      ...project([fact, officialFinding]),
+      sourceUnits: [source, officialSource],
+    };
+    const withoutPairing = calculateSessionQuality({
+      project: officialProject,
+      parseResults: [completeParseResult, officialParseResult],
+    });
+    expect(withoutPairing).toMatchObject({
+      citationReverseCheckRate: 0.5,
+      unsupportedFindingCount: 1,
+    });
+    expect(
+      canFinalizeSession({
+        project: officialProject,
+        parseResults: [completeParseResult, officialParseResult],
+      }),
+    ).toBe(false);
+
+    const pairedSession = {
+      project: officialProject,
+      parseResults: [completeParseResult, officialParseResult],
+      officialPrimarySourceIds: {
+        [officialSource.sourceId]: [source.sourceId],
+      },
+    };
+    expect(calculateSessionQuality(pairedSession)).toMatchObject({
+      citationReverseCheckRate: 1,
+      unsupportedFindingCount: 0,
+      attestationIntegrityFailureCount: 0,
+    });
+    expect(canFinalizeSession(pairedSession)).toBe(true);
   });
 
   test("rejects swapped, stale, missing, or duplicate authoritative ParseResult anchors", () => {

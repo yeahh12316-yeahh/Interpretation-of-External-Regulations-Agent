@@ -1,12 +1,12 @@
 import { type JSX, useEffect, useRef } from "react";
 
-import type { ValidationRule } from "./validate-finding";
 import type {
+  EvidenceValidationRule,
   ResolvedValidationResult,
   ValidationResolution,
 } from "./review-attestation";
 
-const RULE_LABELS: Record<ValidationRule, string> = {
+const RULE_LABELS: Record<EvidenceValidationRule, string> = {
   source_id: "来源 ID",
   source_type: "来源类型",
   locator_page: "页码定位",
@@ -18,6 +18,7 @@ const RULE_LABELS: Record<ValidationRule, string> = {
   dates: "日期一致性",
   numbers: "数字与比例",
   inference_parent: "推导父项",
+  attestation_integrity: "人工确认记录完整性",
 };
 
 const RESOLUTION_LABELS: Record<ValidationResolution, string> = {
@@ -26,6 +27,7 @@ const RESOLUTION_LABELS: Record<ValidationResolution, string> = {
   manual_review_pending: "需人工确认",
   manual_confirmed: "人工已确认",
   manual_rejected: "人工否决",
+  attestation_integrity_failed: "确认记录完整性失败",
 };
 
 export interface ValidationDetailsProps {

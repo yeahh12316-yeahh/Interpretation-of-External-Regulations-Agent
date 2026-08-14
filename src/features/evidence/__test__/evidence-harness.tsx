@@ -48,8 +48,12 @@ const parsedUnits: ParsedSourceUnit[] = [
 
 const findings: Finding[] = parsedUnits.map((unit, index) => ({
   findingId: `F${index + 1}`,
-  category: index === 0 ? "atomic_requirement" : "key_matter:prohibition",
-  statement: index === 0 ? "机构应当保留记录。" : "官方解读说明不得删除记录。",
+  category:
+    index === 0 ? "atomic_requirement" : "official_context:policy_background",
+  statement:
+    index === 0
+      ? "机构应当保留记录。"
+      : "官方解读材料摘录（政策背景）：“官方解读说明不得删除记录。”。该摘录仅作为官方说明材料，不建立或覆盖监管文件效力、适用性或其他法律结论，须经人工合规复核。",
   claimType: index === 0 ? "regulatory_fact" : "official_explanation",
   sourceAnchors: [
     {
@@ -61,13 +65,16 @@ const findings: Finding[] = parsedUnits.map((unit, index) => ({
       quote: index === 0 ? "机构应当保留记录。" : "官方解读说明不得删除记录。",
     },
   ],
-  inferenceParents: [],
+  inferenceParents: index === 0 ? [] : ["F1"],
   reviewStatus: "unreviewed",
   requiredReview: true,
   revisionRecords: [],
 }));
 
 const sourceById = new Map(sources.map((source) => [source.sourceId, source]));
+const correctOfficialPairing = {
+  "SYNTHETIC-OFFICIAL": ["SYNTHETIC-REG"],
+} as const;
 const harnessMappingsValid =
   parsedUnits.every(
     (unit) => sourceById.get(unit.sourceId)?.sourceType === unit.sourceType,
@@ -77,7 +84,8 @@ const harnessMappingsValid =
       (anchor) =>
         sourceById.get(anchor.sourceId)?.sourceType === anchor.sourceType,
     ),
-  );
+  ) &&
+  correctOfficialPairing["SYNTHETIC-OFFICIAL"][0] === "SYNTHETIC-REG";
 if (!harnessMappingsValid) {
   throw new Error(
     "EvidencePanel test harness source mappings are inconsistent",
@@ -87,6 +95,9 @@ document.documentElement.dataset.harnessMappings = "valid";
 
 function Harness() {
   const [selectedFindingId, setSelectedFindingId] = useState("F1");
+  const [officialPrimarySourceIds, setOfficialPrimarySourceIds] = useState<
+    typeof correctOfficialPairing | undefined
+  >(correctOfficialPairing);
   return (
     <main
       style={{
@@ -105,9 +116,22 @@ function Harness() {
         <button onClick={() => setSelectedFindingId("F2")} type="button">
           选择结论 F2
         </button>
+        <button
+          onClick={() => setOfficialPrimarySourceIds(undefined)}
+          type="button"
+        >
+          移除官方配对
+        </button>
+        <button
+          onClick={() => setOfficialPrimarySourceIds(correctOfficialPairing)}
+          type="button"
+        >
+          恢复官方配对
+        </button>
       </section>
       <EvidencePanel
         findings={findings}
+        officialPrimarySourceIds={officialPrimarySourceIds}
         parsedUnits={parsedUnits}
         selectedFindingId={selectedFindingId}
         sources={sources}

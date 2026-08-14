@@ -9,13 +9,11 @@ import { findNormalizedTextRange } from "./normalize-text";
 import {
   createSourceIndex,
   findIndexedParsedUnitForAnchor,
+  type OfficialPrimarySourceIds,
   validateFinding,
 } from "./validate-finding";
 import { ValidationDetails } from "./ValidationDetails";
-import {
-  resolveValidationResults,
-  type RuleReviewAttestation,
-} from "./review-attestation";
+import { resolveValidationResults } from "./review-attestation";
 
 const CLAIM_LABELS: Record<ClaimType, string> = {
   regulatory_fact: "监管事实",
@@ -31,7 +29,8 @@ export interface EvidencePanelProps {
   sources: readonly SourceUnit[];
   parsedUnits: readonly ParsedSourceUnit[];
   atomicRequirements?: readonly AtomicRequirement[];
-  ruleReviewAttestations?: readonly RuleReviewAttestation[];
+  ruleReviewAttestations?: unknown;
+  officialPrimarySourceIds?: OfficialPrimarySourceIds;
 }
 
 const HighlightedExcerpt = ({
@@ -61,6 +60,7 @@ export function EvidencePanel({
   parsedUnits,
   atomicRequirements = [],
   ruleReviewAttestations = [],
+  officialPrimarySourceIds,
 }: EvidencePanelProps): JSX.Element {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const closeDetails = useCallback(() => setDetailsOpen(false), []);
@@ -76,8 +76,15 @@ export function EvidencePanel({
         parsedUnits,
         findings,
         atomicRequirements,
+        officialPrimarySourceIds,
       }),
-    [atomicRequirements, findings, parsedUnits, sources],
+    [
+      atomicRequirements,
+      findings,
+      officialPrimarySourceIds,
+      parsedUnits,
+      sources,
+    ],
   );
   const results = useMemo(
     () =>

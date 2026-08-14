@@ -85,26 +85,41 @@ describe("rule review attestation", () => {
         finding,
         [validation("manual_review_required")],
         [requirement],
-        [attestation],
+        [
+          attestation,
+          {
+            ...attestation,
+            findingId: "F-UNRELATED",
+            rule: "modal_strength",
+          },
+        ],
       )[0],
     ).toMatchObject({ resolution: "manual_confirmed", effectivePassed: true });
     expect(
       resolveValidationResults(
         finding,
-        [validation("manual_review_required")],
+        [validation("passed")],
         [requirement],
         [{ ...attestation, decision: "rejected" }],
       )[0],
     ).toMatchObject({ resolution: "manual_rejected", effectivePassed: false });
   });
 
-  test("fails closed for stale, tampered, wrong-rule, duplicate, or malformed attestations", () => {
+  test("reports integrity failure for stale, duplicate, conflicting, or malformed associated records", () => {
     const variants = [
       [{ ...attestation, sourceEvidenceHash: `fnv1a64:${"0".repeat(16)}` }],
       [{ ...attestation, findingHash: `fnv1a64:${"1".repeat(16)}` }],
       [{ ...attestation, atomicRequirementHash: `fnv1a64:${"2".repeat(16)}` }],
-      [{ ...attestation, rule: "modal_strength" as const }],
       [attestation, { ...attestation }],
+      [attestation, { ...attestation, decision: "rejected" as const }],
+      [
+        attestation,
+        {
+          ...attestation,
+          sourceEvidenceHash: `fnv1a64:${"3".repeat(16)}`,
+        },
+      ],
+      [attestation, { ...attestation, reason: "" }],
       [{ ...attestation, reason: "" }],
       [{ ...attestation, unexpected: true }],
     ];
@@ -118,10 +133,22 @@ describe("rule review attestation", () => {
           candidate,
         )[0],
       ).toMatchObject({
-        resolution: "manual_review_pending",
+        resolution: "attestation_integrity_failed",
         effectivePassed: false,
       });
     }
+
+    expect(
+      resolveValidationResults(
+        finding,
+        [validation("manual_review_required")],
+        [requirement],
+        [{ ...attestation, rule: "modal_strength" }],
+      )[0],
+    ).toMatchObject({
+      resolution: "manual_review_pending",
+      effectivePassed: false,
+    });
     expect(
       RuleReviewAttestationSchema.safeParse({
         ...attestation,
@@ -130,13 +157,44 @@ describe("rule review attestation", () => {
     ).toBe(false);
   });
 
+  test("deep-validates malformed outer collections without throwing or silently dropping them", () => {
+    const malformedCollections: unknown[] = [
+      null,
+      {},
+      [null],
+      [{}],
+      [
+        {
+          ...attestation,
+          sourceEvidenceHash: { nested: "invalid" },
+        },
+      ],
+    ];
+
+    for (const candidate of malformedCollections) {
+      const resolve = () =>
+        resolveValidationResults(
+          finding,
+          [validation("manual_review_required")],
+          [requirement],
+          candidate,
+        );
+      expect(resolve).not.toThrow();
+      expect(
+        resolve().some(
+          ({ resolution }) => resolution === "attestation_integrity_failed",
+        ),
+      ).toBe(true);
+    }
+  });
+
   test("never permits an attestation to override a deterministic failure", () => {
     expect(
       resolveValidationResults(
         finding,
         [validation("failed")],
         [requirement],
-        [attestation],
+        [{ ...attestation, decision: "rejected" }],
       )[0],
     ).toMatchObject({
       status: "failed",
