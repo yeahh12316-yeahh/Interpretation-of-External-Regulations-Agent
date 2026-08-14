@@ -1,6 +1,6 @@
 import "@testing-library/jest-dom/vitest";
 
-import { fireEvent, render, screen } from "@testing-library/react";
+import { fireEvent, render, screen, waitFor } from "@testing-library/react";
 import { afterEach, describe, expect, test, vi } from "vitest";
 
 import type { ParseResult } from "./parse-document";
@@ -146,7 +146,7 @@ describe("applyOcrCorrection", () => {
 });
 
 describe("OcrReview", () => {
-  test("opens a ParseResult page directly and persists a correction", () => {
+  test("hydrates a persisted correction into the authoritative ParseResult without duplicating history", async () => {
     const page = ocrPage(1);
     const result = parseResultWith(page);
     const onChange = vi.fn();
@@ -155,6 +155,7 @@ describe("OcrReview", () => {
         result={result}
         reviewId={page.unitId}
         reviewer="复核员甲"
+        onHydrate={vi.fn()}
         onChange={onChange}
       />,
     );
@@ -179,15 +180,40 @@ describe("OcrReview", () => {
     );
 
     firstRender.unmount();
+    const restoredOnHydrate = vi.fn();
     const restoredOnChange = vi.fn();
-    render(
+    const restoredView = render(
       <OcrReview
         result={result}
         reviewId={page.unitId}
         reviewer="复核员甲"
+        onHydrate={restoredOnHydrate}
         onChange={restoredOnChange}
       />,
     );
+    await waitFor(() => expect(restoredOnHydrate).toHaveBeenCalledTimes(1));
+    const hydratedResult = restoredOnHydrate.mock.calls[0]?.[0] as ParseResult;
+    expect(hydratedResult).toMatchObject({
+      source: { content: "第一条 不得泄露客户个人信息。" },
+      units: [
+        {
+          text: "第一条 不得泄露客户个人信息。",
+          reviewStatus: "corrected",
+        },
+      ],
+      anchors: [{ quote: "第一条 不得泄露客户个人信息。" }],
+    });
+    expect(hydratedResult.ocrReviews[0]?.correctionHistory).toHaveLength(1);
+    restoredView.rerender(
+      <OcrReview
+        result={hydratedResult}
+        reviewId={page.unitId}
+        reviewer="复核员甲"
+        onHydrate={restoredOnHydrate}
+        onChange={restoredOnChange}
+      />,
+    );
+    await waitFor(() => expect(restoredOnHydrate).toHaveBeenCalledTimes(1));
     expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
       "第一条 不得泄露客户个人信息。",
     );
@@ -206,7 +232,12 @@ describe("OcrReview", () => {
     const second = ocrPage(2, "第二页 OCR 文本");
     const result = parseResultWith(first, second);
     const view = render(
-      <OcrReview result={result} reviewId={first.unitId} reviewer="复核员甲" />,
+      <OcrReview
+        result={result}
+        reviewId={first.unitId}
+        reviewer="复核员甲"
+        onHydrate={vi.fn()}
+      />,
     );
     fireEvent.change(screen.getByRole("textbox", { name: "OCR 纠错文本" }), {
       target: { value: "未保存的第一页草稿" },
@@ -217,6 +248,7 @@ describe("OcrReview", () => {
         result={result}
         reviewId={second.unitId}
         reviewer="复核员甲"
+        onHydrate={vi.fn()}
       />,
     );
 
@@ -238,6 +270,7 @@ describe("OcrReview", () => {
         result={parseResultWith(failed)}
         reviewId={failed.unitId}
         reviewer="复核员甲"
+        onHydrate={vi.fn()}
       />,
     );
 
@@ -247,5 +280,94 @@ describe("OcrReview", () => {
     expect(
       screen.queryByRole("button", { name: "保存纠错" }),
     ).not.toBeInTheDocument();
+  });
+
+  test("migrates a legacy stored correction and supports repeated saves", async () => {
+    const page = ocrPage(1);
+    const result = parseResultWith(page);
+    const legacyReview: Record<string, unknown> = {
+      ...page,
+      text: "第一条 旧版纠错文本。",
+      correctedText: "第一条 旧版纠错文本。",
+      reviewStatus: "corrected",
+      reviewedAt: "2026-08-14T09:00:00.000Z",
+    };
+    delete legacyReview.reviewedBy;
+    delete legacyReview.correctionHistory;
+    const key = `external-regulation:ocr-review:${page.unitId}`;
+    localStorage.setItem(key, JSON.stringify(legacyReview));
+    const onHydrate = vi.fn();
+    const onChange = vi.fn();
+
+    render(
+      <OcrReview
+        result={result}
+        reviewId={page.unitId}
+        reviewer="复核员乙"
+        onHydrate={onHydrate}
+        onChange={onChange}
+      />,
+    );
+
+    await waitFor(() => expect(onHydrate).toHaveBeenCalledTimes(1));
+    expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
+      "第一条 旧版纠错文本。",
+    );
+    expect(JSON.parse(localStorage.getItem(key) ?? "null")).toMatchObject({
+      version: 2,
+      review: {
+        reviewedBy: null,
+        correctionHistory: [],
+      },
+    });
+
+    const textbox = screen.getByRole("textbox", { name: "OCR 纠错文本" });
+    fireEvent.change(textbox, {
+      target: { value: "第一条 第一次新版纠错。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存纠错" }));
+    fireEvent.change(textbox, {
+      target: { value: "第一条 第二次新版纠错。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存纠错" }));
+
+    expect(onChange).toHaveBeenCalledTimes(2);
+    expect(
+      onChange.mock.calls[1]?.[0].ocrReviews[0].correctionHistory,
+    ).toHaveLength(2);
+  });
+
+  test("clears corrupt stored records without exposing their text", () => {
+    const page = ocrPage(1);
+    const result = parseResultWith(page);
+    const key = `external-regulation:ocr-review:${page.unitId}`;
+    const secret = "不应显示的损坏存储文本";
+    localStorage.setItem(
+      key,
+      JSON.stringify({
+        version: 2,
+        review: { unitId: page.unitId, text: secret },
+      }),
+    );
+
+    render(
+      <OcrReview
+        result={result}
+        reviewId={page.unitId}
+        reviewer="复核员甲"
+        onHydrate={vi.fn()}
+      />,
+    );
+
+    expect(screen.queryByText(secret)).not.toBeInTheDocument();
+    expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
+      page.text,
+    );
+    const replacement = JSON.parse(localStorage.getItem(key) ?? "null");
+    expect(replacement).toMatchObject({
+      version: 2,
+      review: { unitId: page.unitId, text: page.text },
+    });
+    expect(localStorage.getItem(key)).not.toContain(secret);
   });
 });

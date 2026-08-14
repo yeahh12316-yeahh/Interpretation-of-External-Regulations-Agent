@@ -1,4 +1,5 @@
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { z } from "zod";
 
 import {
   articleFromText,
@@ -11,22 +12,140 @@ import type { OcrPageResult } from "./ocr/ocr-pipeline";
 const storageKey = (unitId: string) =>
   `external-regulation:ocr-review:${unitId}`;
 
-const readStoredReview = (unitId: string): OcrPageResult | null => {
-  try {
-    const raw = localStorage.getItem(storageKey(unitId));
-    if (!raw) return null;
-    const parsed = JSON.parse(raw) as OcrPageResult;
-    return parsed.unitId === unitId ? parsed : null;
-  } catch {
-    return null;
-  }
-};
+const OCR_REVIEW_STORAGE_VERSION = 2;
+
+const boundingBoxSchema = z
+  .object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    width: z.number().finite().nonnegative(),
+    height: z.number().finite().nonnegative(),
+  })
+  .strict();
+
+const correctionRecordSchema = z
+  .object({
+    correctedText: z.string().min(1),
+    reviewedBy: z.string().min(1),
+    reviewedAt: z.string().min(1),
+  })
+  .strict();
+
+const ocrPageResultSchema = z
+  .object({
+    unitId: z.string().min(1),
+    sourceId: z.string().min(1),
+    sourceType: z.enum(["regulatory_text", "official_interpretation"]),
+    page: z.number().int().positive(),
+    method: z.literal("ocr"),
+    confidence: z.number().finite().min(0).max(1),
+    text: z.string(),
+    originalOcrText: z.string(),
+    correctedText: z.string().nullable(),
+    reviewStatus: z.enum(["unreviewed", "corrected", "failed"]),
+    reviewedAt: z.string().min(1).nullable(),
+    reviewedBy: z.string().min(1).nullable(),
+    correctionHistory: z.array(correctionRecordSchema),
+    boundingBox: boundingBoxSchema,
+    regions: z.array(
+      z
+        .object({
+          text: z.string(),
+          confidence: z.number().finite().min(0).max(1),
+          boundingBox: boundingBoxSchema,
+          lowConfidence: z.boolean(),
+        })
+        .strict(),
+    ),
+    lowConfidenceCharacters: z.array(
+      z
+        .object({
+          text: z.string(),
+          confidence: z.number().finite().min(0).max(1),
+          boundingBox: boundingBoxSchema,
+        })
+        .strict(),
+    ),
+    error: z.literal("页面 OCR 识别失败").optional(),
+  })
+  .strict()
+  .superRefine((review, context) => {
+    if (
+      review.reviewStatus === "corrected" &&
+      (!review.correctedText || !review.reviewedAt)
+    ) {
+      context.addIssue({
+        code: "custom",
+        message: "corrected review metadata is incomplete",
+      });
+    }
+    if (review.reviewStatus === "failed" && !review.error) {
+      context.addIssue({
+        code: "custom",
+        message: "failed review metadata is incomplete",
+      });
+    }
+  });
+
+const storedReviewSchema = z
+  .object({
+    version: z.literal(OCR_REVIEW_STORAGE_VERSION),
+    review: ocrPageResultSchema,
+  })
+  .strict();
+
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const writeStoredReview = (page: OcrPageResult): void => {
   try {
-    localStorage.setItem(storageKey(page.unitId), JSON.stringify(page));
+    localStorage.setItem(
+      storageKey(page.unitId),
+      JSON.stringify({
+        version: OCR_REVIEW_STORAGE_VERSION,
+        review: page,
+      }),
+    );
   } catch {
     // The corrected ParseResult remains authoritative when storage is unavailable.
+  }
+};
+
+const readStoredReview = (unitId: string): OcrPageResult | null => {
+  const key = storageKey(unitId);
+  try {
+    const raw = localStorage.getItem(key);
+    if (!raw) return null;
+    const parsed: unknown = JSON.parse(raw);
+    const current = storedReviewSchema.safeParse(parsed);
+    if (current.success && current.data.review.unitId === unitId) {
+      return current.data.review;
+    }
+
+    if (isRecord(parsed) && !("version" in parsed)) {
+      const legacyCandidate = {
+        ...parsed,
+        ...(Object.hasOwn(parsed, "reviewedBy") ? {} : { reviewedBy: null }),
+        ...(Object.hasOwn(parsed, "correctionHistory")
+          ? {}
+          : { correctionHistory: [] }),
+      };
+      const migrated = ocrPageResultSchema.safeParse(legacyCandidate);
+      if (migrated.success && migrated.data.unitId === unitId) {
+        writeStoredReview(migrated.data);
+        return migrated.data;
+      }
+    }
+
+    localStorage.removeItem(key);
+    return null;
+  } catch {
+    try {
+      localStorage.removeItem(key);
+    } catch {
+      // Storage can be unavailable; do not expose persisted OCR text in errors.
+    }
+    return null;
   }
 };
 
@@ -104,7 +223,7 @@ export function applyOcrCorrection(
     reviewStatus: "corrected",
     reviewedAt,
     reviewedBy: normalizedReviewer,
-    correctionHistory: [...current.correctionHistory, correction],
+    correctionHistory: [...(current.correctionHistory ?? []), correction],
   };
   let unitFound = false;
   const units = result.units.map((unit) => {
@@ -146,6 +265,7 @@ export interface OcrReviewProps {
   result: ParseResult;
   reviewId: string;
   reviewer: string;
+  onHydrate: (result: ParseResult) => void;
   onChange?: (result: ParseResult) => void;
 }
 
@@ -153,6 +273,7 @@ export function OcrReview({
   result,
   reviewId,
   reviewer,
+  onHydrate,
   onChange,
 }: OcrReviewProps) {
   const page = result.ocrReviews.find((review) => review.unitId === reviewId);
@@ -160,13 +281,41 @@ export function OcrReview({
   const restored = () => readStoredReview(page.unitId) ?? page;
   const [review, setReview] = useState<OcrPageResult>(restored);
   const [draft, setDraft] = useState(review.correctedText ?? review.text);
+  const hydratedRevision = useRef<string | null>(null);
 
   useEffect(() => {
-    const nextReview = readStoredReview(page.unitId) ?? page;
+    const storedReview = readStoredReview(page.unitId);
+    const nextReview = storedReview ?? page;
     setReview(nextReview);
     setDraft(nextReview.correctedText ?? nextReview.text);
-    if (!readStoredReview(page.unitId)) writeStoredReview(page);
-  }, [page]);
+    if (!storedReview) {
+      writeStoredReview(page);
+      hydratedRevision.current = null;
+      return;
+    }
+
+    const storedCorrectionIsMissingFromResult =
+      storedReview.reviewStatus === "corrected" &&
+      (page.reviewStatus !== "corrected" ||
+        page.text !== storedReview.text ||
+        page.reviewedAt !== storedReview.reviewedAt ||
+        page.correctionHistory.length !==
+          storedReview.correctionHistory.length);
+    if (!storedCorrectionIsMissingFromResult) {
+      hydratedRevision.current = null;
+      return;
+    }
+
+    const revision = JSON.stringify([
+      storedReview.unitId,
+      storedReview.reviewedAt,
+      storedReview.correctedText,
+      storedReview.correctionHistory.length,
+    ]);
+    if (hydratedRevision.current === revision) return;
+    hydratedRevision.current = revision;
+    onHydrate(resultWithReviewState(result, storedReview));
+  }, [onHydrate, page, result]);
 
   if (review.reviewStatus === "failed") {
     return (
