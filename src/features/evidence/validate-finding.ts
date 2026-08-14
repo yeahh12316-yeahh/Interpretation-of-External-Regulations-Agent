@@ -1,0 +1,345 @@
+import type { Finding } from "../../domain/finding";
+import type { SourceAnchor, SourceUnit } from "../../domain/source";
+import type { ParsedSourceUnit } from "../parsing/build-anchors";
+import {
+  extractDates,
+  extractModalTerms,
+  extractNumbers,
+  normalizeText,
+} from "./normalize-text";
+
+export type ValidationRule =
+  | "source_id"
+  | "source_type"
+  | "locator_page"
+  | "locator_paragraph"
+  | "locator_article"
+  | "quote_match"
+  | "modal_strength"
+  | "dates"
+  | "numbers"
+  | "inference_parent";
+
+export type ValidationSeverity = "info" | "warning" | "error";
+
+export interface ValidationResult {
+  rule: ValidationRule;
+  passed: boolean;
+  message: string;
+  severity: ValidationSeverity;
+}
+
+export interface SourceIndexInput {
+  sources: readonly SourceUnit[];
+  parsedUnits: readonly ParsedSourceUnit[];
+  findings?: readonly Finding[];
+}
+
+interface IndexedParsedUnit {
+  unit: ParsedSourceUnit;
+  effectiveArticle: string | null;
+}
+
+export interface SourceIndex {
+  readonly sources: readonly SourceUnit[];
+  readonly parsedUnits: readonly ParsedSourceUnit[];
+  readonly findings: readonly Finding[];
+  readonly sourceById: ReadonlyMap<string, readonly SourceUnit[]>;
+  readonly findingById: ReadonlyMap<string, Finding>;
+  readonly indexedUnits: readonly IndexedParsedUnit[];
+}
+
+const anchorKey = (anchor: SourceAnchor): string => JSON.stringify(anchor);
+
+export function createSourceIndex({
+  sources,
+  parsedUnits,
+  findings = [],
+}: SourceIndexInput): SourceIndex {
+  const sourceById = new Map<string, SourceUnit[]>();
+  for (const source of sources) {
+    sourceById.set(source.sourceId, [
+      ...(sourceById.get(source.sourceId) ?? []),
+      source,
+    ]);
+  }
+
+  const articleBySource = new Map<string, string>();
+  const indexedUnits = parsedUnits.map((unit) => {
+    if (unit.article) articleBySource.set(unit.sourceId, unit.article);
+    return {
+      unit,
+      effectiveArticle:
+        unit.article ?? articleBySource.get(unit.sourceId) ?? null,
+    };
+  });
+
+  return {
+    sources,
+    parsedUnits,
+    findings,
+    sourceById,
+    findingById: new Map(
+      findings.map((finding) => [finding.findingId, finding]),
+    ),
+    indexedUnits,
+  };
+}
+
+const result = (
+  rule: ValidationRule,
+  passed: boolean,
+  success: string,
+  failure: string,
+  failureSeverity: ValidationSeverity = "error",
+): ValidationResult => ({
+  rule,
+  passed,
+  message: passed ? success : failure,
+  severity: passed ? "info" : failureSeverity,
+});
+
+const unitsForAnchor = (
+  anchor: SourceAnchor,
+  index: SourceIndex,
+): readonly IndexedParsedUnit[] =>
+  index.indexedUnits.filter(({ unit }) => {
+    const authorizedSources = index.sourceById.get(unit.sourceId) ?? [];
+    const [source] = authorizedSources;
+    return (
+      authorizedSources.length === 1 &&
+      source.sourceType === unit.sourceType &&
+      normalizeText(source.content).includes(normalizeText(unit.text)) &&
+      unit.sourceId === anchor.sourceId &&
+      unit.sourceType === anchor.sourceType
+    );
+  });
+
+const pageMatches = (
+  anchor: SourceAnchor,
+  indexed: IndexedParsedUnit,
+): boolean => indexed.unit.page === anchor.page;
+
+const paragraphMatches = (
+  anchor: SourceAnchor,
+  indexed: IndexedParsedUnit,
+): boolean =>
+  pageMatches(anchor, indexed) &&
+  indexed.unit.paragraphIndex === anchor.paragraphIndex;
+
+const articleMatches = (
+  anchor: SourceAnchor,
+  indexed: IndexedParsedUnit,
+): boolean =>
+  paragraphMatches(anchor, indexed) &&
+  normalizeText(indexed.effectiveArticle ?? "") ===
+    normalizeText(anchor.article ?? "");
+
+export const findParsedUnitForAnchor = (
+  anchor: SourceAnchor,
+  index: SourceIndex,
+): ParsedSourceUnit | undefined =>
+  unitsForAnchor(anchor, index).find(
+    (indexed) =>
+      articleMatches(anchor, indexed) &&
+      normalizeText(indexed.unit.text).includes(normalizeText(anchor.quote)),
+  )?.unit;
+
+const everyAnchor = (
+  anchors: readonly SourceAnchor[],
+  predicate: (anchor: SourceAnchor) => boolean,
+): boolean => anchors.length > 0 && anchors.every(predicate);
+
+const tokensAreAuthorized = (
+  statementTokens: readonly string[],
+  evidenceTokens: readonly string[],
+): boolean => statementTokens.every((token) => evidenceTokens.includes(token));
+
+const evidenceFor = (finding: Finding, index: SourceIndex): string => {
+  const parentEvidence =
+    finding.claimType === "ai_inference"
+      ? finding.inferenceParents.flatMap((parentId) => {
+          const parent = index.findingById.get(parentId);
+          return parent
+            ? [
+                parent.statement,
+                ...parent.sourceAnchors.map(({ quote }) => quote),
+              ]
+            : [];
+        })
+      : [];
+  return [
+    ...finding.sourceAnchors.map(({ quote }) => quote),
+    ...parentEvidence,
+  ].join("\n");
+};
+
+const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
+  if (
+    finding.claimType === "ai_inference" ||
+    finding.claimType === "human_judgment"
+  ) {
+    return true;
+  }
+  const critical = extractModalTerms(evidenceFor(finding, index)).filter(
+    (term) => ["不得", "严禁", "必须", "应当"].includes(term),
+  );
+  if (critical.length === 0) return true;
+  const statementTerms = extractModalTerms(finding.statement);
+  return critical.every((term) => statementTerms.includes(term));
+};
+
+const sourceTypeMatchesClaim = (finding: Finding): boolean => {
+  if (finding.claimType === "regulatory_fact") {
+    return everyAnchor(
+      finding.sourceAnchors,
+      (anchor) => anchor.sourceType === "regulatory_text",
+    );
+  }
+  if (finding.claimType === "official_explanation") {
+    return everyAnchor(
+      finding.sourceAnchors,
+      (anchor) => anchor.sourceType === "official_interpretation",
+    );
+  }
+  return true;
+};
+
+const inferenceProvenanceMatches = (
+  finding: Finding,
+  index: SourceIndex,
+): boolean => {
+  if (finding.inferenceParents.length === 0) {
+    return finding.claimType !== "ai_inference";
+  }
+  const parents = finding.inferenceParents.map((id) =>
+    index.findingById.get(id),
+  );
+  if (
+    parents.some((parent) => !parent || parent.findingId === finding.findingId)
+  ) {
+    return false;
+  }
+  if (finding.claimType !== "ai_inference") return true;
+  const parentAnchorKeys = new Set(
+    parents.flatMap((parent) => parent!.sourceAnchors.map(anchorKey)),
+  );
+  return (
+    finding.sourceAnchors.length > 0 &&
+    finding.sourceAnchors.every((anchor) =>
+      parentAnchorKeys.has(anchorKey(anchor)),
+    )
+  );
+};
+
+export function validateFinding(
+  finding: Finding,
+  index: SourceIndex,
+): ValidationResult[] {
+  const anchors = finding.sourceAnchors;
+  const sourceIdPassed = everyAnchor(
+    anchors,
+    (anchor) => (index.sourceById.get(anchor.sourceId)?.length ?? 0) === 1,
+  );
+  const sourceTypePassed =
+    sourceIdPassed &&
+    everyAnchor(anchors, (anchor) => {
+      const [source] = index.sourceById.get(anchor.sourceId) ?? [];
+      return source?.sourceType === anchor.sourceType;
+    }) &&
+    sourceTypeMatchesClaim(finding);
+
+  const pagePassed = everyAnchor(anchors, (anchor) =>
+    unitsForAnchor(anchor, index).some((unit) => pageMatches(anchor, unit)),
+  );
+  const paragraphPassed = everyAnchor(anchors, (anchor) =>
+    unitsForAnchor(anchor, index).some((unit) =>
+      paragraphMatches(anchor, unit),
+    ),
+  );
+  const articlePassed = everyAnchor(anchors, (anchor) =>
+    unitsForAnchor(anchor, index).some((unit) => articleMatches(anchor, unit)),
+  );
+  const quotePassed = everyAnchor(
+    anchors,
+    (anchor) => findParsedUnitForAnchor(anchor, index) !== undefined,
+  );
+
+  const evidence = evidenceFor(finding, index);
+  const statementDates = extractDates(finding.statement);
+  const statementNumbers = extractNumbers(finding.statement);
+  const datesPassed = tokensAreAuthorized(
+    statementDates,
+    extractDates(evidence),
+  );
+  const numbersPassed = tokensAreAuthorized(
+    statementNumbers,
+    extractNumbers(evidence),
+  );
+  const inferencePassed = inferenceProvenanceMatches(finding, index);
+
+  return [
+    result(
+      "source_id",
+      sourceIdPassed,
+      "全部引用均绑定唯一的项目来源 ID。",
+      "引用缺少唯一授权来源，来源可能已删除或 ID 重复。",
+    ),
+    result(
+      "source_type",
+      sourceTypePassed,
+      "来源类型与文件及结论类型一致。",
+      "来源类型与文件或结论类型不一致，监管原文与官方解读不得混用。",
+    ),
+    result(
+      "locator_page",
+      pagePassed,
+      "页码定位与解析单元一致；无固定页码材料已按 null 定位确认。",
+      "页码定位缺失或与解析单元冲突，待校验。",
+    ),
+    result(
+      "locator_paragraph",
+      paragraphPassed,
+      "段落序号与解析单元一致。",
+      "段落序号缺失或与解析单元冲突，待校验。",
+    ),
+    result(
+      "locator_article",
+      articlePassed,
+      "条款定位与解析单元一致；无条款材料已按 null 定位确认。",
+      "条款定位缺失或与解析单元冲突，待校验。",
+    ),
+    result(
+      "quote_match",
+      quotePassed,
+      "引用已在相同来源、页码、条款和段落的解析原文中反向匹配。",
+      "引用未在权威解析定位中反向匹配，待校验。",
+    ),
+    result(
+      "modal_strength",
+      modalTermsPreserved(finding, index),
+      "不得、严禁、必须、应当等监管强度词保持一致。",
+      "结论遗漏或改变了监管强度词。",
+    ),
+    result(
+      "dates",
+      datesPassed,
+      "结论中的日期均有来源依据。",
+      "结论包含来源依据中不存在的日期。",
+    ),
+    result(
+      "numbers",
+      numbersPassed,
+      "结论中的数字和比例均有来源依据。",
+      "结论包含来源依据中不存在的数字或比例。",
+    ),
+    result(
+      "inference_parent",
+      inferencePassed,
+      finding.claimType === "ai_inference"
+        ? "AI 推导父项存在，且引用属于父项证据。"
+        : "该结论无需 AI 推导父项校验。",
+      "AI 推导缺少有效父项，或引用超出父项证据范围。",
+    ),
+  ];
+}
