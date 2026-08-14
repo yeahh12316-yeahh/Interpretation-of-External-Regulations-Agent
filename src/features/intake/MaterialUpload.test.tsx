@@ -8,9 +8,10 @@ import {
   within,
 } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
-import { expect, test } from "vitest";
+import { expect, test, vi } from "vitest";
 
 import { MaterialUpload } from "./MaterialUpload";
+import type { ParseResult } from "../parsing/parse-document";
 
 const textFile = (name: string, content: string): File => {
   const bytes = new TextEncoder().encode(content);
@@ -114,4 +115,75 @@ test("exposes cancellation and reports it without leaking file content", async (
 
   expect(await screen.findByRole("status")).toHaveTextContent("已取消");
   expect(screen.queryByText(/敏感正文/)).not.toBeInTheDocument();
+});
+
+test("shows a blocked state and affected OCR pages instead of complete", async () => {
+  const blocked: ParseResult = {
+    fileHash: "abc",
+    source: {
+      sourceId: "SRC-regulatory_text-abc",
+      sourceType: "regulatory_text",
+      title: "blocked.pdf",
+      content: "",
+    },
+    pageCount: 3,
+    successfulPages: [1],
+    failedPages: [
+      { page: 2, error: "页面 OCR 识别失败" },
+      { page: 3, error: "页面文本提取失败" },
+    ],
+    units: [],
+    ocrReviews: [],
+    anchors: [],
+    quality: {
+      totalCharacters: 0,
+      parsedUnitCount: 0,
+      failedPageCount: 2,
+      lowTextPages: [2],
+      extractionCoverage: 1 / 3,
+      ocrFailedPages: [2],
+      finalizationBlocked: true,
+    },
+  };
+  const parseFile = vi.fn().mockResolvedValue(blocked);
+  render(<MaterialUpload parseFile={parseFile} />);
+
+  await userEvent
+    .setup()
+    .upload(
+      screen.getByLabelText("选择监管文件"),
+      new File(["%PDF-1.7"], "blocked.pdf", { type: "application/pdf" }),
+    );
+
+  const alert = await screen.findByRole("alert");
+  expect(alert).toHaveTextContent("解析质量未通过，禁止进入定稿");
+  expect(alert).toHaveTextContent("OCR 失败页：2");
+  expect(alert).toHaveTextContent("全部失败页：2、3");
+  expect(screen.getByTestId("regulatory_text-upload-state")).toHaveAttribute(
+    "data-finalization-ready",
+    "false",
+  );
+  expect(screen.queryByText("解析完成")).not.toBeInTheDocument();
+});
+
+test("aborts in-flight parsing when the component unmounts", async () => {
+  let observedSignal: AbortSignal | undefined;
+  const parseFile = vi.fn(
+    (_file: File, _sourceType: unknown, signal: AbortSignal) => {
+      observedSignal = signal;
+      return new Promise<ParseResult>(() => undefined);
+    },
+  );
+  const view = render(<MaterialUpload parseFile={parseFile} />);
+  await userEvent
+    .setup()
+    .upload(
+      screen.getByLabelText("选择监管文件"),
+      textFile("pending.txt", "合成测试"),
+    );
+
+  await waitFor(() => expect(observedSignal).toBeDefined());
+  expect(observedSignal?.aborted).toBe(false);
+  view.unmount();
+  expect(observedSignal?.aborted).toBe(true);
 });

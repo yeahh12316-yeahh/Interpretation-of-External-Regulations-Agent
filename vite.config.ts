@@ -4,15 +4,32 @@ import { createRequire } from "node:module";
 import react from "@vitejs/plugin-react";
 import { defineConfig, type Plugin } from "vite";
 
+import {
+  OCR_ASSET_PUBLIC_PATH,
+  OCR_ASSET_NAMESPACE,
+  OCR_DEVELOPMENT_CACHE_CONTROL,
+  OCR_PRODUCTION_CACHE_CONTROL,
+} from "./src/features/parsing/ocr/ocr-assets";
+
 const projectRequire = createRequire(import.meta.url);
 const tesseractRequire = createRequire(
   projectRequire.resolve("tesseract.js/package.json"),
 );
 
 const ocrAssets = new Map<string, { source: string; contentType: string }>();
+const ocrCachePolicy = {
+  namespace: OCR_ASSET_NAMESPACE,
+  pathPattern: `/${OCR_ASSET_PUBLIC_PATH}/*`,
+  cacheControl: OCR_PRODUCTION_CACHE_CONTROL,
+  rule: "Only versioned OCR assets may be cached immutably; change the namespace whenever worker, core, or language data versions change.",
+};
+const serializedOcrCachePolicy = `${JSON.stringify(ocrCachePolicy, null, 2)}\n`;
 
 const registerAsset = (target: string, source: string, contentType: string) =>
-  ocrAssets.set(`/ocr/${target}`, { source, contentType });
+  ocrAssets.set(`/${OCR_ASSET_PUBLIC_PATH}/${target}`, {
+    source,
+    contentType,
+  });
 
 registerAsset(
   "tesseract/worker.min.js",
@@ -50,14 +67,18 @@ const localOcrAssets = (): Plugin => ({
   configureServer(server) {
     server.middlewares.use((request, response, next) => {
       const pathname = new URL(request.url ?? "/", "http://localhost").pathname;
+      if (pathname === "/ocr-cache-policy.json") {
+        response.statusCode = 200;
+        response.setHeader("Content-Type", "application/json; charset=utf-8");
+        response.setHeader("Cache-Control", OCR_DEVELOPMENT_CACHE_CONTROL);
+        response.end(serializedOcrCachePolicy);
+        return;
+      }
       const asset = ocrAssets.get(pathname);
       if (!asset) return next();
       response.statusCode = 200;
       response.setHeader("Content-Type", asset.contentType);
-      response.setHeader(
-        "Cache-Control",
-        "public, max-age=31536000, immutable",
-      );
+      response.setHeader("Cache-Control", OCR_DEVELOPMENT_CACHE_CONTROL);
       createReadStream(asset.source).pipe(response);
     });
   },
@@ -69,6 +90,11 @@ const localOcrAssets = (): Plugin => ({
         source: readFileSync(asset.source),
       });
     }
+    this.emitFile({
+      type: "asset",
+      fileName: "ocr-cache-policy.json",
+      source: serializedOcrCachePolicy,
+    });
   },
 });
 

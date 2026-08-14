@@ -63,6 +63,7 @@ export interface PdfDocumentLike {
 
 export interface PdfPageParseResult {
   units: ParsedSourceUnit[];
+  ocrReviews: OcrPageResult[];
   successfulPages: number[];
   failedPages: Array<{ page: number; error: string }>;
   lowTextPages: number[];
@@ -85,6 +86,7 @@ export interface PdfOcrDependencies {
     onProgress: (progress: OcrProgress) => void,
   ) => Promise<OcrPageResult[]>;
   onOcrProgress?: (progress: OcrProgress) => void;
+  releasePageBitmap?: (page: OcrPageBitmap) => void;
 }
 
 const canRenderPage = (
@@ -120,6 +122,40 @@ const renderPageBitmap = async ({
     height: canvas.height,
   };
 };
+
+const releasePageBitmap = (page: OcrPageBitmap): void => {
+  const image = page.image;
+  if (typeof image !== "object" || image === null) return;
+  if (
+    typeof HTMLCanvasElement !== "undefined" &&
+    image instanceof HTMLCanvasElement
+  ) {
+    image.width = 0;
+    image.height = 0;
+    return;
+  }
+  if ("close" in image && typeof image.close === "function") image.close();
+};
+
+const failedOcrResult = (bitmap: OcrPageBitmap): OcrPageResult => ({
+  unitId: `${bitmap.sourceId}:p${bitmap.pageNumber}:ocr`,
+  sourceId: bitmap.sourceId,
+  sourceType: bitmap.sourceType,
+  page: bitmap.pageNumber,
+  method: "ocr",
+  confidence: 0,
+  text: "",
+  originalOcrText: "",
+  correctedText: null,
+  reviewStatus: "failed",
+  reviewedAt: null,
+  reviewedBy: null,
+  correctionHistory: [],
+  boundingBox: { x: 0, y: 0, width: bitmap.width, height: bitmap.height },
+  regions: [],
+  lowConfidenceCharacters: [],
+  error: "页面 OCR 识别失败",
+});
 
 const isTextItem = (item: unknown): item is PdfTextItem =>
   typeof item === "object" &&
@@ -224,12 +260,53 @@ export async function parsePdfPages(
 ): Promise<PdfPageParseResult> {
   const result: PdfPageParseResult = {
     units: [],
+    ocrReviews: [],
     successfulPages: [],
     failedPages: [],
     lowTextPages: [],
     ocrFailedPages: [],
   };
-  const scannedBitmaps: OcrPageBitmap[] = [];
+
+  const recordOcrResult = (ocrResult: OcrPageResult) => {
+    result.ocrReviews.push(ocrResult);
+    result.units = result.units.filter((unit) => unit.page !== ocrResult.page);
+    if (ocrResult.reviewStatus === "failed" || ocrResult.error) {
+      if (!result.ocrFailedPages.includes(ocrResult.page))
+        result.ocrFailedPages.push(ocrResult.page);
+      if (
+        !result.failedPages.some((failure) => failure.page === ocrResult.page)
+      ) {
+        result.failedPages.push({
+          page: ocrResult.page,
+          error: ocrResult.error ?? "页面 OCR 识别失败",
+        });
+      }
+      result.successfulPages = result.successfulPages.filter(
+        (successfulPage) => successfulPage !== ocrResult.page,
+      );
+      return;
+    }
+    result.units.push({
+      unitId: ocrResult.unitId,
+      sourceId: ocrResult.sourceId,
+      sourceType: ocrResult.sourceType,
+      page: ocrResult.page,
+      article: articleFromText(ocrResult.text),
+      paragraphIndex: 0,
+      text: ocrResult.text,
+      extractionMethod: "ocr",
+      confidence: ocrResult.confidence,
+      boundingBox: ocrResult.boundingBox,
+      originalOcrText: ocrResult.originalOcrText,
+      correctedText: ocrResult.correctedText,
+      reviewStatus: ocrResult.reviewStatus,
+      reviewedAt: ocrResult.reviewedAt,
+      reviewedBy: ocrResult.reviewedBy,
+      correctionHistory: ocrResult.correctionHistory,
+      ocrRegions: ocrResult.regions,
+      lowConfidenceCharacters: ocrResult.lowConfidenceCharacters,
+    });
+  };
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     throwIfAborted(signal);
@@ -238,10 +315,6 @@ export async function parsePdfPages(
       const textContent = await raceWithAbort(page.getTextContent(), signal);
       const items = textContent.items.filter(isTextItem);
       const lines = textLines(items).filter((line) => lineText(line.items));
-      const pageCharacterCount = lines.reduce(
-        (count, line) => count + lineText(line.items).length,
-        0,
-      );
       result.successfulPages.push(pageNumber);
       const lowText = isScannedPage(
         lines.map((line) => lineText(line.items)).join(""),
@@ -271,26 +344,49 @@ export async function parsePdfPages(
         lowText &&
         (ocrDependencies.renderPageBitmap || canRenderPage(page))
       ) {
+        let bitmap: OcrPageBitmap | undefined;
         try {
-          scannedBitmaps.push(
-            await bitmapRenderer({
-              page,
-              pageNumber,
-              sourceId,
-              sourceType,
+          bitmap = await bitmapRenderer({
+            page,
+            pageNumber,
+            sourceId,
+            sourceType,
+            signal,
+          });
+          const runOcr = ocrDependencies.runOcr ?? ocrPages;
+          let pageResults: OcrPageResult[];
+          try {
+            pageResults = await runOcr(
+              [bitmap],
               signal,
-            }),
+              ocrDependencies.onOcrProgress ?? (() => undefined),
+            );
+          } catch (error) {
+            if (signal.aborted || isAbortError(error)) throw abortError();
+            pageResults = [failedOcrResult(bitmap)];
+          }
+          recordOcrResult(
+            pageResults.find((ocrResult) => ocrResult.page === pageNumber) ??
+              failedOcrResult(bitmap),
           );
         } catch (error) {
           if (signal.aborted || isAbortError(error)) throw abortError();
-          result.ocrFailedPages.push(pageNumber);
-          result.failedPages.push({
-            page: pageNumber,
-            error: "页面 OCR 渲染失败",
-          });
+          if (!result.ocrFailedPages.includes(pageNumber))
+            result.ocrFailedPages.push(pageNumber);
+          if (
+            !result.failedPages.some((failure) => failure.page === pageNumber)
+          ) {
+            result.failedPages.push({
+              page: pageNumber,
+              error: "页面 OCR 渲染失败",
+            });
+          }
           result.successfulPages = result.successfulPages.filter(
             (successfulPage) => successfulPage !== pageNumber,
           );
+        } finally {
+          if (bitmap)
+            (ocrDependencies.releasePageBitmap ?? releasePageBitmap)(bitmap);
         }
       }
     } catch (error) {
@@ -301,91 +397,11 @@ export async function parsePdfPages(
     }
   }
 
-  if (scannedBitmaps.length > 0) {
-    const runOcr = ocrDependencies.runOcr ?? ocrPages;
-    let ocrResults: OcrPageResult[];
-    try {
-      ocrResults = await runOcr(
-        scannedBitmaps,
-        signal,
-        ocrDependencies.onOcrProgress ?? (() => undefined),
-      );
-    } catch (error) {
-      if (signal.aborted || isAbortError(error)) throw abortError();
-      ocrResults = scannedBitmaps.map((bitmap) => ({
-        unitId: `${bitmap.sourceId}:p${bitmap.pageNumber}:ocr`,
-        sourceId: bitmap.sourceId,
-        sourceType: bitmap.sourceType,
-        page: bitmap.pageNumber,
-        method: "ocr",
-        confidence: 0,
-        text: "",
-        originalOcrText: "",
-        correctedText: null,
-        reviewStatus: "failed",
-        reviewedAt: null,
-        boundingBox: {
-          x: 0,
-          y: 0,
-          width: bitmap.width,
-          height: bitmap.height,
-        },
-        regions: [],
-        lowConfidenceCharacters: [],
-        error: "页面 OCR 识别失败",
-      }));
-    }
-    for (const ocrResult of ocrResults) {
-      result.units = result.units.filter(
-        (unit) => unit.page !== ocrResult.page,
-      );
-      if (ocrResult.reviewStatus === "failed" || ocrResult.error) {
-        result.ocrFailedPages.push(ocrResult.page);
-        result.failedPages.push({
-          page: ocrResult.page,
-          error: ocrResult.error ?? "页面 OCR 识别失败",
-        });
-        result.successfulPages = result.successfulPages.filter(
-          (successfulPage) => successfulPage !== ocrResult.page,
-        );
-        continue;
-      }
-      const locatedRegions =
-        ocrResult.regions.length > 0
-          ? ocrResult.regions
-          : [
-              {
-                text: ocrResult.text,
-                confidence: ocrResult.confidence,
-                boundingBox: ocrResult.boundingBox,
-                lowConfidence: ocrResult.confidence < 0.7,
-              },
-            ];
-      result.units.push(
-        ...locatedRegions.map((region, paragraphIndex) => ({
-          unitId: `${ocrResult.unitId}:r${paragraphIndex}`,
-          sourceId: ocrResult.sourceId,
-          sourceType: ocrResult.sourceType,
-          page: ocrResult.page,
-          article: articleFromText(region.text),
-          paragraphIndex,
-          text: region.text,
-          extractionMethod: "ocr" as const,
-          confidence: region.confidence,
-          boundingBox: region.boundingBox,
-          originalOcrText: region.text,
-          correctedText: null,
-          reviewStatus: "unreviewed" as const,
-          reviewedAt: null,
-        })),
-      );
-    }
-    result.units.sort(
-      (left, right) =>
-        (left.page ?? 0) - (right.page ?? 0) ||
-        left.paragraphIndex - right.paragraphIndex,
-    );
-  }
+  result.units.sort(
+    (left, right) =>
+      (left.page ?? 0) - (right.page ?? 0) ||
+      left.paragraphIndex - right.paragraphIndex,
+  );
 
   return result;
 }
@@ -412,6 +428,40 @@ export async function parsePdf(
     if (error instanceof Error && error.message === "PDF 文本提取失败")
       throw error;
     throw new Error("PDF 文本提取失败");
+  } finally {
+    signal.removeEventListener("abort", cancelLoading);
+    void loadingTask.destroy().catch(() => undefined);
+  }
+}
+
+export async function inspectPdfTextLayer(
+  bytes: ArrayBuffer,
+  signal: AbortSignal,
+): Promise<Array<{ page: number; itemCount: number; text: string }>> {
+  throwIfAborted(signal);
+  const loadingTask = getDocument({ data: new Uint8Array(bytes) });
+  const cancelLoading = () => {
+    void loadingTask.destroy().catch(() => undefined);
+  };
+  signal.addEventListener("abort", cancelLoading, { once: true });
+  try {
+    const pdf = await raceWithAbort(loadingTask.promise, signal);
+    const pages: Array<{ page: number; itemCount: number; text: string }> = [];
+    for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
+      throwIfAborted(signal);
+      const page = await raceWithAbort(pdf.getPage(pageNumber), signal);
+      const content = await raceWithAbort(page.getTextContent(), signal);
+      const items = content.items.filter(isTextItem) as PdfTextItem[];
+      pages.push({
+        page: pageNumber,
+        itemCount: items.length,
+        text: items.map((item) => item.str).join(""),
+      });
+    }
+    return pages;
+  } catch (error) {
+    if (signal.aborted || isAbortError(error)) throw abortError();
+    throw new Error("PDF 文本层检查失败");
   } finally {
     signal.removeEventListener("abort", cancelLoading);
     void loadingTask.destroy().catch(() => undefined);

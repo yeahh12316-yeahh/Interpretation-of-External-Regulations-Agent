@@ -3,6 +3,7 @@ import {
   type ClipboardEvent,
   type DragEvent,
   type JSX,
+  useEffect,
   useRef,
   useState,
 } from "react";
@@ -10,7 +11,8 @@ import {
 import type { SourceType } from "../../domain/source";
 import { parseDocument, type ParseResult } from "../parsing/parse-document";
 
-type UploadStatus = "idle" | "parsing" | "complete" | "cancelled" | "error";
+type UploadStatus =
+  "idle" | "parsing" | "complete" | "blocked" | "cancelled" | "error";
 
 interface UploadState {
   status: UploadStatus;
@@ -34,7 +36,13 @@ const formatBytes = (bytes: number): string => {
 const fileType = (file: File): string =>
   file.name.split(".").pop()?.toUpperCase() ?? "未知";
 
-export function MaterialUpload(): JSX.Element {
+export interface MaterialUploadProps {
+  parseFile?: typeof parseDocument;
+}
+
+export function MaterialUpload({
+  parseFile = parseDocument,
+}: MaterialUploadProps = {}): JSX.Element {
   const [uploads, setUploads] = useState<Record<SourceType, UploadState>>({
     regulatory_text: EMPTY_STATE,
     official_interpretation: EMPTY_STATE,
@@ -43,6 +51,14 @@ export function MaterialUpload(): JSX.Element {
     regulatory_text: null,
     official_interpretation: null,
   });
+
+  useEffect(
+    () => () => {
+      controllers.current.regulatory_text?.abort();
+      controllers.current.official_interpretation?.abort();
+    },
+    [],
+  );
 
   const update = (sourceType: SourceType, state: UploadState) => {
     setUploads((current) => ({ ...current, [sourceType]: state }));
@@ -59,12 +75,16 @@ export function MaterialUpload(): JSX.Element {
     update(sourceType, { status: "parsing", file });
 
     try {
-      const result = await parseDocument(file, sourceType, controller.signal);
+      const result = await parseFile(file, sourceType, controller.signal);
       if (
         !controller.signal.aborted &&
         controllers.current[sourceType] === controller
       ) {
-        update(sourceType, { status: "complete", file, result });
+        update(sourceType, {
+          status: result.quality.finalizationBlocked ? "blocked" : "complete",
+          file,
+          result,
+        });
       }
     } catch (error) {
       if (
@@ -122,6 +142,8 @@ export function MaterialUpload(): JSX.Element {
     return (
       <section
         aria-label={`${label}上传`}
+        data-testid={`${sourceType}-upload-state`}
+        data-finalization-ready={state.status === "complete"}
         onPaste={pasted(sourceType)}
         style={{
           minWidth: 0,
@@ -186,6 +208,24 @@ export function MaterialUpload(): JSX.Element {
           </div>
         ) : null}
         {state.status === "cancelled" ? <p role="status">已取消解析</p> : null}
+        {state.status === "complete" ? <p role="status">解析完成</p> : null}
+        {state.status === "blocked" && state.result ? (
+          <div role="alert">
+            <p>解析质量未通过，禁止进入定稿</p>
+            <p>
+              OCR 失败页：
+              {state.result.quality.ocrFailedPages.length > 0
+                ? state.result.quality.ocrFailedPages.join("、")
+                : "无"}
+            </p>
+            <p>
+              全部失败页：
+              {state.result.failedPages.length > 0
+                ? state.result.failedPages.map(({ page }) => page).join("、")
+                : "无"}
+            </p>
+          </div>
+        ) : null}
         {state.status === "error" ? <p role="alert">{state.error}</p> : null}
       </section>
     );

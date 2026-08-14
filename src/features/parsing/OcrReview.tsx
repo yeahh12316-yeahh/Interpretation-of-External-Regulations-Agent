@@ -1,5 +1,11 @@
 import { useEffect, useState } from "react";
 
+import {
+  articleFromText,
+  buildAnchors,
+  type ParsedSourceUnit,
+} from "./build-anchors";
+import type { ParseResult } from "./parse-document";
 import type { OcrPageResult } from "./ocr/ocr-pipeline";
 
 const storageKey = (unitId: string) =>
@@ -8,7 +14,9 @@ const storageKey = (unitId: string) =>
 const readStoredReview = (unitId: string): OcrPageResult | null => {
   try {
     const raw = localStorage.getItem(storageKey(unitId));
-    return raw ? (JSON.parse(raw) as OcrPageResult) : null;
+    if (!raw) return null;
+    const parsed = JSON.parse(raw) as OcrPageResult;
+    return parsed.unitId === unitId ? parsed : null;
   } catch {
     return null;
   }
@@ -18,43 +26,146 @@ const writeStoredReview = (page: OcrPageResult): void => {
   try {
     localStorage.setItem(storageKey(page.unitId), JSON.stringify(page));
   } catch {
-    // Review remains available in component state when storage is unavailable.
+    // The corrected ParseResult remains authoritative when storage is unavailable.
   }
 };
 
+const contentFromUnits = (units: readonly ParsedSourceUnit[]): string =>
+  units
+    .map((unit) => unit.text.trim())
+    .filter(Boolean)
+    .join("\n\n");
+
+const resultWithReviewState = (
+  result: ParseResult,
+  review: OcrPageResult,
+): ParseResult => {
+  const units = result.units.map((unit) =>
+    unit.unitId === review.unitId
+      ? {
+          ...unit,
+          article: articleFromText(review.text) ?? unit.article,
+          text: review.text,
+          originalOcrText: review.originalOcrText,
+          correctedText: review.correctedText,
+          reviewStatus:
+            review.reviewStatus === "corrected"
+              ? ("corrected" as const)
+              : ("unreviewed" as const),
+          reviewedAt: review.reviewedAt,
+          reviewedBy: review.reviewedBy,
+          correctionHistory: review.correctionHistory,
+          ocrRegions: review.regions,
+          lowConfidenceCharacters: review.lowConfidenceCharacters,
+        }
+      : unit,
+  );
+  const content = contentFromUnits(units);
+  return {
+    ...result,
+    source: { ...result.source, content },
+    units,
+    ocrReviews: result.ocrReviews.map((candidate) =>
+      candidate.unitId === review.unitId ? review : candidate,
+    ),
+    anchors: buildAnchors(units),
+    quality: {
+      ...result.quality,
+      totalCharacters: content.length,
+      parsedUnitCount: units.length,
+    },
+  };
+};
+
 export function applyOcrCorrection(
+  result: ParseResult,
   unitId: string,
   correctedText: string,
-): OcrPageResult {
-  const current = readStoredReview(unitId);
+  reviewer: string,
+  reviewedAt = new Date().toISOString(),
+): ParseResult {
+  const current = result.ocrReviews.find((review) => review.unitId === unitId);
   if (!current) throw new Error("OCR 纠错记录不存在");
   if (current.reviewStatus === "failed")
     throw new Error("OCR 失败页不能直接纠错");
-  const corrected: OcrPageResult = {
-    ...current,
-    text: correctedText,
-    correctedText,
-    reviewStatus: "corrected",
-    reviewedAt: new Date().toISOString(),
+  const normalizedText = correctedText.trim();
+  if (!normalizedText) throw new Error("OCR 纠错文本不得为空");
+  const normalizedReviewer = reviewer.trim();
+  if (!normalizedReviewer) throw new Error("OCR 纠错必须记录复核人");
+  const correction = {
+    correctedText: normalizedText,
+    reviewedBy: normalizedReviewer,
+    reviewedAt,
   };
-  writeStoredReview(corrected);
-  return corrected;
+  const correctedReview: OcrPageResult = {
+    ...current,
+    text: normalizedText,
+    correctedText: normalizedText,
+    reviewStatus: "corrected",
+    reviewedAt,
+    reviewedBy: normalizedReviewer,
+    correctionHistory: [...current.correctionHistory, correction],
+  };
+  let unitFound = false;
+  const units = result.units.map((unit) => {
+    if (unit.unitId !== unitId) return unit;
+    unitFound = true;
+    return {
+      ...unit,
+      article: articleFromText(normalizedText) ?? unit.article,
+      text: normalizedText,
+      originalOcrText: current.originalOcrText,
+      correctedText: normalizedText,
+      reviewStatus: "corrected" as const,
+      reviewedAt,
+      reviewedBy: normalizedReviewer,
+      correctionHistory: correctedReview.correctionHistory,
+      ocrRegions: current.regions,
+      lowConfidenceCharacters: current.lowConfidenceCharacters,
+    };
+  });
+  if (!unitFound) throw new Error("OCR 纠错单元不存在");
+  const content = contentFromUnits(units);
+  return {
+    ...result,
+    source: { ...result.source, content },
+    units,
+    ocrReviews: result.ocrReviews.map((review) =>
+      review.unitId === unitId ? correctedReview : review,
+    ),
+    anchors: buildAnchors(units),
+    quality: {
+      ...result.quality,
+      totalCharacters: content.length,
+      parsedUnitCount: units.length,
+    },
+  };
 }
 
 export interface OcrReviewProps {
-  page: OcrPageResult;
-  onChange?: (page: OcrPageResult) => void;
+  result: ParseResult;
+  reviewId: string;
+  reviewer: string;
+  onChange?: (result: ParseResult) => void;
 }
 
-export function OcrReview({ page, onChange }: OcrReviewProps) {
-  const [review, setReview] = useState<OcrPageResult>(
-    () => readStoredReview(page.unitId) ?? page,
-  );
+export function OcrReview({
+  result,
+  reviewId,
+  reviewer,
+  onChange,
+}: OcrReviewProps) {
+  const page = result.ocrReviews.find((review) => review.unitId === reviewId);
+  if (!page) throw new Error("OCR 审阅页不存在");
+  const restored = () => readStoredReview(page.unitId) ?? page;
+  const [review, setReview] = useState<OcrPageResult>(restored);
   const [draft, setDraft] = useState(review.correctedText ?? review.text);
 
   useEffect(() => {
-    const stored = readStoredReview(page.unitId);
-    if (!stored) writeStoredReview(page);
+    const nextReview = readStoredReview(page.unitId) ?? page;
+    setReview(nextReview);
+    setDraft(nextReview.correctedText ?? nextReview.text);
+    if (!readStoredReview(page.unitId)) writeStoredReview(page);
   }, [page]);
 
   if (review.reviewStatus === "failed") {
@@ -66,9 +177,27 @@ export function OcrReview({ page, onChange }: OcrReviewProps) {
   }
 
   const save = () => {
-    const corrected = applyOcrCorrection(review.unitId, draft);
-    setReview(corrected);
-    onChange?.(corrected);
+    const resultReview = result.ocrReviews.find(
+      (candidate) => candidate.unitId === review.unitId,
+    );
+    const correctionBase =
+      resultReview?.reviewedAt === review.reviewedAt
+        ? result
+        : resultWithReviewState(result, review);
+    const correctedResult = applyOcrCorrection(
+      correctionBase,
+      review.unitId,
+      draft,
+      reviewer,
+    );
+    const correctedReview = correctedResult.ocrReviews.find(
+      (candidate) => candidate.unitId === review.unitId,
+    );
+    if (!correctedReview) throw new Error("OCR 纠错结果缺失");
+    writeStoredReview(correctedReview);
+    setReview(correctedReview);
+    setDraft(correctedReview.correctedText ?? correctedReview.text);
+    onChange?.(correctedResult);
   };
 
   return (

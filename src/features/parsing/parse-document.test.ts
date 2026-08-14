@@ -519,6 +519,8 @@ describe("page failures and stable anchors", () => {
             correctedText: null,
             reviewStatus: "unreviewed" as const,
             reviewedAt: null,
+            reviewedBy: null,
+            correctionHistory: [],
             boundingBox: { x: 20, y: 40, width: 800, height: 60 },
             regions: [
               {
@@ -528,7 +530,13 @@ describe("page failures and stable anchors", () => {
                 lowConfidence: false,
               },
             ],
-            lowConfidenceCharacters: [],
+            lowConfidenceCharacters: [
+              {
+                text: "不",
+                confidence: 0.42,
+                boundingBox: { x: 600, y: 40, width: 30, height: 60 },
+              },
+            ],
           })),
       },
     );
@@ -536,14 +544,25 @@ describe("page failures and stable anchors", () => {
     expect(result.units).toEqual([
       expect.objectContaining({
         page: 1,
+        unitId: "SRC-regulatory_text-scanned:p1:ocr",
         text: "第一条 银行业金融机构不得泄露客户信息。",
         extractionMethod: "ocr",
         confidence: 0.78,
         originalOcrText: "第一条 银行业金融机构不得泄露客户信息。",
         reviewStatus: "unreviewed",
         boundingBox: { x: 20, y: 40, width: 800, height: 60 },
+        lowConfidenceCharacters: [
+          expect.objectContaining({ text: "不", confidence: 0.42 }),
+        ],
       }),
     ]);
+    expect(result.ocrReviews).toHaveLength(1);
+    expect(result.ocrReviews[0]).toMatchObject({
+      unitId: "SRC-regulatory_text-scanned:p1:ocr",
+      lowConfidenceCharacters: [
+        expect.objectContaining({ text: "不", confidence: 0.42 }),
+      ],
+    });
     expect(result.failedPages).toEqual([]);
     expect(result.ocrFailedPages).toEqual([]);
   });
@@ -581,6 +600,8 @@ describe("page failures and stable anchors", () => {
             correctedText: null,
             reviewStatus: "failed" as const,
             reviewedAt: null,
+            reviewedBy: null,
+            correctionHistory: [],
             boundingBox: { x: 0, y: 0, width: 1200, height: 1600 },
             regions: [],
             lowConfidenceCharacters: [],
@@ -594,6 +615,9 @@ describe("page failures and stable anchors", () => {
       { page: 1, error: "页面 OCR 识别失败" },
     ]);
     expect(result.successfulPages).toEqual([]);
+    expect(result.ocrReviews).toEqual([
+      expect.objectContaining({ page: 1, reviewStatus: "failed" }),
+    ]);
   });
 
   test("turns an OCR worker startup failure into explicit page failures", async () => {
@@ -627,6 +651,77 @@ describe("page failures and stable anchors", () => {
     ]);
     expect(result.ocrFailedPages).toEqual([1]);
     expect(result.units).toEqual([]);
+  });
+
+  test("OCRs low-text pages sequentially and releases each bitmap before rendering the next", async () => {
+    const events: string[] = [];
+    const fakePdf = {
+      numPages: 2,
+      getPage: async (pageNumber: number) => {
+        events.push(`get:${pageNumber}`);
+        return { getTextContent: async () => ({ items: [] }) };
+      },
+    };
+
+    const result = await parsePdfPages(
+      fakePdf,
+      "SRC-regulatory_text-sequential",
+      "regulatory_text",
+      new AbortController().signal,
+      {
+        renderPageBitmap: async ({ pageNumber, sourceId, sourceType }) => {
+          events.push(`render:${pageNumber}`);
+          return {
+            pageNumber,
+            sourceId,
+            sourceType,
+            image: { pageNumber } as unknown as HTMLCanvasElement,
+            width: 1200,
+            height: 1600,
+          };
+        },
+        runOcr: async (pages) => {
+          expect(pages).toHaveLength(1);
+          const page = pages[0]!;
+          events.push(`ocr:${page.pageNumber}`);
+          return [
+            {
+              unitId: `${page.sourceId}:p${page.pageNumber}:ocr`,
+              sourceId: page.sourceId,
+              sourceType: page.sourceType,
+              page: page.pageNumber,
+              method: "ocr" as const,
+              confidence: 0.9,
+              text: `第${page.pageNumber}页合成 OCR 文本不得遗漏`,
+              originalOcrText: `第${page.pageNumber}页合成 OCR 文本不得遗漏`,
+              correctedText: null,
+              reviewStatus: "unreviewed" as const,
+              reviewedAt: null,
+              reviewedBy: null,
+              correctionHistory: [],
+              boundingBox: { x: 0, y: 0, width: 1200, height: 1600 },
+              regions: [],
+              lowConfidenceCharacters: [],
+            },
+          ];
+        },
+        releasePageBitmap: (page) => {
+          events.push(`release:${page.pageNumber}`);
+        },
+      },
+    );
+
+    expect(events).toEqual([
+      "get:1",
+      "render:1",
+      "ocr:1",
+      "release:1",
+      "get:2",
+      "render:2",
+      "ocr:2",
+      "release:2",
+    ]);
+    expect(result.ocrReviews).toHaveLength(2);
   });
 
   test("propagates article context into deterministic reverse-location anchors", () => {

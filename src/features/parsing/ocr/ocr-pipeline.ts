@@ -80,6 +80,12 @@ export interface OcrCharacter {
 
 export type OcrReviewStatus = "unreviewed" | "corrected" | "failed";
 
+export interface OcrCorrectionRecord {
+  correctedText: string;
+  reviewedBy: string;
+  reviewedAt: string;
+}
+
 export interface OcrPageResult {
   unitId: string;
   sourceId: string;
@@ -92,6 +98,8 @@ export interface OcrPageResult {
   correctedText: string | null;
   reviewStatus: OcrReviewStatus;
   reviewedAt: string | null;
+  reviewedBy: string | null;
+  correctionHistory: OcrCorrectionRecord[];
   boundingBox: BoundingBox;
   regions: OcrRegion[];
   lowConfidenceCharacters: OcrCharacter[];
@@ -135,6 +143,8 @@ const failedResult = (page: OcrPageBitmap): OcrPageResult => ({
   correctedText: null,
   reviewStatus: "failed",
   reviewedAt: null,
+  reviewedBy: null,
+  correctionHistory: [],
   boundingBox: fullPageBox(page),
   regions: [],
   lowConfidenceCharacters: [],
@@ -242,6 +252,8 @@ export async function ocrPages(
           correctedText: null,
           reviewStatus: "unreviewed",
           reviewedAt: null,
+          reviewedBy: null,
+          correctionHistory: [],
           boundingBox,
           regions,
           lowConfidenceCharacters,

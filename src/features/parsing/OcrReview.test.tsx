@@ -1,29 +1,35 @@
 import "@testing-library/jest-dom/vitest";
 
 import { fireEvent, render, screen } from "@testing-library/react";
-import { afterEach, describe, expect, test } from "vitest";
+import { afterEach, describe, expect, test, vi } from "vitest";
 
-import { OcrReview } from "./OcrReview";
+import type { ParseResult } from "./parse-document";
+import { applyOcrCorrection, OcrReview } from "./OcrReview";
 import type { OcrPageResult } from "./ocr/ocr-pipeline";
 
-const lowConfidencePage: OcrPageResult = {
-  unitId: "SRC-regulatory_text-synthetic:p1:ocr",
+const ocrPage = (
+  page: number,
+  text = "第一条 不得泄露客户信息。",
+): OcrPageResult => ({
+  unitId: `SRC-regulatory_text-synthetic:p${page}:ocr`,
   sourceId: "SRC-regulatory_text-synthetic",
   sourceType: "regulatory_text",
-  page: 1,
+  page,
   method: "ocr",
   confidence: 0.41,
-  text: "第一条 不得泄露客户信息。",
-  originalOcrText: "第一条 不得泄露客户信息。",
+  text,
+  originalOcrText: text,
   correctedText: null,
   reviewStatus: "unreviewed",
   reviewedAt: null,
+  reviewedBy: null,
+  correctionHistory: [],
   boundingBox: { x: 0, y: 0, width: 1000, height: 1400 },
   regions: [
     {
-      text: "不得",
+      text,
       confidence: 0.41,
-      boundingBox: { x: 120, y: 80, width: 60, height: 30 },
+      boundingBox: { x: 120, y: 80, width: 600, height: 30 },
       lowConfidence: true,
     },
   ],
@@ -34,13 +40,124 @@ const lowConfidencePage: OcrPageResult = {
       boundingBox: { x: 120, y: 80, width: 30, height: 30 },
     },
   ],
+});
+
+const parseResultWith = (...reviews: OcrPageResult[]): ParseResult => {
+  const units = reviews.map((review) => ({
+    unitId: review.unitId,
+    sourceId: review.sourceId,
+    sourceType: review.sourceType,
+    page: review.page,
+    article: "第一条",
+    paragraphIndex: 0,
+    text: review.text,
+    extractionMethod: "ocr" as const,
+    confidence: review.confidence,
+    boundingBox: review.boundingBox,
+    originalOcrText: review.originalOcrText,
+    correctedText: review.correctedText,
+    reviewStatus: "unreviewed" as const,
+    reviewedAt: null,
+    reviewedBy: null,
+    correctionHistory: [],
+    ocrRegions: review.regions,
+    lowConfidenceCharacters: review.lowConfidenceCharacters,
+  }));
+  const content = units.map((unit) => unit.text).join("\n\n");
+  return {
+    fileHash: "abc",
+    source: {
+      sourceId: "SRC-regulatory_text-synthetic",
+      sourceType: "regulatory_text",
+      title: "synthetic.pdf",
+      content,
+    },
+    pageCount: reviews.length,
+    successfulPages: reviews.map((review) => review.page),
+    failedPages: [],
+    units,
+    ocrReviews: reviews,
+    anchors: units.map((unit) => ({
+      sourceId: unit.sourceId,
+      sourceType: unit.sourceType,
+      page: unit.page,
+      article: unit.article,
+      paragraphIndex: unit.paragraphIndex,
+      quote: unit.text,
+    })),
+    quality: {
+      totalCharacters: content.length,
+      parsedUnitCount: units.length,
+      failedPageCount: 0,
+      lowTextPages: reviews.map((review) => review.page),
+      extractionCoverage: 1,
+      ocrFailedPages: [],
+      finalizationBlocked: false,
+    },
+  };
 };
 
 afterEach(() => localStorage.clear());
 
+describe("applyOcrCorrection", () => {
+  test("updates the actual ParseResult chain and retains correction history", () => {
+    const page = ocrPage(1);
+    const initial = parseResultWith(page);
+
+    const corrected = applyOcrCorrection(
+      initial,
+      page.unitId,
+      "第一条 不得泄露客户个人信息。",
+      "复核员甲",
+      "2026-08-14T10:00:00.000Z",
+    );
+
+    expect(corrected.ocrReviews[0]).toMatchObject({
+      unitId: page.unitId,
+      originalOcrText: "第一条 不得泄露客户信息。",
+      correctedText: "第一条 不得泄露客户个人信息。",
+      text: "第一条 不得泄露客户个人信息。",
+      reviewStatus: "corrected",
+      reviewedBy: "复核员甲",
+      reviewedAt: "2026-08-14T10:00:00.000Z",
+    });
+    expect(corrected.ocrReviews[0]?.correctionHistory).toEqual([
+      {
+        correctedText: "第一条 不得泄露客户个人信息。",
+        reviewedBy: "复核员甲",
+        reviewedAt: "2026-08-14T10:00:00.000Z",
+      },
+    ]);
+    expect(corrected.units[0]).toMatchObject({
+      unitId: page.unitId,
+      originalOcrText: "第一条 不得泄露客户信息。",
+      correctedText: "第一条 不得泄露客户个人信息。",
+      text: "第一条 不得泄露客户个人信息。",
+      reviewStatus: "corrected",
+      reviewedBy: "复核员甲",
+    });
+    expect(corrected.source.content).toContain("客户个人信息");
+    expect(corrected.anchors[0]?.quote).toContain("客户个人信息");
+    expect(corrected.quality.totalCharacters).toBe(
+      corrected.source.content.length,
+    );
+    expect(initial.source.content).not.toContain("客户个人信息");
+  });
+});
+
 describe("OcrReview", () => {
-  test("persists a correction while retaining the original OCR text", () => {
-    const firstRender = render(<OcrReview page={lowConfidencePage} />);
+  test("opens a ParseResult page directly and persists a correction", () => {
+    const page = ocrPage(1);
+    const result = parseResultWith(page);
+    const onChange = vi.fn();
+    const firstRender = render(
+      <OcrReview
+        result={result}
+        reviewId={page.unitId}
+        reviewer="复核员甲"
+        onChange={onChange}
+      />,
+    );
 
     expect(screen.getByText(/低置信度/)).toBeInTheDocument();
     fireEvent.change(screen.getByRole("textbox", { name: "OCR 纠错文本" }), {
@@ -53,26 +170,74 @@ describe("OcrReview", () => {
       "第一条 不得泄露客户信息。",
     );
     expect(screen.getByTestId("ocr-reviewed-at").textContent).not.toBe("");
+    expect(onChange).toHaveBeenCalledWith(
+      expect.objectContaining({
+        source: expect.objectContaining({
+          content: expect.stringContaining("客户个人信息"),
+        }),
+      }),
+    );
 
     firstRender.unmount();
-    render(<OcrReview page={lowConfidencePage} />);
+    const restoredOnChange = vi.fn();
+    render(
+      <OcrReview
+        result={result}
+        reviewId={page.unitId}
+        reviewer="复核员甲"
+        onChange={restoredOnChange}
+      />,
+    );
     expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
       "第一条 不得泄露客户个人信息。",
     );
     expect(screen.getByText("已纠错")).toBeInTheDocument();
+    fireEvent.change(screen.getByRole("textbox", { name: "OCR 纠错文本" }), {
+      target: { value: "第一条 不得泄露客户个人信息及数据。" },
+    });
+    fireEvent.click(screen.getByRole("button", { name: "保存纠错" }));
+    expect(
+      restoredOnChange.mock.calls[0]?.[0].ocrReviews[0].correctionHistory,
+    ).toHaveLength(2);
+  });
+
+  test("synchronizes review and draft when the reviewId prop changes", () => {
+    const first = ocrPage(1, "第一页 OCR 文本");
+    const second = ocrPage(2, "第二页 OCR 文本");
+    const result = parseResultWith(first, second);
+    const view = render(
+      <OcrReview result={result} reviewId={first.unitId} reviewer="复核员甲" />,
+    );
+    fireEvent.change(screen.getByRole("textbox", { name: "OCR 纠错文本" }), {
+      target: { value: "未保存的第一页草稿" },
+    });
+
+    view.rerender(
+      <OcrReview
+        result={result}
+        reviewId={second.unitId}
+        reviewer="复核员甲"
+      />,
+    );
+
+    expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
+      "第二页 OCR 文本",
+    );
+    expect(screen.getByRole("region")).toHaveAccessibleName("第 2 页 OCR 审阅");
   });
 
   test("does not allow a failed OCR page to masquerade as reviewable text", () => {
+    const failed = {
+      ...ocrPage(1, ""),
+      confidence: 0,
+      reviewStatus: "failed" as const,
+      error: "页面 OCR 识别失败" as const,
+    };
     render(
       <OcrReview
-        page={{
-          ...lowConfidencePage,
-          text: "",
-          originalOcrText: "",
-          confidence: 0,
-          reviewStatus: "failed",
-          error: "页面 OCR 识别失败",
-        }}
+        result={parseResultWith(failed)}
+        reviewId={failed.unitId}
+        reviewer="复核员甲"
       />,
     );
 

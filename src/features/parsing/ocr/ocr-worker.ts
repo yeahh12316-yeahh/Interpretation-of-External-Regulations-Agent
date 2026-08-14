@@ -1,5 +1,7 @@
 import { createWorker, OEM } from "tesseract.js";
 
+import { OCR_ASSET_PUBLIC_PATH } from "./ocr-assets";
+
 export interface OcrWorkerProgress {
   status: string;
   progress: number;
@@ -18,9 +20,11 @@ export async function createLocalOcrWorker(
   onProgress: (progress: OcrWorkerProgress) => void = () => undefined,
 ) {
   return createWorker(["chi_sim", "eng"], OEM.LSTM_ONLY, {
-    workerPath: sameOriginOcrUrl("ocr/tesseract/worker.min.js"),
-    corePath: sameOriginOcrUrl("ocr/tesseract-core/"),
-    langPath: sameOriginOcrUrl("ocr/lang/"),
+    workerPath: sameOriginOcrUrl(
+      `${OCR_ASSET_PUBLIC_PATH}/tesseract/worker.min.js`,
+    ),
+    corePath: sameOriginOcrUrl(`${OCR_ASSET_PUBLIC_PATH}/tesseract-core/`),
+    langPath: sameOriginOcrUrl(`${OCR_ASSET_PUBLIC_PATH}/lang/`),
     workerBlobURL: false,
     logger: ({ status, progress }) => onProgress({ status, progress }),
   });

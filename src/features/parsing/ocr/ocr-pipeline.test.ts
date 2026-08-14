@@ -92,6 +92,8 @@ describe("ocrPages", () => {
       correctedText: null,
       reviewStatus: "unreviewed",
       reviewedAt: null,
+      reviewedBy: null,
+      correctionHistory: [],
       boundingBox: { x: 40, y: 60, width: 840, height: 60 },
     });
     expect(result[0]?.regions[0]).toMatchObject({

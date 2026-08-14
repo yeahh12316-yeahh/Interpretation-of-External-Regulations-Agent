@@ -24,6 +24,23 @@ export interface ParsedSourceUnit {
   correctedText?: string | null;
   reviewStatus?: "unreviewed" | "corrected";
   reviewedAt?: string | null;
+  reviewedBy?: string | null;
+  correctionHistory?: Array<{
+    correctedText: string;
+    reviewedBy: string;
+    reviewedAt: string;
+  }>;
+  ocrRegions?: Array<{
+    text: string;
+    confidence: number;
+    boundingBox: BoundingBox;
+    lowConfidence: boolean;
+  }>;
+  lowConfidenceCharacters?: Array<{
+    text: string;
+    confidence: number;
+    boundingBox: BoundingBox;
+  }>;
 }
 
 const ARTICLE_PATTERN = /第[〇零一二三四五六七八九十百千万两\d]+条/;

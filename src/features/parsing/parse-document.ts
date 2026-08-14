@@ -10,6 +10,7 @@ import { validateFile } from "../intake/file-policy";
 import { hashFile } from "../intake/hash-file";
 import { buildAnchors, type ParsedSourceUnit } from "./build-anchors";
 import { parseText } from "./parse-text";
+import type { OcrPageResult } from "./ocr/ocr-pipeline";
 
 export interface ParseQuality {
   totalCharacters: number;
@@ -28,6 +29,7 @@ export interface ParseResult {
   successfulPages: number[];
   failedPages: Array<{ page: number; error: string }>;
   units: ParsedSourceUnit[];
+  ocrReviews: OcrPageResult[];
   anchors: SourceAnchor[];
   quality: ParseQuality;
 }
@@ -67,6 +69,7 @@ export async function parseDocument(
   let failedPages: Array<{ page: number; error: string }> = [];
   let lowTextPages: number[] = [];
   let ocrFailedPages: number[] = [];
+  let ocrReviews: OcrPageResult[] = [];
 
   if (kind === "pdf") {
     const { parsePdf } = await raceWithAbort(import("./parse-pdf"), signal);
@@ -77,6 +80,7 @@ export async function parseDocument(
     failedPages = parsed.failedPages;
     lowTextPages = parsed.lowTextPages;
     ocrFailedPages = parsed.ocrFailedPages;
+    ocrReviews = parsed.ocrReviews;
   } else if (kind === "docx") {
     const { parseDocx } = await raceWithAbort(import("./parse-docx"), signal);
     units = await parseDocx(bytes, sourceId, sourceType, signal);
@@ -107,6 +111,7 @@ export async function parseDocument(
     successfulPages,
     failedPages,
     units,
+    ocrReviews,
     anchors: buildAnchors(units),
     quality: {
       totalCharacters: content.length,
