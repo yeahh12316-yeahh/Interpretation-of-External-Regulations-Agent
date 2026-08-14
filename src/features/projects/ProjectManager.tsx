@@ -5,7 +5,7 @@ import { exportProject, importProject } from './project-backup';
 import { projectRepository, type ProjectWithRawFiles } from './project-repository';
 
 interface ProjectManagerProps {
-  onRestore?: (project: ProjectWithRawFiles) => void;
+  onRestore: (project: ProjectWithRawFiles) => void | Promise<void>;
 }
 
 type Confirmation =
@@ -30,16 +30,18 @@ export function ProjectManager({ onRestore }: ProjectManagerProps): JSX.Element 
   }, []);
 
   const restore = async (projectId: string) => {
+    setNotice('');
+    setError('');
     try {
       const restored = await projectRepository.load(projectId);
       if (!restored) {
         setError('项目不存在或已被删除');
         return;
       }
-      onRestore?.(restored);
+      await onRestore(restored);
       setNotice(`已恢复项目：${restored.projectName}`);
-      setError('');
     } catch {
+      setNotice('');
       setError('无法恢复项目');
     }
   };

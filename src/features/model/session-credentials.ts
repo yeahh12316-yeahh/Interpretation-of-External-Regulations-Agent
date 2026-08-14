@@ -34,12 +34,21 @@ export const sessionCredentials = {
       apiKey: credentials.apiKey,
       model: credentials.model,
     };
-    availableSessionStorage()?.setItem(STORAGE_KEY, JSON.stringify(inMemoryCredentials));
+    try {
+      availableSessionStorage()?.setItem(STORAGE_KEY, JSON.stringify(inMemoryCredentials));
+    } catch {
+      // Restricted privacy modes may block storage; the in-memory copy remains available.
+    }
   },
 
   get(): SessionCredentials | null {
     const storage = availableSessionStorage();
-    const serialized = storage?.getItem(STORAGE_KEY);
+    let serialized: string | null | undefined;
+    try {
+      serialized = storage?.getItem(STORAGE_KEY);
+    } catch {
+      return inMemoryCredentials ? { ...inMemoryCredentials } : null;
+    }
     if (serialized !== null && serialized !== undefined) {
       try {
         const parsed: unknown = JSON.parse(serialized);
@@ -61,6 +70,10 @@ export const sessionCredentials = {
 
   clear(): void {
     inMemoryCredentials = null;
-    availableSessionStorage()?.removeItem(STORAGE_KEY);
+    try {
+      availableSessionStorage()?.removeItem(STORAGE_KEY);
+    } catch {
+      // Clearing memory is sufficient when restricted privacy modes block storage.
+    }
   },
 };
