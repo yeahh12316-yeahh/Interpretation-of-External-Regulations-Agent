@@ -29,13 +29,18 @@ export interface ValidationResult {
   severity: ValidationSeverity;
 }
 
+export type OfficialPrimarySourceIds = Readonly<
+  Record<string, readonly string[]>
+>;
+
 export interface SourceIndexInput {
   sources: readonly SourceUnit[];
   parsedUnits: readonly ParsedSourceUnit[];
   findings?: readonly Finding[];
+  officialPrimarySourceIds?: OfficialPrimarySourceIds;
 }
 
-interface IndexedParsedUnit {
+export interface IndexedParsedUnit {
   unit: ParsedSourceUnit;
   effectiveArticle: string | null;
 }
@@ -47,6 +52,7 @@ export interface SourceIndex {
   readonly sourceById: ReadonlyMap<string, readonly SourceUnit[]>;
   readonly findingById: ReadonlyMap<string, Finding>;
   readonly indexedUnits: readonly IndexedParsedUnit[];
+  readonly officialPrimarySourceIds?: OfficialPrimarySourceIds;
 }
 
 const anchorKey = (anchor: SourceAnchor): string => JSON.stringify(anchor);
@@ -55,6 +61,7 @@ export function createSourceIndex({
   sources,
   parsedUnits,
   findings = [],
+  officialPrimarySourceIds,
 }: SourceIndexInput): SourceIndex {
   const sourceById = new Map<string, SourceUnit[]>();
   for (const source of sources) {
@@ -83,6 +90,7 @@ export function createSourceIndex({
       findings.map((finding) => [finding.findingId, finding]),
     ),
     indexedUnits,
+    officialPrimarySourceIds,
   };
 }
 
@@ -139,11 +147,17 @@ export const findParsedUnitForAnchor = (
   anchor: SourceAnchor,
   index: SourceIndex,
 ): ParsedSourceUnit | undefined =>
+  findIndexedParsedUnitForAnchor(anchor, index)?.unit;
+
+export const findIndexedParsedUnitForAnchor = (
+  anchor: SourceAnchor,
+  index: SourceIndex,
+): IndexedParsedUnit | undefined =>
   unitsForAnchor(anchor, index).find(
     (indexed) =>
       articleMatches(anchor, indexed) &&
       normalizeText(indexed.unit.text).includes(normalizeText(anchor.quote)),
-  )?.unit;
+  );
 
 const everyAnchor = (
   anchors: readonly SourceAnchor[],
@@ -181,12 +195,9 @@ const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
   ) {
     return true;
   }
-  const critical = extractModalTerms(evidenceFor(finding, index)).filter(
-    (term) => ["不得", "严禁", "必须", "应当"].includes(term),
-  );
-  if (critical.length === 0) return true;
-  const statementTerms = extractModalTerms(finding.statement);
-  return critical.every((term) => statementTerms.includes(term));
+  const evidenceTerms = extractModalTerms(evidenceFor(finding, index)).sort();
+  const statementTerms = extractModalTerms(finding.statement).sort();
+  return evidenceTerms.join("\u0000") === statementTerms.join("\u0000");
 };
 
 const sourceTypeMatchesClaim = (finding: Finding): boolean => {
@@ -209,6 +220,43 @@ const inferenceProvenanceMatches = (
   finding: Finding,
   index: SourceIndex,
 ): boolean => {
+  if (finding.claimType === "official_explanation") {
+    if (finding.inferenceParents.length === 0) return false;
+    const parents = finding.inferenceParents.map((id) =>
+      index.findingById.get(id),
+    );
+    if (
+      parents.some(
+        (parent) =>
+          !parent ||
+          parent.findingId === finding.findingId ||
+          parent.claimType !== "regulatory_fact" ||
+          parent.sourceAnchors.length === 0 ||
+          parent.sourceAnchors.some(
+            (anchor) =>
+              anchor.sourceType !== "regulatory_text" ||
+              findParsedUnitForAnchor(anchor, index) === undefined,
+          ),
+      )
+    ) {
+      return false;
+    }
+    if (index.officialPrimarySourceIds) {
+      return finding.sourceAnchors.every((officialAnchor) => {
+        const allowed =
+          index.officialPrimarySourceIds?.[officialAnchor.sourceId];
+        return (
+          allowed !== undefined &&
+          parents.every((parent) =>
+            parent!.sourceAnchors.every((anchor) =>
+              allowed.includes(anchor.sourceId),
+            ),
+          )
+        );
+      });
+    }
+    return true;
+  }
   if (finding.inferenceParents.length === 0) {
     return finding.claimType !== "ai_inference";
   }
@@ -318,8 +366,8 @@ export function validateFinding(
     result(
       "modal_strength",
       modalTermsPreserved(finding, index),
-      "不得、严禁、必须、应当等监管强度词保持一致。",
-      "结论遗漏或改变了监管强度词。",
+      "可以、宜、应、须、应当、必须、不得、禁止、严禁等方向与强度保持一致。",
+      "结论新增、遗漏或改变了监管方向或强度词。",
     ),
     result(
       "dates",
@@ -338,8 +386,12 @@ export function validateFinding(
       inferencePassed,
       finding.claimType === "ai_inference"
         ? "AI 推导父项存在，且引用属于父项证据。"
-        : "该结论无需 AI 推导父项校验。",
-      "AI 推导缺少有效父项，或引用超出父项证据范围。",
+        : finding.claimType === "official_explanation"
+          ? "官方解读已绑定经权威解析确认的监管原文父项。"
+          : "该结论无需 AI 推导父项校验。",
+      finding.claimType === "official_explanation"
+        ? "官方解读缺少有效监管原文父项，或来源配对不一致。"
+        : "AI 推导缺少有效父项，或引用超出父项证据范围。",
     ),
   ];
 }

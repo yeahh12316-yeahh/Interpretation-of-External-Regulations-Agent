@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 
 import { fireEvent, render, screen } from "@testing-library/react";
+import userEvent from "@testing-library/user-event";
 import { describe, expect, test, vi } from "vitest";
 
 import type { Finding } from "../../domain/finding";
@@ -153,6 +154,55 @@ describe("EvidencePanel", () => {
 
     fireEvent.click(screen.getByRole("button", { name: "关闭校验详情" }));
     expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+  });
+
+  test("never presents an asserted locator when it conflicts with parsed evidence", () => {
+    const conflicting: Finding = {
+      ...findings[0],
+      sourceAnchors: [
+        {
+          ...findings[0].sourceAnchors[0],
+          page: 99,
+          article: "第九十九条",
+          paragraphIndex: 8,
+        },
+      ],
+    };
+    render(
+      <EvidencePanel
+        selectedFindingId="F1"
+        findings={[conflicting]}
+        sources={sources}
+        parsedUnits={parsedUnits}
+      />,
+    );
+
+    expect(screen.getByText("定位未验证/不可用")).toBeVisible();
+    expect(screen.queryByText("第99页")).not.toBeInTheDocument();
+    expect(screen.queryByText("第九十九条")).not.toBeInTheDocument();
+    expect(screen.queryByText("第9段")).not.toBeInTheDocument();
+  });
+
+  test("focuses, contains, escapes, and restores focus for validation details", async () => {
+    const user = userEvent.setup();
+    render(
+      <EvidencePanel
+        selectedFindingId="F1"
+        findings={findings}
+        sources={sources}
+        parsedUnits={parsedUnits}
+      />,
+    );
+    const trigger = screen.getByRole("button", { name: "查看校验详情" });
+
+    await user.click(trigger);
+    const close = screen.getByRole("button", { name: "关闭校验详情" });
+    expect(close).toHaveFocus();
+    await user.tab();
+    expect(close).toHaveFocus();
+    await user.keyboard("{Escape}");
+    expect(screen.queryByRole("dialog")).not.toBeInTheDocument();
+    expect(trigger).toHaveFocus();
   });
 
   test("handles a missing or deleted source without crashing", () => {

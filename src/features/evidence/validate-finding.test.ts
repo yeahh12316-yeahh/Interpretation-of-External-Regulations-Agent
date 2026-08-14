@@ -3,6 +3,12 @@ import { describe, expect, test } from "vitest";
 import type { Finding } from "../../domain/finding";
 import type { SourceUnit } from "../../domain/source";
 import type { ParsedSourceUnit } from "../parsing/build-anchors";
+import {
+  extractDates,
+  extractModalTerms,
+  extractNumbers,
+  normalizeText,
+} from "./normalize-text";
 import { createSourceIndex, validateFinding } from "./validate-finding";
 
 const sources: SourceUnit[] = [
@@ -85,6 +91,164 @@ const resultFor = (
   );
 
 describe("validateFinding", () => {
+  test("preserves numeric token boundaries while normalizing layout whitespace", () => {
+    expect(normalizeText("额度为 1 0 万元")).not.toBe(
+      normalizeText("额度为10万元"),
+    );
+    expect(normalizeText("额度为 1 亿元")).toBe(normalizeText("额度为1亿元"));
+    expect(normalizeText("机构应当\n建立 制度")).toBe(
+      normalizeText("机构应当建立制度"),
+    );
+
+    const numericSource: SourceUnit = {
+      sourceId: "REG-NUMERIC",
+      sourceType: "regulatory_text",
+      title: "合成金额文件",
+      content: "额度为10万元。",
+    };
+    const numericUnit: ParsedSourceUnit = {
+      sourceId: "REG-NUMERIC",
+      sourceType: "regulatory_text",
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: "额度为10万元。",
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const spacedQuote = finding({
+      statement: "额度为10万元。",
+      sourceAnchors: [
+        {
+          sourceId: "REG-NUMERIC",
+          sourceType: "regulatory_text",
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: "额度为1 0万元。",
+        },
+      ],
+    });
+    const results = resultFor(
+      spacedQuote,
+      createSourceIndex({
+        sources: [numericSource],
+        parsedUnits: [numericUnit],
+        findings: [spacedQuote],
+      }),
+    );
+    expect(results.quote_match.passed).toBe(false);
+  });
+
+  test("extracts amount units, Chinese dates, and the complete modal vocabulary", () => {
+    expect(
+      extractNumbers("上限为１亿元，不是１万元，共十项，比例１０％。"),
+    ).toEqual(["1亿元", "1万元", "10项", "10%"]);
+    expect(extractDates("二〇二六年一月一日生效")).toContain("2026-01-01");
+    expect(
+      extractModalTerms("可以、宜、应、须、应当、必须、不得、禁止、严禁"),
+    ).toEqual([
+      "可以",
+      "宜",
+      "应",
+      "须",
+      "应当",
+      "必须",
+      "不得",
+      "禁止",
+      "严禁",
+    ]);
+  });
+
+  test("keeps quote matching independent from contradictory modal, date, and amount evidence", () => {
+    const evidenceText = "机构不得超过1亿元，二〇二六年一月一日生效。";
+    const evidenceSource: SourceUnit = {
+      sourceId: "REG-SEMANTIC",
+      sourceType: "regulatory_text",
+      title: "合成语义文件",
+      content: evidenceText,
+    };
+    const evidenceUnit: ParsedSourceUnit = {
+      sourceId: "REG-SEMANTIC",
+      sourceType: "regulatory_text",
+      page: 2,
+      article: null,
+      paragraphIndex: 0,
+      text: evidenceText,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const contradictory = finding({
+      statement: "机构严禁超过1万元，2026年1月2日生效。",
+      sourceAnchors: [
+        {
+          sourceId: "REG-SEMANTIC",
+          sourceType: "regulatory_text",
+          page: 2,
+          article: null,
+          paragraphIndex: 0,
+          quote: evidenceText,
+        },
+      ],
+    });
+    const results = resultFor(
+      contradictory,
+      createSourceIndex({
+        sources: [evidenceSource],
+        parsedUnits: [evidenceUnit],
+        findings: [contradictory],
+      }),
+    );
+
+    expect(results.quote_match.passed).toBe(true);
+    expect(results.modal_strength.passed).toBe(false);
+    expect(results.dates.passed).toBe(false);
+    expect(results.numbers.passed).toBe(false);
+  });
+
+  test("accepts equivalent Arabic and Chinese-numeral dates without changing the date", () => {
+    const evidenceText = "本办法自二〇二六年一月一日起施行。";
+    const source: SourceUnit = {
+      sourceId: "REG-CN-DATE",
+      sourceType: "regulatory_text",
+      title: "合成中文日期文件",
+      content: evidenceText,
+    };
+    const unit: ParsedSourceUnit = {
+      sourceId: "REG-CN-DATE",
+      sourceType: "regulatory_text",
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: evidenceText,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const equivalent = finding({
+      statement: "本办法自2026年1月1日起施行。",
+      sourceAnchors: [
+        {
+          sourceId: source.sourceId,
+          sourceType: source.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: evidenceText,
+        },
+      ],
+    });
+    const results = resultFor(
+      equivalent,
+      createSourceIndex({
+        sources: [source],
+        parsedUnits: [unit],
+        findings: [equivalent],
+      }),
+    );
+    expect(results.dates.passed).toBe(true);
+    expect(results.numbers.passed).toBe(true);
+  });
+
   test("normalizes full-width text and line breaks without changing dates, numbers, or modal words", () => {
     const results = resultFor(finding());
 
@@ -265,6 +429,75 @@ describe("validateFinding", () => {
     });
 
     expect(resultFor(official, index).inference_parent.passed).toBe(false);
+  });
+
+  test("requires official explanations to reference authorized regulatory-primary parents", () => {
+    const parent = finding({ findingId: "PRIMARY" });
+    const official = finding({
+      findingId: "OFFICIAL",
+      category: "official_context:policy_background",
+      statement: "官方解读说明政策目标。",
+      claimType: "official_explanation",
+      inferenceParents: ["PRIMARY"],
+      sourceAnchors: [
+        {
+          sourceId: "OFF-1",
+          sourceType: "official_interpretation",
+          page: null,
+          article: null,
+          paragraphIndex: 0,
+          quote: "官方解读说明政策目标。",
+        },
+      ],
+    });
+    const officialUnit: ParsedSourceUnit = {
+      sourceId: "OFF-1",
+      sourceType: "official_interpretation",
+      page: null,
+      article: null,
+      paragraphIndex: 0,
+      text: official.statement,
+      extractionMethod: "docx_xml",
+      confidence: 1,
+    };
+    const evidenceIndex = (
+      parents: Finding[],
+      pairing?: Readonly<Record<string, readonly string[]>>,
+    ) =>
+      createSourceIndex({
+        sources,
+        parsedUnits: [...parsedUnits, officialUnit],
+        findings: [...parents, official],
+        officialPrimarySourceIds: pairing,
+      });
+
+    expect(
+      resultFor({ ...official, inferenceParents: [] }, evidenceIndex([parent]))
+        .inference_parent.passed,
+    ).toBe(false);
+    expect(
+      resultFor(
+        official,
+        evidenceIndex([{ ...parent, claimType: "official_explanation" }]),
+      ).inference_parent.passed,
+    ).toBe(false);
+    expect(
+      resultFor(
+        official,
+        evidenceIndex([{ ...parent, claimType: "ai_inference" }]),
+      ).inference_parent.passed,
+    ).toBe(false);
+    expect(
+      resultFor(official, evidenceIndex([parent])).inference_parent.passed,
+    ).toBe(true);
+    expect(
+      resultFor(official, evidenceIndex([parent], { "OFF-1": ["OTHER-REG"] }))
+        .inference_parent.passed,
+    ).toBe(false);
+    expect(
+      resultFor(official, evidenceIndex([parent], { "OFF-1": ["REG-1"] }))
+        .inference_parent.passed,
+    ).toBe(true);
   });
 
   test("does not apply a primary parent's modal words to an official explanation", () => {

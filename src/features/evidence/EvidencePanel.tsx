@@ -1,4 +1,4 @@
-import { type JSX, useEffect, useMemo, useState } from "react";
+import { type JSX, useCallback, useEffect, useMemo, useState } from "react";
 
 import type { ClaimType, Finding } from "../../domain/finding";
 import type { SourceUnit } from "../../domain/source";
@@ -7,7 +7,7 @@ import "./evidence.css";
 import { findNormalizedTextRange } from "./normalize-text";
 import {
   createSourceIndex,
-  findParsedUnitForAnchor,
+  findIndexedParsedUnitForAnchor,
   validateFinding,
 } from "./validate-finding";
 import { ValidationDetails } from "./ValidationDetails";
@@ -54,6 +54,7 @@ export function EvidencePanel({
   parsedUnits,
 }: EvidencePanelProps): JSX.Element {
   const [detailsOpen, setDetailsOpen] = useState(false);
+  const closeDetails = useCallback(() => setDetailsOpen(false), []);
   useEffect(() => setDetailsOpen(false), [selectedFindingId]);
 
   const finding = findings.find(
@@ -82,10 +83,10 @@ export function EvidencePanel({
   const source = anchor
     ? sources.find(({ sourceId }) => sourceId === anchor.sourceId)
     : undefined;
-  const parsedUnit = anchor
-    ? findParsedUnitForAnchor(anchor, index)
+  const parsedEvidence = anchor
+    ? findIndexedParsedUnitForAnchor(anchor, index)
     : undefined;
-  const originalText = parsedUnit?.text;
+  const originalText = parsedEvidence?.unit.text;
 
   return (
     <aside aria-label="原文证据" className="evidence-panel">
@@ -109,13 +110,19 @@ export function EvidencePanel({
           </div>
           <div>
             <dt>位置</dt>
-            <dd>
-              <span>
-                {anchor?.page === null ? "无固定页码" : `第${anchor?.page}页`}
-              </span>
-              <span>{anchor?.article ?? "未标注条款"}</span>
-              <span>第{(anchor?.paragraphIndex ?? 0) + 1}段</span>
-            </dd>
+            {parsedEvidence ? (
+              <dd>
+                <span>
+                  {parsedEvidence.unit.page === null
+                    ? "无固定页码"
+                    : `第${parsedEvidence.unit.page}页`}
+                </span>
+                <span>{parsedEvidence.effectiveArticle ?? "未标注条款"}</span>
+                <span>第{parsedEvidence.unit.paragraphIndex + 1}段</span>
+              </dd>
+            ) : (
+              <dd>定位未验证/不可用</dd>
+            )}
           </div>
           <div>
             <dt>来源类别</dt>
@@ -150,7 +157,7 @@ export function EvidencePanel({
       </button>
 
       <ValidationDetails
-        onClose={() => setDetailsOpen(false)}
+        onClose={closeDetails}
         open={detailsOpen}
         results={results}
       />

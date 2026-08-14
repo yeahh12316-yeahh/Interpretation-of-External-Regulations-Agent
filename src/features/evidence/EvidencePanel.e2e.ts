@@ -32,14 +32,18 @@ test("keeps evidence usable at 1024px and updates real locator details", async (
   }));
   expect(pageWidth.scrollWidth).toBeLessThanOrEqual(pageWidth.clientWidth);
 
-  await panel.getByRole("button", { name: "查看校验详情" }).click();
+  const detailsTrigger = panel.getByRole("button", { name: "查看校验详情" });
+  await detailsTrigger.click();
   const dialog = page.getByRole("dialog", { name: "证据校验详情" });
   await expect(dialog).toBeVisible();
+  const closeButton = dialog.getByRole("button", { name: "关闭校验详情" });
+  await expect(closeButton).toBeFocused();
   await expect(dialog.getByText("引用反向匹配")).toBeVisible();
   const dialogBox = await dialog.boundingBox();
   expect(dialogBox).not.toBeNull();
   expect(dialogBox!.x).toBeGreaterThanOrEqual(0);
   expect(dialogBox!.x + dialogBox!.width).toBeLessThanOrEqual(1024);
-  await dialog.getByRole("button", { name: "关闭校验详情" }).click();
+  await page.keyboard.press("Escape");
   await expect(dialog).toBeHidden();
+  await expect(detailsTrigger).toBeFocused();
 });

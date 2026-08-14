@@ -1,4 +1,4 @@
-import type { JSX } from "react";
+import { type JSX, useEffect, useRef } from "react";
 
 import type { ValidationResult, ValidationRule } from "./validate-finding";
 
@@ -26,6 +26,53 @@ export function ValidationDetails({
   results,
   onClose,
 }: ValidationDetailsProps): JSX.Element | null {
+  const dialogRef = useRef<HTMLElement>(null);
+  const closeButtonRef = useRef<HTMLButtonElement>(null);
+  const previousFocusRef = useRef<HTMLElement | null>(null);
+
+  useEffect(() => {
+    if (!open) return;
+    previousFocusRef.current =
+      document.activeElement instanceof HTMLElement
+        ? document.activeElement
+        : null;
+    closeButtonRef.current?.focus();
+
+    const handleKeyDown = (event: KeyboardEvent) => {
+      if (event.key === "Escape") {
+        event.preventDefault();
+        onClose();
+        return;
+      }
+      if (event.key !== "Tab") return;
+      const focusable = Array.from(
+        dialogRef.current?.querySelectorAll<HTMLElement>(
+          'button:not([disabled]), [href], input:not([disabled]), select:not([disabled]), textarea:not([disabled]), [tabindex]:not([tabindex="-1"])',
+        ) ?? [],
+      ).filter((element) => !element.hasAttribute("hidden"));
+      if (focusable.length === 0) {
+        event.preventDefault();
+        dialogRef.current?.focus();
+        return;
+      }
+      const first = focusable[0];
+      const last = focusable.at(-1)!;
+      if (
+        focusable.length === 1 ||
+        (!event.shiftKey && document.activeElement === last) ||
+        (event.shiftKey && document.activeElement === first)
+      ) {
+        event.preventDefault();
+        (event.shiftKey ? last : first).focus();
+      }
+    };
+    document.addEventListener("keydown", handleKeyDown);
+    return () => {
+      document.removeEventListener("keydown", handleKeyDown);
+      previousFocusRef.current?.focus();
+    };
+  }, [onClose, open]);
+
   if (!open) return null;
 
   return (
@@ -34,11 +81,18 @@ export function ValidationDetails({
         aria-labelledby="validation-details-title"
         aria-modal="true"
         className="validation-dialog"
+        ref={dialogRef}
         role="dialog"
+        tabIndex={-1}
       >
         <div className="validation-dialog__header">
           <h3 id="validation-details-title">证据校验详情</h3>
-          <button aria-label="关闭校验详情" onClick={onClose} type="button">
+          <button
+            aria-label="关闭校验详情"
+            onClick={onClose}
+            ref={closeButtonRef}
+            type="button"
+          >
             关闭
           </button>
         </div>
