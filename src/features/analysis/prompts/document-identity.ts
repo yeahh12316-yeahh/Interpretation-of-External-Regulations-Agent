@@ -4,14 +4,14 @@ import {
   SHARED_GUARDRAILS_VERSION,
 } from "./shared-guardrails";
 
-export const DOCUMENT_IDENTITY_PROMPT_VERSION = `document-identity-v2+${SHARED_GUARDRAILS_VERSION}`;
+export const DOCUMENT_IDENTITY_PROMPT_VERSION = `document-identity-v3+${SHARED_GUARDRAILS_VERSION}`;
 
 export const buildDocumentIdentityMessages = (
   payload: string,
 ): ModelMessage[] => [
   {
     role: "system",
-    content: `${SHARED_GUARDRAILS}\n任务：监管原文节点只可使用 document_identity:* 闭合类别输出逐字可反向匹配的 regulatory_fact；官方解读节点只可使用 official_context:* 输出 official_explanation，不得输出监管事实。材料没有直接建立的身份、状态、效力、适用性、处罚、执法、期限、日期、金额或主管机关事实必须使用 pending_confirmation:document_identity。对监管原文与官方解读的冲突使用 conflicts 结构，不得让官方解读覆盖原文。`,
+    content: `${SHARED_GUARDRAILS}\n任务：监管原文节点只能返回 findings 提取记录：findingId、闭合 kind、逐字 extractedValue、sourceAnchors、confidence；不得返回 statement、claimType、category 或法律结论。所有文件身份提取均由系统转为必须人工合规复核的 pending_confirmation，不因存在摘录而自动确认效力、状态、适用性、发文机关权威性或其他法律判断。官方解读节点只能返回 findings 说明记录：findingId、闭合 kind、与唯一 anchor 完全一致的 sourceExcerpt、pairedPrimaryFindingIds、confidence；不得返回 statement 或结论。系统将用固定说明包装摘录，明确其不建立或覆盖法律效力。对冲突使用 conflicts 结构。`,
   },
   {
     role: "user",

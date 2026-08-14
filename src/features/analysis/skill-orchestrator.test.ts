@@ -251,12 +251,11 @@ describe("runAnalysis", () => {
           conflicts: [],
           findings: [
             {
-              ...baseFinding,
               findingId: "BAD-1",
-              category: "document_identity:regulatory_context",
-              statement: "引用了未提供的来源",
-              claimType: "regulatory_fact",
+              kind: "document_title",
+              extractedValue: "第一条",
               sourceAnchors: [anchor("REG-NOT-SUPPLIED")],
+              confidence: 0.8,
             },
           ],
         };
@@ -287,11 +286,9 @@ describe("runAnalysis", () => {
           conflicts: [],
           findings: [
             {
-              ...baseFinding,
               findingId: "BAD-NODE-SCOPE",
-              category: "document_identity:regulatory_context",
-              statement: "引用了项目内但未发送到当前节点的来源",
-              claimType: "regulatory_fact",
+              kind: "document_title",
+              extractedValue: "另一文件中的已知文本",
               sourceAnchors: [
                 {
                   sourceId: outOfNodeSource.sourceId,
@@ -302,6 +299,7 @@ describe("runAnalysis", () => {
                   quote: "另一文件中的已知文本。",
                 },
               ],
+              confidence: 0.8,
             },
           ],
         };
@@ -342,29 +340,27 @@ describe("runAnalysis", () => {
               ...(userContent?.includes('"sourceId":"REG-1"')
                 ? [
                     {
-                      ...baseFinding,
                       findingId: "REG-FACT-1",
-                      category: "document_identity:regulatory_context",
-                      statement: "商业银行应当建立数据治理机制",
-                      claimType: "regulatory_fact" as const,
+                      kind: "document_title" as const,
+                      extractedValue: "商业银行",
                       sourceAnchors: [anchor()],
+                      confidence: 0.8,
                     },
                   ]
                 : []),
               ...(userContent?.includes('"sourceId":"REG-2"')
                 ? [
                     {
-                      ...baseFinding,
                       findingId: "REG-FACT-2",
-                      category: "document_identity:regulatory_context",
-                      statement: "第二份监管原文要求",
-                      claimType: "regulatory_fact" as const,
+                      kind: "document_title" as const,
+                      extractedValue: "第二份监管原文要求",
                       sourceAnchors: [
                         {
                           ...anchor("REG-2"),
                           quote: "第二份监管原文要求。",
                         },
                       ],
+                      confidence: 0.8,
                     },
                   ]
                 : []),
@@ -416,19 +412,16 @@ describe("runAnalysis", () => {
             conflicts: [],
             findings: [
               {
-                ...baseFinding,
                 findingId: "FABRICATED-SENSITIVE",
-                category: statement.includes("罚款")
-                  ? "document_identity:penalty"
-                  : "document_identity:effective_date",
-                statement,
-                claimType: "regulatory_fact",
+                kind: statement.includes("罚款") ? "penalty" : "effective_date",
+                extractedValue: statement,
                 sourceAnchors: [
                   {
                     ...anchor(),
                     quote,
                   },
                 ],
+                confidence: 0.8,
               },
             ],
           };
@@ -447,7 +440,7 @@ describe("runAnalysis", () => {
     },
   );
 
-  it("keeps an exactly reverse-matched effective date as a regulatory fact", async () => {
+  it("keeps an exactly reverse-matched effective date only as pending review", async () => {
     const statement = "本办法自2026年1月1日起施行";
     const source: SourceUnit = {
       ...regulatorySource,
@@ -459,12 +452,11 @@ describe("runAnalysis", () => {
             conflicts: [],
             findings: [
               {
-                ...baseFinding,
                 findingId: "MATCHED-DATE",
-                category: "document_identity:effective_date",
-                statement,
-                claimType: "regulatory_fact",
+                kind: "effective_date",
+                extractedValue: statement,
                 sourceAnchors: [{ ...anchor(), quote: source.content }],
+                confidence: 0.8,
               },
             ],
           }
@@ -480,7 +472,9 @@ describe("runAnalysis", () => {
     expect(draft.findings).toContainEqual(
       expect.objectContaining({
         findingId: "MATCHED-DATE",
-        claimType: "regulatory_fact",
+        category: "pending_confirmation:document_identity:effective_date",
+        claimType: "pending_confirmation",
+        requiredReview: true,
       }),
     );
   });
@@ -492,17 +486,16 @@ describe("runAnalysis", () => {
             conflicts: [],
             findings: [
               {
-                ...baseFinding,
                 findingId: "FABRICATED-QUOTE",
-                category: "document_identity:effective_date",
-                statement: "本办法自2026年1月1日起施行",
-                claimType: "regulatory_fact",
+                kind: "effective_date",
+                extractedValue: "本办法自2026年1月1日起施行",
                 sourceAnchors: [
                   {
                     ...anchor(),
                     quote: "本办法自2026年1月1日起施行。",
                   },
                 ],
+                confidence: 0.8,
               },
             ],
           }
@@ -611,12 +604,12 @@ describe("runAnalysis", () => {
         return {
           findings: [
             {
-              ...baseFinding,
               findingId: "OFF-CLAIM",
-              category: "official_context:policy_background",
-              statement: "官方解读称不要求建立该机制",
-              claimType: "official_explanation",
+              kind: "policy_background",
+              sourceExcerpt: officialSource.content,
               sourceAnchors: [anchor("OFF-1", "official_interpretation")],
+              pairedPrimaryFindingIds: ["REG-CLAIM"],
+              confidence: 0.8,
             },
           ],
           conflicts: [
@@ -638,12 +631,11 @@ describe("runAnalysis", () => {
       return {
         findings: [
           {
-            ...baseFinding,
             findingId: "REG-CLAIM",
-            category: "document_identity:regulatory_context",
-            statement: "商业银行应当建立数据治理机制",
-            claimType: "regulatory_fact",
+            kind: "document_title",
+            extractedValue: "商业银行",
             sourceAnchors: [anchor()],
+            confidence: 0.8,
           },
         ],
         conflicts: [],
@@ -668,7 +660,7 @@ describe("runAnalysis", () => {
     expect(
       draft.findings.find((finding) => finding.findingId === "REG-CLAIM")
         ?.claimType,
-    ).toBe("regulatory_fact");
+    ).toBe("pending_confirmation");
     const officialRequest = gateway.requests.find(
       (request) =>
         request.messages.find((message) => message.role === "user")?.content &&
@@ -1183,24 +1175,22 @@ describe("runAnalysis", () => {
           conflicts: [],
           findings: [
             {
-              ...baseFinding,
               findingId: "FACT-A",
-              category: "document_identity:regulatory_context",
-              statement: "原文A要求",
-              claimType: "regulatory_fact",
+              kind: "document_title",
+              extractedValue: "原文A要求",
               sourceAnchors: [
                 { ...anchor("REG-A"), article: null, quote: "原文A要求。" },
               ],
+              confidence: 0.8,
             },
             {
-              ...baseFinding,
               findingId: "FACT-B",
-              category: "document_identity:regulatory_context",
-              statement: "原文B要求",
-              claimType: "regulatory_fact",
+              kind: "document_title",
+              extractedValue: "原文B要求",
               sourceAnchors: [
                 { ...anchor("REG-B"), article: null, quote: "原文B要求。" },
               ],
+              confidence: 0.8,
             },
           ],
         };
@@ -1277,24 +1267,22 @@ describe("runAnalysis", () => {
           conflicts: [],
           findings: [
             {
-              ...baseFinding,
               findingId: "FACT-A",
-              category: "document_identity:regulatory_context",
-              statement: "原文A要求",
-              claimType: "regulatory_fact",
+              kind: "document_title",
+              extractedValue: "原文A要求",
               sourceAnchors: [
                 { ...anchor("REG-A"), article: null, quote: "原文A要求。" },
               ],
+              confidence: 0.8,
             },
             {
-              ...baseFinding,
               findingId: "FACT-B",
-              category: "document_identity:regulatory_context",
-              statement: "原文B要求",
-              claimType: "regulatory_fact",
+              kind: "document_title",
+              extractedValue: "原文B要求",
               sourceAnchors: [
                 { ...anchor("REG-B"), article: null, quote: "原文B要求。" },
               ],
+              confidence: 0.8,
             },
           ],
         };
@@ -1302,11 +1290,9 @@ describe("runAnalysis", () => {
       return {
         findings: [
           {
-            ...baseFinding,
             findingId: "OFF-A-CONTEXT",
-            category: "official_context:policy_background",
-            statement: "解读A背景",
-            claimType: "official_explanation",
+            kind: "policy_background",
+            sourceExcerpt: "解读A背景。",
             sourceAnchors: [
               {
                 ...anchor("OFF-A", "official_interpretation"),
@@ -1314,6 +1300,8 @@ describe("runAnalysis", () => {
                 quote: "解读A背景。",
               },
             ],
+            pairedPrimaryFindingIds: ["FACT-A"],
+            confidence: 0.8,
           },
         ],
         conflicts: [
@@ -1503,6 +1491,211 @@ describe("runAnalysis", () => {
     ).rejects.toThrow();
   });
 
+  it("rejects a model-authored status statement in the currently allowed regulatory-context category", async () => {
+    const source: SourceUnit = {
+      ...regulatorySource,
+      content: "该文件仍在执行中。",
+    };
+    const gateway = new RecordingGateway((request) =>
+      request.schemaName === "analysis_document_identity_v1"
+        ? {
+            conflicts: [],
+            findings: [
+              {
+                ...baseFinding,
+                findingId: "REGULATORY-CONTEXT-STATUS",
+                category: "document_identity:regulatory_context",
+                statement: "该文件仍在执行中",
+                claimType: "regulatory_fact",
+                sourceAnchors: [
+                  { ...anchor(), article: null, quote: source.content },
+                ],
+              },
+            ],
+          }
+        : emptyResponse(request),
+    );
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [source],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("rejects a model-authored status conclusion in the currently allowed implementation-guidance category", async () => {
+    const statusOfficial: SourceUnit = {
+      ...officialSource,
+      content: "该文件仍在执行中。",
+    };
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_document_identity_v1") {
+        return emptyResponse(request);
+      }
+      if (
+        hasChunkSourceType(
+          request.messages.find((message) => message.role === "user")?.content,
+          "official_interpretation",
+        )
+      ) {
+        return {
+          conflicts: [],
+          findings: [
+            {
+              ...baseFinding,
+              findingId: "OFFICIAL-GUIDANCE-STATUS",
+              category: "official_context:implementation_guidance",
+              statement: "该文件仍在执行中",
+              claimType: "official_explanation",
+              sourceAnchors: [
+                {
+                  ...anchor("OFF-1", "official_interpretation"),
+                  quote: statusOfficial.content,
+                },
+              ],
+            },
+          ],
+        };
+      }
+      return { findings: [], conflicts: [] };
+    });
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource, statusOfficial],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: true,
+        officialPrimaryContext: { "OFF-1": ["REG-1"] },
+      }),
+    ).rejects.toThrow();
+  });
+
+  it("retains a typed document-identity extraction only as a deterministic pending finding", async () => {
+    const source: SourceUnit = {
+      ...regulatorySource,
+      content: "《监管办法》第一条 商业银行应当建立数据治理机制。",
+    };
+    const gateway = new RecordingGateway((request) =>
+      request.schemaName === "analysis_document_identity_v1"
+        ? {
+            conflicts: [],
+            findings: [
+              {
+                findingId: "EXTRACTED-TITLE",
+                kind: "document_title",
+                extractedValue: "监管办法",
+                sourceAnchors: [
+                  { ...anchor(), article: null, quote: "《监管办法》" },
+                ],
+                confidence: 0.9,
+              },
+            ],
+          }
+        : emptyResponse(request),
+    );
+
+    const draft = await runAnalysis({
+      sourceUnits: [source],
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+    });
+    expect(draft.findings).toContainEqual(
+      expect.objectContaining({
+        findingId: "EXTRACTED-TITLE",
+        category: "pending_confirmation:document_identity:document_title",
+        claimType: "pending_confirmation",
+        requiredReview: true,
+        statement: expect.stringMatching(/文件名称.*监管办法.*人工合规复核/),
+      }),
+    );
+  });
+
+  it("wraps an exact official excerpt as explanatory material without accepting its status wording as a conclusion", async () => {
+    const source: SourceUnit = {
+      ...regulatorySource,
+      content: "《监管办法》第一条 商业银行应当建立数据治理机制。",
+    };
+    const statusOfficial: SourceUnit = {
+      ...officialSource,
+      content: "该文件仍在执行中。",
+    };
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_document_identity_v1") {
+        return emptyResponse(request);
+      }
+      const isOfficial = hasChunkSourceType(
+        request.messages.find((message) => message.role === "user")?.content,
+        "official_interpretation",
+      );
+      return isOfficial
+        ? {
+            conflicts: [],
+            findings: [
+              {
+                findingId: "OFFICIAL-EXCERPT",
+                kind: "implementation_guidance",
+                sourceExcerpt: statusOfficial.content,
+                sourceAnchors: [
+                  {
+                    ...anchor("OFF-1", "official_interpretation"),
+                    quote: statusOfficial.content,
+                  },
+                ],
+                pairedPrimaryFindingIds: ["EXTRACTED-TITLE"],
+                confidence: 0.8,
+              },
+            ],
+          }
+        : {
+            conflicts: [],
+            findings: [
+              {
+                findingId: "EXTRACTED-TITLE",
+                kind: "document_title",
+                extractedValue: "监管办法",
+                sourceAnchors: [
+                  { ...anchor(), article: null, quote: "《监管办法》" },
+                ],
+                confidence: 0.9,
+              },
+            ],
+          };
+    });
+
+    const draft = await runAnalysis({
+      sourceUnits: [source, statusOfficial],
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: true,
+      officialPrimaryContext: { "OFF-1": ["REG-1"] },
+    });
+    const explanation = draft.findings.find(
+      (finding) => finding.findingId === "OFFICIAL-EXCERPT",
+    );
+    expect(explanation).toEqual(
+      expect.objectContaining({
+        category: "official_context:implementation_guidance",
+        claimType: "official_explanation",
+        inferenceParents: ["EXTRACTED-TITLE"],
+        requiredReview: true,
+      }),
+    );
+    expect(explanation?.statement).not.toBe("该文件仍在执行中");
+    expect(explanation?.statement).toMatch(/官方解读材料摘录.*不建立或覆盖/);
+    expect(
+      draft.findings.some(
+        (finding) =>
+          finding.statement === "该文件仍在执行中" &&
+          finding.claimType !== "pending_confirmation",
+      ),
+    ).toBe(false);
+  });
+
   it("does not let an official interpretation resolve '该文件仍在执行中' as status", async () => {
     const statusOfficial: SourceUnit = {
       ...officialSource,
@@ -1558,12 +1751,11 @@ describe("runAnalysis", () => {
             conflicts: [],
             findings: [
               {
-                ...baseFinding,
                 findingId: "CHECKPOINT-FACT",
-                category: "document_identity:regulatory_context",
-                statement: "第一条 商业银行应当建立数据治理机制",
-                claimType: "regulatory_fact",
+                kind: "document_title",
+                extractedValue: "商业银行",
                 sourceAnchors: [anchor()],
+                confidence: 0.8,
               },
             ],
           }

@@ -135,26 +135,25 @@ export const SourceConflictSchema = z
 
 export type SourceConflict = z.infer<typeof SourceConflictSchema>;
 
-const RegulatoryIdentityCategorySchema = z.enum([
-  "document_identity:document_title",
-  "document_identity:document_number",
-  "document_identity:issuing_authority",
-  "document_identity:publication_date",
-  "document_identity:effective_date",
-  "document_identity:expiry_date",
-  "document_identity:effectivity_status",
-  "document_identity:applicability",
-  "document_identity:penalty",
-  "document_identity:enforcement",
-  "document_identity:deadline",
-  "document_identity:amount",
-  "document_identity:regulatory_context",
+const DocumentIdentityKindSchema = z.enum([
+  "document_title",
+  "document_number",
+  "issuing_authority",
+  "publication_date",
+  "effective_date",
+  "expiry_date",
+  "effectivity_status",
+  "applicability",
+  "penalty",
+  "enforcement",
+  "deadline",
+  "amount",
 ]);
 
-const OfficialContextCategorySchema = z.enum([
-  "official_context:policy_background",
-  "official_context:regulatory_intent",
-  "official_context:implementation_guidance",
+const OfficialExplanationKindSchema = z.enum([
+  "policy_background",
+  "regulatory_intent",
+  "implementation_guidance",
 ]);
 
 const KeyMatterCategorySchema = z.enum([
@@ -175,28 +174,24 @@ const identityFindingShape = {
   revisionRecords: z.array(z.never()).max(0).default([]),
 };
 
-const RegulatoryIdentityFindingSchema = z
+const RegulatoryIdentityExtractionSchema = z
   .object({
-    ...identityFindingShape,
-    category: RegulatoryIdentityCategorySchema,
-    claimType: z.literal("regulatory_fact"),
+    findingId: z.string().min(1),
+    kind: DocumentIdentityKindSchema,
+    extractedValue: z.string().min(1),
+    sourceAnchors: z.array(SourceAnchorSchema).min(1),
+    confidence: z.number().min(0).max(1),
   })
   .strict();
 
-const OfficialContextFindingSchema = z
+const OfficialExplanationRecordSchema = z
   .object({
-    ...identityFindingShape,
-    category: OfficialContextCategorySchema,
-    claimType: z.literal("official_explanation"),
-  })
-  .strict();
-
-const PendingIdentityFindingSchema = z
-  .object({
-    ...identityFindingShape,
-    category: z.literal("pending_confirmation:document_identity"),
-    claimType: z.literal("pending_confirmation"),
-    requiredReview: z.literal(true),
+    findingId: z.string().min(1),
+    kind: OfficialExplanationKindSchema,
+    sourceExcerpt: z.string().min(1),
+    sourceAnchors: z.array(SourceAnchorSchema).length(1),
+    pairedPrimaryFindingIds: z.array(z.string().min(1)).min(1),
+    confidence: z.number().min(0).max(1),
   })
   .strict();
 
@@ -236,18 +231,14 @@ const PendingKeyMatterFindingSchema = z
 
 const RegulatoryDocumentIdentityResponseSchema = z
   .object({
-    findings: z.array(
-      z.union([RegulatoryIdentityFindingSchema, PendingIdentityFindingSchema]),
-    ),
+    findings: z.array(RegulatoryIdentityExtractionSchema),
     conflicts: z.array(SourceConflictSchema),
   })
   .strict();
 
 const OfficialDocumentIdentityResponseSchema = z
   .object({
-    findings: z.array(
-      z.union([OfficialContextFindingSchema, PendingIdentityFindingSchema]),
-    ),
+    findings: z.array(OfficialExplanationRecordSchema),
     conflicts: z.array(SourceConflictSchema),
   })
   .strict();
@@ -820,7 +811,10 @@ const requestContextForNode = (
   );
   const primaryFindings = priorFindings.filter(
     (finding) =>
-      finding.claimType === "regulatory_fact" &&
+      finding.claimType === "pending_confirmation" &&
+      DocumentIdentityKindSchema.options.some(
+        (kind) => finding.category === documentIdentityCategory(kind),
+      ) &&
       finding.sourceAnchors.length > 0 &&
       finding.sourceAnchors.every((anchor) =>
         pairedRegulatorySourceIds.has(anchor.sourceId),
@@ -888,6 +882,209 @@ const validateAnchors = (
   }
 };
 
+type DocumentIdentityKind = z.infer<typeof DocumentIdentityKindSchema>;
+type OfficialExplanationKind = z.infer<typeof OfficialExplanationKindSchema>;
+
+const DOCUMENT_IDENTITY_LABELS: Record<DocumentIdentityKind, string> = {
+  document_title: "文件名称",
+  document_number: "文号",
+  issuing_authority: "发文机关",
+  publication_date: "发布日期",
+  effective_date: "生效日期",
+  expiry_date: "失效日期",
+  effectivity_status: "效力状态",
+  applicability: "适用性",
+  penalty: "处罚",
+  enforcement: "执法措施",
+  deadline: "期限",
+  amount: "金额",
+};
+
+const OFFICIAL_EXPLANATION_LABELS: Record<OfficialExplanationKind, string> = {
+  policy_background: "政策背景",
+  regulatory_intent: "监管意图",
+  implementation_guidance: "实施说明",
+};
+
+const documentIdentityCategory = (kind: DocumentIdentityKind): string =>
+  `pending_confirmation:document_identity:${kind}`;
+
+const officialExplanationCategory = (kind: OfficialExplanationKind): string =>
+  `official_context:${kind}`;
+
+const documentIdentityStatement = (
+  kind: DocumentIdentityKind,
+  anchors: readonly SourceAnchor[],
+): string =>
+  `待确认的文件身份提取（${DOCUMENT_IDENTITY_LABELS[kind]}）：原文摘录${anchors
+    .map((anchor) => `“${anchor.quote}”`)
+    .join(
+      "；",
+    )}。该提取仅保留证据，不构成已确认的文件身份、效力、适用性或其他法律结论，须经人工合规复核后方可确认。`;
+
+const officialExplanationStatement = (
+  kind: OfficialExplanationKind,
+  excerpt: string,
+): string =>
+  `官方解读材料摘录（${OFFICIAL_EXPLANATION_LABELS[kind]}）：“${excerpt}”。该摘录仅作为官方说明材料，不建立或覆盖监管文件效力、适用性或其他法律结论，须经人工合规复核。`;
+
+const buildDocumentIdentityFinding = (
+  extraction: z.infer<typeof RegulatoryIdentityExtractionSchema>,
+  scope: AuthorizedSourceScope,
+): Finding => {
+  if (extraction.findingId.startsWith("SYS-")) {
+    throw new Error("模型不得使用系统保留的 Finding ID");
+  }
+  validateAnchors(extraction.sourceAnchors, scope);
+  if (
+    extraction.sourceAnchors.some(
+      (anchor) => anchor.sourceType !== "regulatory_text",
+    )
+  ) {
+    throw new Error("文件身份提取只能引用监管原文");
+  }
+  const extractedValue = normalizedEvidenceText(extraction.extractedValue);
+  if (
+    extractedValue.length === 0 ||
+    !extraction.sourceAnchors.some((anchor) =>
+      normalizedEvidenceText(anchor.quote).includes(extractedValue),
+    )
+  ) {
+    throw new Error("文件身份提取值必须在授权监管原文摘录中确定性反向匹配");
+  }
+  return FindingSchema.parse({
+    findingId: extraction.findingId,
+    category: documentIdentityCategory(extraction.kind),
+    statement: documentIdentityStatement(
+      extraction.kind,
+      extraction.sourceAnchors,
+    ),
+    claimType: "pending_confirmation",
+    sourceAnchors: extraction.sourceAnchors,
+    inferenceParents: [],
+    reviewStatus: "unreviewed",
+    requiredReview: true,
+    revisionRecords: [],
+  });
+};
+
+const buildOfficialExplanationFinding = (
+  record: z.infer<typeof OfficialExplanationRecordSchema>,
+  primaryFindings: readonly Finding[],
+  scope: AuthorizedSourceScope,
+): Finding => {
+  if (record.findingId.startsWith("SYS-")) {
+    throw new Error("模型不得使用系统保留的 Finding ID");
+  }
+  validateAnchors(record.sourceAnchors, scope);
+  const [anchor] = record.sourceAnchors;
+  if (anchor.sourceType !== "official_interpretation") {
+    throw new Error("官方说明摘录只能引用当前官方解读");
+  }
+  if (
+    normalizedEvidenceText(record.sourceExcerpt) !==
+    normalizedEvidenceText(anchor.quote)
+  ) {
+    throw new Error(
+      "官方说明 sourceExcerpt 必须与唯一授权官方解读 anchor 精确一致",
+    );
+  }
+  if (
+    new Set(record.pairedPrimaryFindingIds).size !==
+    record.pairedPrimaryFindingIds.length
+  ) {
+    throw new Error("官方说明 pairedPrimaryFindingIds 不得重复");
+  }
+  const primaryById = new Map(
+    primaryFindings.map((finding) => [finding.findingId, finding] as const),
+  );
+  if (
+    record.pairedPrimaryFindingIds.some(
+      (findingId) => !primaryById.has(findingId),
+    )
+  ) {
+    throw new Error("官方说明只能关联当前显式配对的监管原文身份提取");
+  }
+  return FindingSchema.parse({
+    findingId: record.findingId,
+    category: officialExplanationCategory(record.kind),
+    statement: officialExplanationStatement(record.kind, anchor.quote),
+    claimType: "official_explanation",
+    sourceAnchors: record.sourceAnchors,
+    inferenceParents: record.pairedPrimaryFindingIds,
+    reviewStatus: "unreviewed",
+    requiredReview: true,
+    revisionRecords: [],
+  });
+};
+
+const documentIdentityKindFromCategory = (
+  category: string,
+): DocumentIdentityKind | undefined =>
+  DocumentIdentityKindSchema.options.find(
+    (kind) => category === documentIdentityCategory(kind),
+  );
+
+const officialExplanationKindFromCategory = (
+  category: string,
+): OfficialExplanationKind | undefined =>
+  OfficialExplanationKindSchema.options.find(
+    (kind) => category === officialExplanationCategory(kind),
+  );
+
+const validateStoredDocumentIdentityFinding = (
+  finding: Finding,
+  sourceType: SourceType,
+  primaryFindings: readonly Finding[],
+  scope: AuthorizedSourceScope,
+): void => {
+  validateAnchors(finding.sourceAnchors, scope);
+  if (
+    finding.reviewStatus !== "unreviewed" ||
+    !finding.requiredReview ||
+    finding.revisionRecords.length > 0
+  ) {
+    throw new Error("checkpoint 文件身份输出不再是未复核的阶段确定性记录");
+  }
+  if (sourceType === "regulatory_text") {
+    const kind = documentIdentityKindFromCategory(finding.category);
+    if (
+      !kind ||
+      finding.claimType !== "pending_confirmation" ||
+      finding.inferenceParents.length > 0 ||
+      finding.sourceAnchors.some(
+        (anchor) => anchor.sourceType !== "regulatory_text",
+      ) ||
+      finding.statement !==
+        documentIdentityStatement(kind, finding.sourceAnchors)
+    ) {
+      throw new Error(
+        "checkpoint 监管文件身份输出未通过确定性 pending 结构复验",
+      );
+    }
+    return;
+  }
+
+  const kind = officialExplanationKindFromCategory(finding.category);
+  const primaryIds = new Set(
+    primaryFindings.map((primary) => primary.findingId),
+  );
+  if (
+    !kind ||
+    finding.claimType !== "official_explanation" ||
+    finding.sourceAnchors.length !== 1 ||
+    finding.sourceAnchors[0].sourceType !== "official_interpretation" ||
+    finding.inferenceParents.length === 0 ||
+    new Set(finding.inferenceParents).size !==
+      finding.inferenceParents.length ||
+    finding.inferenceParents.some((findingId) => !primaryIds.has(findingId)) ||
+    finding.statement !==
+      officialExplanationStatement(kind, finding.sourceAnchors[0].quote)
+  ) {
+    throw new Error("checkpoint 官方说明输出未通过确定性说明记录复验");
+  }
+};
+
 const validateRegulatoryFactEvidence = (finding: Finding): void => {
   if (finding.claimType !== "regulatory_fact") return;
   const statement = normalizedEvidenceText(finding.statement);
@@ -944,6 +1141,13 @@ const validateDocumentConflicts = (
     }
     if (interpretationFinding.claimType !== "official_explanation") {
       throw new Error("来源冲突的解读 Finding 必须是 official_explanation");
+    }
+    if (
+      !interpretationFinding.inferenceParents.includes(
+        regulatoryFinding.findingId,
+      )
+    ) {
+      throw new Error("来源冲突必须属于官方说明显式声明的监管原文配对");
     }
     const linkedAnchors = new Set(
       [
@@ -1208,19 +1412,13 @@ const validateCompletedNodeOutput = (
       throw new Error("checkpoint 文件身份节点包含了非本阶段输出");
     }
     for (const finding of output.findings) {
-      if (node.chunk.sourceType === "official_interpretation") {
-        z.union([
-          OfficialContextFindingSchema,
-          PendingIdentityFindingSchema,
-        ]).parse(finding);
-      } else {
-        z.union([
-          RegulatoryIdentityFindingSchema,
-          PendingIdentityFindingSchema,
-        ]).parse(finding);
-      }
+      validateStoredDocumentIdentityFinding(
+        finding,
+        node.chunk.sourceType,
+        context.primaryFindings,
+        context.scope,
+      );
     }
-    validateFindings(output.findings, context.scope);
     validateDocumentConflicts(
       output.conflicts,
       output.findings,
@@ -1802,29 +2000,39 @@ export async function runAnalysis(
           primaryRegulatoryFindings: primaryFindings,
         }),
       );
-      response =
-        node.chunk.sourceType === "official_interpretation"
-          ? await input.gateway.requestStructured({
-              schema: OfficialDocumentIdentityResponseSchema,
-              schemaName: "analysis_document_identity_v1",
-              signal,
-              messages,
-            })
-          : await input.gateway.requestStructured({
-              schema: RegulatoryDocumentIdentityResponseSchema,
-              schemaName: "analysis_document_identity_v1",
-              signal,
-              messages,
-            });
-      const parsed = z
-        .union([
-          OfficialDocumentIdentityResponseSchema,
-          RegulatoryDocumentIdentityResponseSchema,
-        ])
-        .parse(response);
-      findings = parsed.findings.map((finding) => FindingSchema.parse(finding));
-      conflicts = parsed.conflicts;
-      validateFindings(findings, requestScope);
+      if (node.chunk.sourceType === "official_interpretation") {
+        const parsed = await input.gateway.requestStructured({
+          schema: OfficialDocumentIdentityResponseSchema,
+          schemaName: "analysis_document_identity_v1",
+          signal,
+          messages,
+        });
+        response = parsed;
+        findings = parsed.findings.map((record) =>
+          buildOfficialExplanationFinding(
+            record,
+            primaryFindings,
+            requestScope,
+          ),
+        );
+        conflicts = parsed.conflicts;
+      } else {
+        const parsed = await input.gateway.requestStructured({
+          schema: RegulatoryDocumentIdentityResponseSchema,
+          schemaName: "analysis_document_identity_v1",
+          signal,
+          messages,
+        });
+        response = parsed;
+        findings = parsed.findings.map((extraction) =>
+          buildDocumentIdentityFinding(extraction, requestScope),
+        );
+        conflicts = parsed.conflicts;
+      }
+      assertUniqueIds(
+        findings.map((finding) => finding.findingId),
+        "文件身份 Finding",
+      );
       validateDocumentConflicts(
         conflicts,
         findings,
