@@ -9,7 +9,11 @@ import {
   MODEL_CHAT_URL,
   chatCompletionHandler,
 } from "../../test/msw/model-handlers";
-import { createModelGateway, testConnection } from "./model-gateway";
+import {
+  createModelGateway,
+  modelDataFlowConsent,
+  testConnection,
+} from "./model-gateway";
 
 const server = setupServer(chatCompletionHandler());
 const secret = "sk-never-render-or-log";
@@ -33,10 +37,50 @@ const request = {
 };
 
 beforeAll(() => server.listen({ onUnhandledRequest: "error" }));
-afterEach(() => server.resetHandlers());
+beforeEach(() => modelDataFlowConsent.acknowledge());
+afterEach(() => {
+  modelDataFlowConsent.clear();
+  server.resetHandlers();
+});
 afterAll(() => server.close());
 
 describe("OpenAI-compatible model gateway", () => {
+  test("performs no fetch before consent, sends after acknowledgement, and blocks again after clear", async () => {
+    let fetchCount = 0;
+    server.use(
+      http.post(MODEL_CHAT_URL, () => {
+        fetchCount += 1;
+        return HttpResponse.json({
+          choices: [{ message: { content: '{"findings":[]}' } }],
+        });
+      }),
+    );
+    modelDataFlowConsent.clear();
+
+    const beforeConsent = createModelGateway(config, secret).requestStructured(
+      request,
+    );
+    await expect(beforeConsent).rejects.toMatchObject({
+      kind: "consent_required",
+    });
+    await expect(beforeConsent).rejects.not.toThrow(
+      /机构应当建立制度|sk-never/,
+    );
+    expect(fetchCount).toBe(0);
+
+    modelDataFlowConsent.acknowledge();
+    await expect(
+      createModelGateway(config, secret).requestStructured(request),
+    ).resolves.toEqual({ findings: [] });
+    expect(fetchCount).toBe(1);
+
+    modelDataFlowConsent.clear();
+    await expect(
+      createModelGateway(config, secret).requestStructured(request),
+    ).rejects.toMatchObject({ kind: "consent_required" });
+    expect(fetchCount).toBe(1);
+  });
+
   test("normalizes a /v1 base URL and validates a structured chat completion", async () => {
     let authorization = "";
     let body: Record<string, unknown> = {};
@@ -183,11 +227,21 @@ describe("OpenAI-compatible model gateway", () => {
   });
 
   test("connection test exercises authentication, model response, and schema validation", async () => {
-    server.use(chatCompletionHandler({ content: '{"connection":"ok"}' }));
+    let fetchCount = 0;
+    modelDataFlowConsent.clear();
+    server.use(
+      http.post(MODEL_CHAT_URL, () => {
+        fetchCount += 1;
+        return HttpResponse.json({
+          choices: [{ message: { content: '{"connection":"ok"}' } }],
+        });
+      }),
+    );
 
     await expect(testConnection(config, secret)).resolves.toEqual({
       ok: true,
       model: "model-a",
     });
+    expect(fetchCount).toBe(1);
   });
 });

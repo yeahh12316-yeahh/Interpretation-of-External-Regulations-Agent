@@ -14,8 +14,8 @@ import { modelPreferences } from "../projects/model-preferences";
 import {
   ApiSettingsDialog,
   ThirdPartyDataFlowDialog,
-  thirdPartyDataFlowDisclosure,
 } from "./ApiSettingsDialog";
+import { modelDataFlowConsent } from "./model-gateway";
 import { sessionCredentials } from "./session-credentials";
 
 const server = setupServer(
@@ -28,10 +28,12 @@ beforeEach(() => {
   sessionStorage.clear();
   localStorage.clear();
   sessionCredentials.clear();
+  modelDataFlowConsent.clear();
 });
 afterEach(async () => {
   server.resetHandlers();
   sessionCredentials.clear();
+  modelDataFlowConsent.clear();
   await modelPreferences.clear();
 });
 afterAll(() => server.close());
@@ -112,7 +114,7 @@ describe("ThirdPartyDataFlowDialog", () => {
   test("requires explicit acknowledgement before the first regulatory text is sent", async () => {
     const user = userEvent.setup();
     const onConfirm = vi.fn();
-    expect(thirdPartyDataFlowDisclosure.needsAcknowledgement()).toBe(true);
+    expect(modelDataFlowConsent.needsAcknowledgement()).toBe(true);
     render(
       <ThirdPartyDataFlowDialog
         open
@@ -133,6 +135,6 @@ describe("ThirdPartyDataFlowDialog", () => {
     await user.click(confirm);
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());
-    expect(thirdPartyDataFlowDisclosure.needsAcknowledgement()).toBe(false);
+    expect(modelDataFlowConsent.needsAcknowledgement()).toBe(false);
   });
 });

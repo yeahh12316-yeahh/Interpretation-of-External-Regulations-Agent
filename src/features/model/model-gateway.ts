@@ -5,7 +5,10 @@ import {
   validateModelConfig,
   type ModelConfig,
 } from "./model-config";
+import { modelDataFlowConsent } from "./model-consent";
 import { ModelGatewayError } from "./model-errors";
+
+export { modelDataFlowConsent } from "./model-consent";
 
 export interface ModelMessage {
   role: "system" | "user" | "assistant";
@@ -54,12 +57,19 @@ const schemaDefinition = (schema: ZodType<unknown>): Record<string, unknown> =>
 const cancellationError = (): DOMException =>
   new DOMException("模型请求已取消", "AbortError");
 
-export function createModelGateway(
+function createGateway(
   config: ModelConfig,
   apiKey: string,
+  requireDataFlowConsent: boolean,
 ): ModelGateway {
   return {
     async requestStructured<T>(request: StructuredModelRequest<T>): Promise<T> {
+      if (
+        requireDataFlowConsent &&
+        modelDataFlowConsent.needsAcknowledgement()
+      ) {
+        throw new ModelGatewayError("consent_required");
+      }
       try {
         validateModelConfig(config);
       } catch (error) {
@@ -177,13 +187,20 @@ export function createModelGateway(
   };
 }
 
+export function createModelGateway(
+  config: ModelConfig,
+  apiKey: string,
+): ModelGateway {
+  return createGateway(config, apiKey, true);
+}
+
 const connectionSchema = z.object({ connection: z.literal("ok") });
 
 export async function testConnection(
   config: ModelConfig,
   apiKey: string,
 ): Promise<{ ok: true; model: string }> {
-  await createModelGateway(config, apiKey).requestStructured({
+  await createGateway(config, apiKey, false).requestStructured({
     schema: connectionSchema,
     schemaName: "connection_test",
     messages: [

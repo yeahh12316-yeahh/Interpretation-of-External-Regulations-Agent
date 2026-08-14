@@ -3,42 +3,8 @@ import { useEffect, useState, type FormEvent, type JSX } from "react";
 import { modelPreferences } from "../projects/model-preferences";
 import { DEFAULT_MODEL_CONFIG, type ModelConfig } from "./model-config";
 import { modelErrorMessage } from "./model-errors";
-import { testConnection } from "./model-gateway";
+import { modelDataFlowConsent, testConnection } from "./model-gateway";
 import { sessionCredentials } from "./session-credentials";
-
-const DATA_FLOW_ACK_KEY = "external-regulation-agent:third-party-data-flow-ack";
-
-const sessionStore = (): Storage | null => {
-  try {
-    return typeof sessionStorage === "undefined" ? null : sessionStorage;
-  } catch {
-    return null;
-  }
-};
-
-export const thirdPartyDataFlowDisclosure = {
-  needsAcknowledgement(): boolean {
-    try {
-      return sessionStore()?.getItem(DATA_FLOW_ACK_KEY) !== "acknowledged";
-    } catch {
-      return true;
-    }
-  },
-  acknowledge(): void {
-    try {
-      sessionStore()?.setItem(DATA_FLOW_ACK_KEY, "acknowledged");
-    } catch {
-      // Restricted storage means the user will be asked again next time.
-    }
-  },
-  clear(): void {
-    try {
-      sessionStore()?.removeItem(DATA_FLOW_ACK_KEY);
-    } catch {
-      // Nothing sensitive is retained by this acknowledgement flag.
-    }
-  },
-};
 
 export interface ApiSettingsDialogProps {
   open: boolean;
@@ -248,7 +214,7 @@ export function ThirdPartyDataFlowDialog({
   }
 
   const confirm = (): void => {
-    thirdPartyDataFlowDisclosure.acknowledge();
+    modelDataFlowConsent.acknowledge();
     onConfirm();
   };
 
