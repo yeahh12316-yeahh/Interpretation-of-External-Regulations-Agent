@@ -250,6 +250,42 @@ const anchorSetMatches = (
   );
 };
 
+const structuredModifierValues = (
+  requirement: AtomicRequirement,
+): readonly string[] =>
+  [
+    requirement.condition,
+    requirement.frequency,
+    requirement.deadline,
+    requirement.responsibility,
+    requirement.exceptions,
+    requirement.sharedContext,
+  ].flatMap((value) => {
+    if (!value) return [];
+    const normalized = normalizeText(value).replace(/[\p{P}\s]/gu, "");
+    return normalized ? [normalized] : [];
+  });
+
+const gapUsesOnlyStructuredModifiers = (
+  gap: string,
+  requirement: AtomicRequirement,
+): boolean => {
+  const compactGap = normalizeText(gap).replace(/[\p{P}\s]/gu, "");
+  if (!compactGap) return true;
+  const modifiers = [...new Set(structuredModifierValues(requirement))];
+  const matches = (remaining: string, available: readonly string[]): boolean =>
+    remaining.length === 0 ||
+    available.some(
+      (modifier, index) =>
+        remaining.startsWith(modifier) &&
+        matches(remaining.slice(modifier.length), [
+          ...available.slice(0, index),
+          ...available.slice(index + 1),
+        ]),
+    );
+  return matches(compactGap, modifiers);
+};
+
 const structuredStrengthLocated = (
   text: string,
   requirement: AtomicRequirement,
@@ -270,31 +306,27 @@ const structuredStrengthLocated = (
       const subjectEnd = subjectIndex + subject.length;
       let strengthIndex = normalized.indexOf(strength, subjectEnd);
       while (strengthIndex >= 0) {
-        const actionIndex = normalized.indexOf(
-          action,
-          strengthIndex + strength.length,
-        );
-        const betweenStrengthAndAction = normalized.slice(
-          strengthIndex + strength.length,
-          actionIndex,
-        );
-        const beforeStrength = normalized.slice(0, strengthIndex).at(-1);
-        const lexicallyStandalone =
-          strengthIndex === subjectEnd ||
-          (beforeStrength !== undefined && /\p{P}/u.test(beforeStrength));
-        const objectIndex = normalized.indexOf(
-          object,
-          actionIndex + action.length,
-        );
-        if (
-          strengthIndex >= subjectEnd &&
-          normalized.slice(strengthIndex, strengthIndex + strength.length) ===
-            strength &&
-          /^[\p{P}\s]*$/u.test(betweenStrengthAndAction) &&
-          lexicallyStandalone &&
-          objectIndex >= actionIndex + action.length
-        ) {
-          return true;
+        const strengthEnd = strengthIndex + strength.length;
+        const actionIndex = normalized.indexOf(action, strengthEnd);
+        if (actionIndex >= strengthEnd) {
+          const actionEnd = actionIndex + action.length;
+          const objectIndex = normalized.indexOf(object, actionEnd);
+          if (
+            subjectIndex >= 0 &&
+            strengthIndex >= subjectEnd &&
+            actionIndex >= strengthEnd &&
+            objectIndex >= actionEnd &&
+            gapUsesOnlyStructuredModifiers(
+              normalized.slice(subjectEnd, strengthIndex),
+              requirement,
+            ) &&
+            gapUsesOnlyStructuredModifiers(
+              normalized.slice(strengthEnd, actionIndex),
+              requirement,
+            )
+          ) {
+            return true;
+          }
         }
         strengthIndex = normalized.indexOf(
           strength,

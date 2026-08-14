@@ -1,3 +1,5 @@
+import { z } from "zod";
+
 import type { Finding } from "../../domain/finding";
 import type { Project } from "../../domain/project";
 import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
@@ -56,6 +58,64 @@ export interface ReviewAudit {
   readonly reviewer: string;
   readonly reviewedAt: string;
 }
+
+const BoundingBoxSchema = z
+  .object({
+    x: z.number().finite(),
+    y: z.number().finite(),
+    width: z.number().finite(),
+    height: z.number().finite(),
+  })
+  .strict();
+
+const OcrCorrectionRecordSchema = z
+  .object({
+    correctedText: z.string(),
+    reviewedBy: z.string(),
+    reviewedAt: z.string(),
+  })
+  .strict();
+
+const OcrRegionSchema = z
+  .object({
+    text: z.string(),
+    confidence: z.number().finite(),
+    boundingBox: BoundingBoxSchema,
+    lowConfidence: z.boolean(),
+  })
+  .strict();
+
+const OcrCharacterSchema = z
+  .object({
+    text: z.string(),
+    confidence: z.number().finite(),
+    boundingBox: BoundingBoxSchema,
+  })
+  .strict();
+
+const OcrPageResultSchema = z
+  .object({
+    unitId: z.string(),
+    sourceId: z.string(),
+    sourceType: z.enum(["regulatory_text", "official_interpretation"]),
+    page: z.number().int().positive(),
+    method: z.literal("ocr"),
+    confidence: z.number().finite(),
+    text: z.string(),
+    originalOcrText: z.string(),
+    correctedText: z.string().nullable(),
+    reviewStatus: z.enum(["unreviewed", "corrected", "failed"]),
+    reviewedAt: z.string().nullable(),
+    reviewedBy: z.string().nullable(),
+    correctionHistory: z.array(OcrCorrectionRecordSchema),
+    boundingBox: BoundingBoxSchema,
+    regions: z.array(OcrRegionSchema),
+    lowConfidenceCharacters: z.array(OcrCharacterSchema),
+    error: z.literal("页面 OCR 识别失败").optional(),
+  })
+  .strict();
+
+const OcrReviewsSchema = z.array(OcrPageResultSchema);
 
 const stableValue = (value: unknown): string => {
   if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
@@ -405,6 +465,8 @@ const parsingEvidenceComplete = (
       .replace(/\r\n?/gu, "\n")
       .trim();
     const authoritativeContent = source.content.replace(/\r\n?/gu, "\n").trim();
+    const parsedOcrReviews = OcrReviewsSchema.safeParse(outcome.ocrReviews);
+    if (!parsedOcrReviews.success) return false;
     const expectedAnchors = buildAnchors(outcome.units);
     const locatorKeys = expectedAnchors.map(({ quote: _quote, ...locator }) =>
       stableValue(locator),
@@ -433,7 +495,7 @@ const parsingEvidenceComplete = (
           !normalizeText(source.content).includes(normalizeText(unit.text)),
       ) ||
       outcome.ocrFailedPages.length > 0 ||
-      !ocrEvidenceComplete(outcome) ||
+      !ocrEvidenceComplete(outcome, parsedOcrReviews.data) ||
       outcome.extractionCoverage !== 1
     ) {
       return false;
@@ -501,7 +563,10 @@ const isValidDateTime = (value: string | null): value is string =>
   /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{3})?Z$/u.test(value) &&
   !Number.isNaN(Date.parse(value));
 
-const ocrEvidenceComplete = (outcome: SourceParseOutcome): boolean => {
+const ocrEvidenceComplete = (
+  outcome: SourceParseOutcome,
+  ocrReviews: readonly OcrPageResult[],
+): boolean => {
   const ocrUnits = outcome.units.filter(
     ({ extractionMethod }) => extractionMethod === "ocr",
   );
@@ -515,11 +580,11 @@ const ocrEvidenceComplete = (outcome: SourceParseOutcome): boolean => {
         outcome.pageCount === null ||
         page > outcome.pageCount,
     ) ||
-    outcome.ocrReviews.length !== ocrUnits.length
+    ocrReviews.length !== ocrUnits.length
   ) {
     return false;
   }
-  const reviewPages = outcome.ocrReviews.map(({ page }) => page);
+  const reviewPages = ocrReviews.map(({ page }) => page);
   if (
     new Set(reviewPages).size !== reviewPages.length ||
     stableValue([...reviewPages].sort((left, right) => left - right)) !==
@@ -528,7 +593,7 @@ const ocrEvidenceComplete = (outcome: SourceParseOutcome): boolean => {
     return false;
   }
 
-  return outcome.ocrReviews.every((review) => {
+  return ocrReviews.every((review) => {
     const matchingUnits = ocrUnits.filter(
       (unit) =>
         unit.unitId === review.unitId &&

@@ -319,6 +319,84 @@ describe("calculateQuality", () => {
     }
   });
 
+  test("fails closed without throwing for malformed imported OCR reviews and correction history", () => {
+    const correction = {
+      correctedText: unit.text,
+      reviewedBy: "reviewer-malformed",
+      reviewedAt: "2026-08-14T13:00:00.000Z",
+    };
+    const ocrUnit: ParsedSourceUnit = {
+      ...unit,
+      unitId: `${unit.sourceId}:p${unit.page}:ocr`,
+      extractionMethod: "ocr",
+      boundingBox: { x: 0, y: 0, width: 100, height: 20 },
+      originalOcrText: "第十条 金融机构必领完成年度复核。",
+      correctedText: correction.correctedText,
+      reviewStatus: "corrected",
+      reviewedAt: correction.reviewedAt,
+      reviewedBy: correction.reviewedBy,
+      correctionHistory: [correction],
+      ocrRegions: [],
+      lowConfidenceCharacters: [],
+    };
+    const review: OcrPageResult = {
+      unitId: ocrUnit.unitId!,
+      sourceId: ocrUnit.sourceId,
+      sourceType: ocrUnit.sourceType,
+      page: ocrUnit.page!,
+      method: "ocr",
+      confidence: ocrUnit.confidence,
+      text: ocrUnit.text,
+      originalOcrText: ocrUnit.originalOcrText!,
+      correctedText: ocrUnit.correctedText!,
+      reviewStatus: "corrected",
+      reviewedAt: ocrUnit.reviewedAt!,
+      reviewedBy: ocrUnit.reviewedBy!,
+      correctionHistory: [correction],
+      boundingBox: ocrUnit.boundingBox!,
+      regions: [],
+      lowConfidenceCharacters: [],
+    };
+    const result: ParseResult = {
+      ...completeParseResult,
+      units: [...pageUnits.slice(0, 2), ocrUnit],
+      ocrReviews: [review],
+      anchors: buildAnchors([...pageUnits.slice(0, 2), ocrUnit]),
+      quality: { ...completeParseResult.quality, lowTextPages: [3] },
+    };
+    expect(
+      canFinalizeSession({ project: project(), parseResults: [result] }),
+    ).toBe(true);
+
+    const malformedReviews: unknown[] = [
+      undefined,
+      {},
+      [{}],
+      [{ ...review, correctionHistory: undefined }],
+      [{ ...review, correctionHistory: {} }],
+      [{ ...review, correctionHistory: [undefined] }],
+      [
+        {
+          ...review,
+          correctionHistory: [{ ...correction, unexpected: true }],
+        },
+      ],
+    ];
+    for (const ocrReviews of malformedReviews) {
+      const malformedResult = {
+        ...result,
+        ocrReviews,
+      } as unknown as ParseResult;
+      const finalize = () =>
+        canFinalizeSession({
+          project: project(),
+          parseResults: [malformedResult],
+        });
+      expect(finalize).not.toThrow();
+      expect(finalize()).toBe(false);
+    }
+  });
+
   test("rejects omitted, reordered, or duplicated paragraphs on the same successful page", () => {
     const samePageSource = {
       sourceId: "REG-SAME-PAGE",
