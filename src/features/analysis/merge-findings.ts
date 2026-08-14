@@ -24,12 +24,15 @@ const uniqueStrings = (values: readonly string[]): string[] => [
   ...new Set(values),
 ];
 
-export function mergeFindings(findings: readonly Finding[]): Finding[] {
+export function mergeFindings(
+  findings: readonly Finding[],
+  keyFor: (finding: Finding) => string = findingDeduplicationKey,
+): Finding[] {
   const mergedByKey = new Map<string, Finding>();
 
   for (const candidate of findings) {
     const valid = FindingSchema.parse(candidate);
-    const key = findingDeduplicationKey(valid);
+    const key = keyFor(valid);
     const existing = mergedByKey.get(key);
     if (!existing) {
       mergedByKey.set(key, valid);

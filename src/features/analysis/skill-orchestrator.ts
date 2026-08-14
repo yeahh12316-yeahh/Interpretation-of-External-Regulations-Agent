@@ -57,9 +57,9 @@ export const AtomicRequirementSchema = z
   .object({
     requirementId: z.string().min(1),
     findingId: z.string().min(1),
-    subject: z.string().min(1),
-    action: z.string().min(1),
-    object: z.string().min(1),
+    subject: z.string().min(1).nullable(),
+    action: z.string().min(1).nullable(),
+    object: z.string().min(1).nullable(),
     condition: z.string().min(1).nullable(),
     frequency: z.string().min(1).nullable(),
     deadline: z.string().min(1).nullable(),
@@ -72,7 +72,37 @@ export const AtomicRequirementSchema = z
     confidence: z.number().min(0).max(1),
     manualVerificationRequired: z.boolean(),
   })
-  .strict();
+  .strict()
+  .superRefine((requirement, context) => {
+    if (
+      new Set(requirement.missingFacts).size !== requirement.missingFacts.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["missingFacts"],
+        message: "missingFacts 不得重复",
+      });
+    }
+    for (const field of requirement.missingFacts) {
+      if (requirement[field] !== null) {
+        context.addIssue({
+          code: "custom",
+          path: [field],
+          message: `${field} 列入 missingFacts 时必须为 null`,
+        });
+      }
+    }
+    for (const field of ["subject", "action", "object"] as const) {
+      const isMissing = requirement.missingFacts.includes(field);
+      if ((requirement[field] === null) !== isMissing) {
+        context.addIssue({
+          code: "custom",
+          path: [field],
+          message: `${field} 的 null 状态必须与 missingFacts 完全一致`,
+        });
+      }
+    }
+  });
 
 export type AtomicRequirement = z.infer<typeof AtomicRequirementSchema>;
 
@@ -123,11 +153,27 @@ const KeyMattersResponseSchema = z
   .object({ findings: z.array(FindingSchema) })
   .strict();
 
-const InstitutionImpactResponseSchema = z
+const InstitutionImpactItemSchema = z
   .object({
-    findings: z.array(FindingSchema),
-    inferenceRelationships: z.array(InferenceRelationshipSchema),
+    findingId: z.string().min(1),
+    relationshipId: z.string().min(1),
+    category: z.enum([
+      "governance",
+      "process",
+      "system",
+      "data",
+      "people",
+      "reporting",
+    ]),
+    possibility: z.enum(["potential", "not_established"]),
+    inferenceParents: z.array(z.string().min(1)).min(1),
+    sourceAnchors: z.array(SourceAnchorSchema).min(1),
+    confidence: z.number().min(0).max(1),
   })
+  .strict();
+
+const InstitutionImpactResponseSchema = z
+  .object({ impacts: z.array(InstitutionImpactItemSchema) })
   .strict();
 
 const AnalysisStageSchema = z.enum([
@@ -351,6 +397,7 @@ export interface AnalysisInput {
   gateway: ModelGateway;
   model: string;
   hasOfficialInterpretation: boolean;
+  officialPrimaryContext?: Readonly<Record<string, readonly string[]>>;
   resumeFrom?: AnalysisCheckpoint;
   chunkOptions?: Partial<ChunkOptions>;
 }
@@ -377,6 +424,22 @@ interface AnalysisNode {
 const DEFAULT_CHUNK_OPTIONS: ChunkOptions = {
   maxChars: 24_000,
   overlapUnits: 2,
+};
+
+const resolveChunkPolicy = (
+  options: Partial<ChunkOptions> | undefined,
+): ChunkOptions => {
+  const policy = { ...DEFAULT_CHUNK_OPTIONS, ...options };
+  if (!Number.isInteger(policy.maxChars) || policy.maxChars < 3) {
+    throw new Error("maxChars 必须是至少为 3 的整数");
+  }
+  if (policy.maxChars > 24_000) {
+    throw new Error("生产分析分块 maxChars 不得超过 24000");
+  }
+  if (policy.overlapUnits !== 2) {
+    throw new Error("生产分析分块 overlapUnits 必须固定为 2 个重叠单元");
+  }
+  return policy;
 };
 
 const NO_OFFICIAL_INTERPRETATION_LIMITATION =
@@ -466,30 +529,219 @@ const nodesFor = (chunks: readonly DocumentChunk[]): AnalysisNode[] => {
   );
 };
 
+const normalizeOfficialPrimaryContext = (
+  raw: AnalysisInput["officialPrimaryContext"],
+  sourceById: ReadonlyMap<string, SourceUnit>,
+): Record<string, string[]> => {
+  const normalized: Record<string, string[]> = {};
+  for (const [officialSourceId, regulatorySourceIds] of Object.entries(
+    raw ?? {},
+  )) {
+    const official = sourceById.get(officialSourceId);
+    if (official?.sourceType !== "official_interpretation") {
+      throw new Error(
+        `官方解读配对键必须是已提供的官方解读 source ID：${officialSourceId}`,
+      );
+    }
+    const paired = unique(regulatorySourceIds).sort();
+    for (const regulatorySourceId of paired) {
+      if (
+        sourceById.get(regulatorySourceId)?.sourceType !== "regulatory_text"
+      ) {
+        throw new Error(
+          `官方解读只能配对已提供的监管原文 source ID：${regulatorySourceId}`,
+        );
+      }
+    }
+    normalized[officialSourceId] = paired;
+  }
+  return Object.fromEntries(
+    Object.entries(normalized).sort(([left], [right]) =>
+      left.localeCompare(right),
+    ),
+  );
+};
+
+const executionPlanFingerprint = async (
+  sources: readonly SourceUnit[],
+  policy: ChunkOptions,
+  nodes: readonly AnalysisNode[],
+  officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
+): Promise<string> => {
+  const sourceManifest = await Promise.all(
+    sources.map(async (source) => ({
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      titleHash: await sha256(source.title),
+      contentHash: await sha256(source.content),
+    })),
+  );
+  const nodeManifest = await Promise.all(
+    nodes.map(async (node) => ({
+      nodeId: node.nodeId,
+      stage: node.stage,
+      promptVersion: node.promptVersion,
+      chunkId: node.chunk.chunkId,
+      sourceType: node.chunk.sourceType,
+      characterCount: node.chunk.characterCount,
+      inputSourceIds: node.chunk.inputSourceIds,
+      segments: await Promise.all(
+        node.chunk.units.map(async (unit) => ({
+          segmentId: unit.segmentId,
+          sourceId: unit.sourceId,
+          sourceType: unit.sourceType,
+          sourceStartOffset: unit.sourceStartOffset,
+          sourceEndOffset: unit.sourceEndOffset,
+          contentHash: await sha256(unit.content),
+        })),
+      ),
+    })),
+  );
+  return sha256(
+    canonicalJson({
+      policy,
+      sourceManifest,
+      nodeManifest,
+      officialPrimaryContext,
+    }),
+  );
+};
+
+interface AuthorizedSourceEvidence {
+  sourceType: SourceType;
+  texts: string[];
+}
+
+type AuthorizedSourceScope = ReadonlyMap<string, AuthorizedSourceEvidence>;
+
+const normalizedEvidenceText = (value: string): string =>
+  value.normalize("NFKC").replace(/\s+/g, "").trim();
+
+const scopeForChunk = (
+  chunk: DocumentChunk,
+): Map<string, AuthorizedSourceEvidence> => {
+  const scope = new Map<string, AuthorizedSourceEvidence>();
+  for (const unit of chunk.units) {
+    const existing = scope.get(unit.sourceId);
+    if (existing) {
+      existing.texts.push(unit.content);
+    } else {
+      scope.set(unit.sourceId, {
+        sourceType: unit.sourceType,
+        texts: [unit.content],
+      });
+    }
+  }
+  for (const evidence of scope.values()) {
+    if (evidence.texts.length > 1) {
+      evidence.texts.push(evidence.texts.join(""));
+    }
+  }
+  return scope;
+};
+
+const scopeWithPrimaryFindings = (
+  chunk: DocumentChunk,
+  primaryFindings: readonly Finding[],
+): Map<string, AuthorizedSourceEvidence> => {
+  const scope = scopeForChunk(chunk);
+  for (const anchor of primaryFindings.flatMap(
+    (finding) => finding.sourceAnchors,
+  )) {
+    const existing = scope.get(anchor.sourceId);
+    if (existing) {
+      existing.texts.push(anchor.quote);
+    } else {
+      scope.set(anchor.sourceId, {
+        sourceType: anchor.sourceType,
+        texts: [anchor.quote],
+      });
+    }
+  }
+  return scope;
+};
+
+const anchorIsAuthorized = (
+  anchor: SourceAnchor,
+  scope: AuthorizedSourceScope,
+): boolean => {
+  const authorized = scope.get(anchor.sourceId);
+  if (!authorized || authorized.sourceType !== anchor.sourceType) return false;
+  const quote = normalizedEvidenceText(anchor.quote);
+  return (
+    quote.length > 0 &&
+    authorized.texts.some((text) =>
+      normalizedEvidenceText(text).includes(quote),
+    )
+  );
+};
+
 const validateAnchors = (
   anchors: readonly SourceAnchor[],
-  sourceById: ReadonlyMap<string, SourceUnit>,
+  scope: AuthorizedSourceScope,
 ): void => {
   for (const anchor of anchors) {
-    const source = sourceById.get(anchor.sourceId);
+    const source = scope.get(anchor.sourceId);
     if (!source) {
-      throw new Error(`结论引用了未提供的来源 ID：${anchor.sourceId}`);
+      throw new Error(`结论引用了当前节点未授权的来源 ID：${anchor.sourceId}`);
     }
     if (source.sourceType !== anchor.sourceType) {
-      throw new Error(`来源 ${anchor.sourceId} 的来源类型与输入不一致`);
+      throw new Error(`当前节点来源 ${anchor.sourceId} 的来源类型不一致`);
     }
+    if (!anchorIsAuthorized(anchor, scope)) {
+      throw new Error(
+        `来源 ${anchor.sourceId} 的引用未在当前节点授权文本中反向匹配`,
+      );
+    }
+  }
+};
+
+const SENSITIVE_REGULATORY_ASSERTION =
+  /生效|施行|废止|有效|失效|效力|适用|罚款|处罚|执法|监管措施|责令|没收|吊销|警告|限期|期限|截止|日期|日内|月内|年内|发布|印发|颁布|制定|主管|负责|发文|总局|委员会|人民银行|国务院|政府|\d{4}|(?:元|万元|亿元)|[%％]|比例/;
+const OFFICIAL_STATUS_ASSERTION =
+  /生效|施行|废止|现行有效|失效|效力状态|适用范围/;
+const SENSITIVE_CATEGORY =
+  /effect|status|applic|penalt|enforce|deadline|date|amount|authority|效力|适用|处罚|执法|期限|日期|金额|机关/i;
+const OFFICIAL_STATUS_CATEGORY = /effect|status|applic|效力|适用/i;
+
+const validateSensitiveClaim = (finding: Finding): void => {
+  if (
+    finding.claimType === "official_explanation" &&
+    (OFFICIAL_STATUS_CATEGORY.test(finding.category) ||
+      OFFICIAL_STATUS_ASSERTION.test(finding.statement))
+  ) {
+    throw new Error("官方解读不得建立或覆盖监管文件效力与适用状态");
+  }
+  if (
+    finding.claimType !== "regulatory_fact" ||
+    (!SENSITIVE_CATEGORY.test(finding.category) &&
+      !SENSITIVE_REGULATORY_ASSERTION.test(finding.statement))
+  ) {
+    return;
+  }
+  const statement = normalizedEvidenceText(finding.statement);
+  const exactRegulatoryMatch = finding.sourceAnchors.some(
+    (anchor) =>
+      anchor.sourceType === "regulatory_text" &&
+      normalizedEvidenceText(anchor.quote).includes(statement),
+  );
+  if (!exactRegulatoryMatch) {
+    throw new Error(
+      "敏感监管事实的陈述与 claimed value 必须在授权监管原文引用中确定性反向匹配",
+    );
   }
 };
 
 const validateFindings = (
   findings: readonly Finding[],
-  sourceById: ReadonlyMap<string, SourceUnit>,
+  scope: AuthorizedSourceScope,
 ): void => {
   for (const finding of findings) {
     if (finding.findingId.startsWith("SYS-")) {
       throw new Error("模型不得使用系统保留的 Finding ID");
     }
-    validateAnchors(finding.sourceAnchors, sourceById);
+    validateAnchors(finding.sourceAnchors, scope);
+    validateSensitiveClaim(finding);
   }
 };
 
@@ -499,9 +751,9 @@ const assertUniqueIds = (ids: readonly string[], label: string): void => {
 
 const validateAtomicResponse = (
   response: z.infer<typeof AtomicClausesResponseSchema>,
-  sourceById: ReadonlyMap<string, SourceUnit>,
+  scope: AuthorizedSourceScope,
 ): void => {
-  validateFindings(response.findings, sourceById);
+  validateFindings(response.findings, scope);
   assertUniqueIds(
     response.findings.map((finding) => finding.findingId),
     "原子要求 Finding",
@@ -525,7 +777,7 @@ const validateAtomicResponse = (
     return finding.findingId;
   });
   const atomicFindingIds = response.atomicRequirements.map((requirement) => {
-    validateAnchors(requirement.sourceAnchors, sourceById);
+    validateAnchors(requirement.sourceAnchors, scope);
     if (
       requirement.sourceAnchors.some(
         (item) => item.sourceType !== "regulatory_text",
@@ -537,6 +789,18 @@ const validateAtomicResponse = (
       (finding) => finding.findingId === requirement.findingId,
     );
     if (!linkedFinding) throw new Error("AtomicRequirement 缺少关联 Finding");
+    const linkedAnchorKeys = new Set(
+      linkedFinding.sourceAnchors.map((item) => anchorIdentity(item)),
+    );
+    if (
+      requirement.sourceAnchors.some(
+        (item) => !linkedAnchorKeys.has(anchorIdentity(item)),
+      )
+    ) {
+      throw new Error(
+        "AtomicRequirement 锚点必须是关联 Finding 锚点的相等或已验证子集",
+      );
+    }
     if (
       requirement.missingFacts.length > 0 &&
       linkedFinding.claimType !== "pending_confirmation"
@@ -555,80 +819,77 @@ const validateAtomicResponse = (
   }
 };
 
-const IMPACT_CATEGORIES = new Set([
-  "institution_impact:governance",
-  "institution_impact:process",
-  "institution_impact:system",
-  "institution_impact:data",
-  "institution_impact:people",
-  "institution_impact:reporting",
-]);
+const IMPACT_LABELS = {
+  governance: "治理",
+  process: "流程",
+  system: "系统",
+  data: "数据",
+  people: "人员",
+  reporting: "报告",
+} as const;
 
-const ACTUAL_INTERNAL_FACT_PATTERN =
-  /现有[^。；]*(?:失效|缺口|不符合)|已形成[^。；]*缺口|该(?:银行|机构)[^。；]*(?:存在|缺失|未建立)/;
-
-const validateImpactResponse = (
+const buildStructuredImpacts = (
   response: z.infer<typeof InstitutionImpactResponseSchema>,
   upstreamFindings: readonly Finding[],
-  sourceById: ReadonlyMap<string, SourceUnit>,
-): void => {
-  validateFindings(response.findings, sourceById);
+  scope: AuthorizedSourceScope,
+): { findings: Finding[]; relationships: InferenceRelationship[] } => {
   const upstreamIds = new Set(
     upstreamFindings.map((finding) => finding.findingId),
   );
-  const impactById = new Map(
-    response.findings.map((finding) => [finding.findingId, finding]),
-  );
-
-  for (const finding of response.findings) {
-    if (finding.claimType !== "ai_inference") {
-      throw new Error("机构影响必须标为 ai_inference");
-    }
-    if (!IMPACT_CATEGORIES.has(finding.category)) {
-      throw new Error("机构影响只能使用治理、流程、系统、数据、人员或报告类别");
-    }
-    if (!finding.requiredReview) {
-      throw new Error("机构影响必须进入人工复核");
-    }
-    if (ACTUAL_INTERNAL_FACT_PATTERN.test(finding.statement)) {
-      throw new Error("机构影响不得编造机构内部事实或实际缺口");
-    }
-    if (
-      finding.inferenceParents.some((parentId) => !upstreamIds.has(parentId))
-    ) {
-      throw new Error("机构影响引用了不存在的上游 Finding");
-    }
-  }
-
   assertUniqueIds(
-    response.inferenceRelationships.map((item) => item.relationshipId),
-    "推导关系",
+    response.impacts.map((item) => item.findingId),
+    "结构化机构影响 Finding",
   );
-  for (const relationship of response.inferenceRelationships) {
-    validateAnchors(relationship.sourceAnchors, sourceById);
-    const impact = impactById.get(relationship.toFindingId);
-    if (!impact) throw new Error("推导关系目标不是本次机构影响 Finding");
-    if (relationship.relationshipType === "direct") {
-      throw new Error("缺少机构画像时机构影响关系不得标为 direct");
-    }
-    if (!relationship.manualVerificationRequired) {
-      throw new Error("不确定推导关系必须要求人工复核");
-    }
-    const relationshipParents = [...relationship.fromFindingIds].sort();
-    const findingParents = [...impact.inferenceParents].sort();
-    if (relationshipParents.join("\u0000") !== findingParents.join("\u0000")) {
-      throw new Error("推导关系父结论必须与 Finding inferenceParents 一致");
-    }
-  }
-  for (const finding of response.findings) {
+  assertUniqueIds(
+    response.impacts.map((item) => item.relationshipId),
+    "结构化机构影响推导关系",
+  );
+
+  const findings: Finding[] = [];
+  const relationships: InferenceRelationship[] = [];
+  for (const impact of response.impacts) {
+    validateAnchors(impact.sourceAnchors, scope);
     if (
-      !response.inferenceRelationships.some(
-        (relationship) => relationship.toFindingId === finding.findingId,
-      )
+      impact.inferenceParents.some((parentId) => !upstreamIds.has(parentId))
     ) {
-      throw new Error("每项机构影响必须有可追溯推导关系");
+      throw new Error("机构影响引用了不存在或未授权的上游 Finding");
     }
+    const label = IMPACT_LABELS[impact.category];
+    const statement =
+      impact.possibility === "potential"
+        ? `可能需要评估${label}维度的相关影响（AI推导，尚未建立机构实际情况）。`
+        : `尚无法建立${label}维度的具体机构影响，需补充机构材料并人工确认。`;
+    findings.push(
+      FindingSchema.parse({
+        findingId: impact.findingId,
+        category: `institution_impact:${impact.category}`,
+        statement,
+        claimType: "ai_inference",
+        sourceAnchors: impact.sourceAnchors,
+        inferenceParents: impact.inferenceParents,
+        reviewStatus: "unreviewed",
+        requiredReview: true,
+        revisionRecords: [],
+      }),
+    );
+    relationships.push(
+      InferenceRelationshipSchema.parse({
+        relationshipId: impact.relationshipId,
+        fromFindingIds: impact.inferenceParents,
+        toFindingId: impact.findingId,
+        relationshipType: impact.possibility,
+        sourceAnchors: impact.sourceAnchors,
+        rationale:
+          impact.possibility === "potential"
+            ? `监管要求与${label}维度可能相关，具体机构影响尚待核实。`
+            : `现有材料不足以建立监管要求与${label}维度的具体机构影响。`,
+        confidence: impact.confidence,
+        manualVerificationRequired: true,
+      }),
+    );
   }
+  validateFindings(findings, scope);
+  return { findings, relationships };
 };
 
 const checkpointFrom = (state: AnalysisCheckpoint): AnalysisCheckpoint =>
@@ -652,6 +913,133 @@ const conflictFinding = (conflict: SourceConflict): Finding =>
 
 const anchorIdentity = (anchor: SourceAnchor): string => JSON.stringify(anchor);
 
+const atomicStructureSignature = (item: AtomicRequirement): string =>
+  JSON.stringify({
+    subject: item.subject,
+    action: item.action,
+    object: item.object,
+    condition: item.condition,
+    frequency: item.frequency,
+    deadline: item.deadline,
+    strength: item.strength,
+    responsibility: item.responsibility,
+    exceptions: item.exceptions,
+    sharedContext: item.sharedContext,
+    missingFacts: [...item.missingFacts].sort(),
+  });
+
+interface ExpandedAtomicState {
+  findings: Finding[];
+  requirements: AtomicRequirement[];
+  pendingConflicts: Finding[];
+}
+
+const expandConflictingAtomicIds = (
+  findings: readonly Finding[],
+  requirements: readonly AtomicRequirement[],
+): ExpandedAtomicState => {
+  const requirementsByFinding = new Map<string, AtomicRequirement[]>();
+  for (const requirement of requirements) {
+    const group = requirementsByFinding.get(requirement.findingId) ?? [];
+    group.push(requirement);
+    requirementsByFinding.set(requirement.findingId, group);
+  }
+
+  const expandedFindings = findings.filter(
+    (finding) => !requirementsByFinding.has(finding.findingId),
+  );
+  const expandedRequirements: AtomicRequirement[] = [];
+  const pendingConflicts: Finding[] = [];
+  let conflictIndex = 0;
+
+  for (const [
+    originalFindingId,
+    groupedRequirements,
+  ] of requirementsByFinding) {
+    const sourceFinding = findings.find(
+      (finding) => finding.findingId === originalFindingId,
+    );
+    if (!sourceFinding) {
+      throw new Error(
+        `AtomicRequirement ${originalFindingId} 缺少关联 Finding`,
+      );
+    }
+    const byStructure = new Map<string, AtomicRequirement[]>();
+    for (const requirement of groupedRequirements) {
+      const signature = atomicStructureSignature(requirement);
+      const variants = byStructure.get(signature) ?? [];
+      variants.push(requirement);
+      byStructure.set(signature, variants);
+    }
+
+    const variants = [...byStructure.values()];
+    variants.forEach((variantRequirements, variantIndex) => {
+      const findingId =
+        variantIndex === 0
+          ? originalFindingId
+          : `${originalFindingId}~atomic-${variantIndex + 1}`;
+      const anchors = new Map(
+        variantRequirements
+          .flatMap((requirement) => requirement.sourceAnchors)
+          .map((item) => [anchorIdentity(item), item] as const),
+      );
+      expandedFindings.push(
+        FindingSchema.parse({
+          ...sourceFinding,
+          findingId,
+          sourceAnchors: [...anchors.values()],
+          requiredReview: sourceFinding.requiredReview || variants.length > 1,
+        }),
+      );
+      variantRequirements.forEach((requirement, requirementIndex) => {
+        expandedRequirements.push(
+          AtomicRequirementSchema.parse({
+            ...requirement,
+            requirementId:
+              variantIndex === 0 || requirementIndex > 0
+                ? requirement.requirementId
+                : `${requirement.requirementId}~atomic-${variantIndex + 1}`,
+            findingId,
+            manualVerificationRequired:
+              requirement.manualVerificationRequired || variants.length > 1,
+          }),
+        );
+      });
+    });
+
+    if (variants.length > 1) {
+      conflictIndex += 1;
+      pendingConflicts.push(
+        FindingSchema.parse({
+          findingId: `SYS-PENDING-ATOMIC-CONFLICT-${conflictIndex}`,
+          category: "pending_confirmation:atomic_conflict",
+          statement: `待确认：原子要求 ${originalFindingId} 在分块间产生 ${variants.length} 个结构差异版本，系统已分别保留，禁止静默合并。`,
+          claimType: "pending_confirmation",
+          sourceAnchors: unique(
+            groupedRequirements.flatMap((requirement) =>
+              requirement.sourceAnchors.map(anchorIdentity),
+            ),
+          ).map((key) => JSON.parse(key) as SourceAnchor),
+          inferenceParents: variants.map((_, index) =>
+            index === 0
+              ? originalFindingId
+              : `${originalFindingId}~atomic-${index + 1}`,
+          ),
+          reviewStatus: "unreviewed",
+          requiredReview: true,
+          revisionRecords: [],
+        }),
+      );
+    }
+  }
+
+  return {
+    findings: expandedFindings,
+    requirements: expandedRequirements,
+    pendingConflicts,
+  };
+};
+
 const mergeAtomicRequirements = (
   requirements: readonly AtomicRequirement[],
   aliases: Readonly<Record<string, string>>,
@@ -667,21 +1055,10 @@ const mergeAtomicRequirements = (
       grouped.set(requirement.findingId, requirement);
       continue;
     }
-    const structural = (item: AtomicRequirement): string =>
-      JSON.stringify({
-        subject: item.subject,
-        action: item.action,
-        object: item.object,
-        condition: item.condition,
-        frequency: item.frequency,
-        deadline: item.deadline,
-        strength: item.strength,
-        responsibility: item.responsibility,
-        exceptions: item.exceptions,
-        sharedContext: item.sharedContext,
-        missingFacts: [...item.missingFacts].sort(),
-      });
-    if (structural(existing) !== structural(requirement)) {
+    if (
+      atomicStructureSignature(existing) !==
+      atomicStructureSignature(requirement)
+    ) {
       throw new Error(
         `原子要求 ${requirement.findingId} 在分块间存在冲突，必须进入人工确认后再合并`,
       );
@@ -732,16 +1109,40 @@ const mergeRelationships = (
 
 const finalizeDraft = (checkpoint: AnalysisCheckpoint): AnalysisDraft => {
   const conflictFindings = checkpoint.conflicts.map(conflictFinding);
+  const expandedAtomicState = expandConflictingAtomicIds(
+    checkpoint.findings,
+    checkpoint.atomicRequirements,
+  );
   const withSystemFindings = [
-    ...checkpoint.findings,
+    ...expandedAtomicState.findings,
     ...conflictFindings,
+    ...expandedAtomicState.pendingConflicts,
     fileProfilePendingFinding(),
   ];
+
+  const atomicSignatureByFindingId = new Map<string, string>();
+  for (const requirement of expandedAtomicState.requirements) {
+    const signature = atomicStructureSignature(requirement);
+    const existing = atomicSignatureByFindingId.get(requirement.findingId);
+    if (existing && existing !== signature) {
+      throw new Error(
+        `原子要求 ${requirement.findingId} 未能按结构差异安全展开`,
+      );
+    }
+    atomicSignatureByFindingId.set(requirement.findingId, signature);
+  }
+  const canonicalizationKey = (finding: Finding): string =>
+    JSON.stringify([
+      findingDeduplicationKey(finding),
+      finding.category === "atomic_requirement"
+        ? (atomicSignatureByFindingId.get(finding.findingId) ?? null)
+        : null,
+    ]);
 
   const idToKey = new Map<string, string>();
   const keyToCanonicalId = new Map<string, string>();
   for (const finding of withSystemFindings) {
-    const key = findingDeduplicationKey(finding);
+    const key = canonicalizationKey(finding);
     const existingKey = idToKey.get(finding.findingId);
     if (existingKey && existingKey !== key) {
       throw new Error(`Finding ID ${finding.findingId} 对应了不同结论`);
@@ -754,16 +1155,17 @@ const finalizeDraft = (checkpoint: AnalysisCheckpoint): AnalysisDraft => {
     [...idToKey.entries()].map(([id, key]) => [id, keyToCanonicalId.get(key)!]),
   );
 
-  const findings = mergeFindings(withSystemFindings).map((finding) =>
-    FindingSchema.parse({
-      ...finding,
-      inferenceParents: unique(
-        finding.inferenceParents.map((id) => findingAliases[id] ?? id),
-      ),
-    }),
+  const findings = mergeFindings(withSystemFindings, canonicalizationKey).map(
+    (finding) =>
+      FindingSchema.parse({
+        ...finding,
+        inferenceParents: unique(
+          finding.inferenceParents.map((id) => findingAliases[id] ?? id),
+        ),
+      }),
   );
   const atomicRequirements = mergeAtomicRequirements(
-    checkpoint.atomicRequirements,
+    expandedAtomicState.requirements,
     findingAliases,
   );
   const inferenceRelationships = mergeRelationships(
@@ -816,13 +1218,16 @@ const validateResume = (
   nodes: readonly AnalysisNode[],
   inputFingerprint: string,
   input: AnalysisInput,
+  officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
 ): void => {
   if (
     checkpoint.inputFingerprint !== inputFingerprint ||
     checkpoint.model !== input.model.trim() ||
     checkpoint.hasOfficialInterpretation !== input.hasOfficialInterpretation
   ) {
-    throw new Error("重启元数据与当前模型、来源或官方解读状态不一致");
+    throw new Error(
+      "重启元数据与当前模型、来源、分块策略、执行计划或官方解读状态不一致",
+    );
   }
   const expectedPrefix = nodes
     .slice(0, checkpoint.runs.length)
@@ -835,16 +1240,37 @@ const validateResume = (
   }
   checkpoint.runs.forEach((run, index) => {
     const node = nodes[index];
+    const pairedRegulatorySourceIds = new Set(
+      node.chunk.sourceType === "official_interpretation"
+        ? node.chunk.inputSourceIds.flatMap(
+            (sourceId) => officialPrimaryContext[sourceId] ?? [],
+          )
+        : [],
+    );
+    const priorFindingIds = new Set(
+      checkpoint.runs
+        .slice(0, index)
+        .flatMap((priorRun) => priorRun.findingIds),
+    );
+    const primaryFindings = checkpoint.findings.filter(
+      (finding) =>
+        priorFindingIds.has(finding.findingId) &&
+        finding.claimType === "regulatory_fact" &&
+        finding.sourceAnchors.length > 0 &&
+        finding.sourceAnchors.every((anchor) =>
+          pairedRegulatorySourceIds.has(anchor.sourceId),
+        ),
+    );
+    const expectedInputSourceIds = [
+      ...(node.chunk.sourceType === "official_interpretation"
+        ? scopeWithPrimaryFindings(node.chunk, primaryFindings).keys()
+        : node.chunk.inputSourceIds),
+    ];
     if (
       run.model !== input.model.trim() ||
       run.promptVersion !== node.promptVersion ||
-      node.chunk.inputSourceIds.some(
-        (sourceId) => !run.inputSourceIds.includes(sourceId),
-      ) ||
-      run.inputSourceIds.some(
-        (sourceId) =>
-          !input.sourceUnits.some((source) => source.sourceId === sourceId),
-      )
+      run.inputSourceIds.join("\u0000") !==
+        expectedInputSourceIds.join("\u0000")
     ) {
       throw new Error("重启节点的模型、提示词版本或输入来源已变化");
     }
@@ -880,21 +1306,18 @@ export async function runAnalysis(
     throw new Error("官方解读存在标志与输入来源不一致");
   }
 
-  const chunkOptions: ChunkOptions = {
-    ...DEFAULT_CHUNK_OPTIONS,
-    ...input.chunkOptions,
-  };
+  const chunkOptions = resolveChunkPolicy(input.chunkOptions);
+  const officialPrimaryContext = normalizeOfficialPrimaryContext(
+    input.officialPrimaryContext,
+    sourceById,
+  );
   const chunks = chunkDocument(input.sourceUnits, chunkOptions);
   const nodes = nodesFor(chunks);
-  const inputFingerprint = await sha256(
-    canonicalJson(
-      input.sourceUnits.map((source) => ({
-        sourceId: source.sourceId,
-        sourceType: source.sourceType,
-        title: source.title,
-        content: source.content,
-      })),
-    ),
+  const inputFingerprint = await executionPlanFingerprint(
+    input.sourceUnits,
+    chunkOptions,
+    nodes,
+    officialPrimaryContext,
   );
   let checkpoint = input.resumeFrom
     ? AnalysisCheckpointSchema.parse(input.resumeFrom)
@@ -904,7 +1327,13 @@ export async function runAnalysis(
         input.hasOfficialInterpretation,
       );
   if (input.resumeFrom)
-    validateResume(checkpoint, nodes, inputFingerprint, input);
+    validateResume(
+      checkpoint,
+      nodes,
+      inputFingerprint,
+      input,
+      officialPrimaryContext,
+    );
 
   for (
     let nodeIndex = checkpoint.runs.length;
@@ -919,20 +1348,29 @@ export async function runAnalysis(
     let conflicts: SourceConflict[] = [];
     let response: unknown;
     let requestInputSourceIds = node.chunk.inputSourceIds;
+    let requestScope: AuthorizedSourceScope = scopeForChunk(node.chunk);
 
     if (node.stage === "document_identity") {
+      const pairedRegulatorySourceIds = new Set(
+        node.chunk.sourceType === "official_interpretation"
+          ? node.chunk.inputSourceIds.flatMap(
+              (sourceId) => officialPrimaryContext[sourceId] ?? [],
+            )
+          : [],
+      );
       const primaryFindings =
         node.chunk.sourceType === "official_interpretation"
           ? checkpoint.findings.filter(
-              (finding) => finding.claimType === "regulatory_fact",
+              (finding) =>
+                finding.claimType === "regulatory_fact" &&
+                finding.sourceAnchors.length > 0 &&
+                finding.sourceAnchors.every((anchor) =>
+                  pairedRegulatorySourceIds.has(anchor.sourceId),
+                ),
             )
           : [];
-      requestInputSourceIds = unique([
-        ...node.chunk.inputSourceIds,
-        ...primaryFindings.flatMap((finding) =>
-          finding.sourceAnchors.map((item) => item.sourceId),
-        ),
-      ]);
+      requestScope = scopeWithPrimaryFindings(node.chunk, primaryFindings);
+      requestInputSourceIds = [...requestScope.keys()];
       response = await input.gateway.requestStructured({
         schema: DocumentIdentityResponseSchema,
         schemaName: "analysis_document_identity_v1",
@@ -947,9 +1385,9 @@ export async function runAnalysis(
       const parsed = DocumentIdentityResponseSchema.parse(response);
       findings = parsed.findings;
       conflicts = parsed.conflicts;
-      validateFindings(findings, sourceById);
+      validateFindings(findings, requestScope);
       conflicts.forEach((conflict) => {
-        validateAnchors(conflict.sourceAnchors, sourceById);
+        validateAnchors(conflict.sourceAnchors, requestScope);
         if (
           !conflict.sourceAnchors.some(
             (item) => item.sourceType === "regulatory_text",
@@ -973,7 +1411,7 @@ export async function runAnalysis(
       const parsed = AtomicClausesResponseSchema.parse(response);
       findings = parsed.findings;
       atomicRequirements = parsed.atomicRequirements;
-      validateAtomicResponse(parsed, sourceById);
+      validateAtomicResponse(parsed, requestScope);
     } else if (node.stage === "key_matters") {
       response = await input.gateway.requestStructured({
         schema: KeyMattersResponseSchema,
@@ -993,7 +1431,7 @@ export async function runAnalysis(
       });
       const parsed = KeyMattersResponseSchema.parse(response);
       findings = parsed.findings;
-      validateFindings(findings, sourceById);
+      validateFindings(findings, requestScope);
       if (
         findings.some(
           (finding) =>
@@ -1004,12 +1442,12 @@ export async function runAnalysis(
         throw new Error("重点事项只能来自监管原文或标为 pending_confirmation");
       }
     } else {
-      const relevantSourceIds = new Set(node.chunk.inputSourceIds);
       const upstreamFindings = checkpoint.findings.filter(
         (finding) =>
           finding.claimType === "regulatory_fact" &&
-          finding.sourceAnchors.some((anchor) =>
-            relevantSourceIds.has(anchor.sourceId),
+          finding.sourceAnchors.length > 0 &&
+          finding.sourceAnchors.every((anchor) =>
+            anchorIsAuthorized(anchor, requestScope),
           ),
       );
       response = await input.gateway.requestStructured({
@@ -1024,9 +1462,13 @@ export async function runAnalysis(
         ),
       });
       const parsed = InstitutionImpactResponseSchema.parse(response);
-      findings = parsed.findings;
-      inferenceRelationships = parsed.inferenceRelationships;
-      validateImpactResponse(parsed, upstreamFindings, sourceById);
+      const structured = buildStructuredImpacts(
+        parsed,
+        upstreamFindings,
+        requestScope,
+      );
+      findings = structured.findings;
+      inferenceRelationships = structured.relationships;
     }
 
     throwIfAborted(signal);
