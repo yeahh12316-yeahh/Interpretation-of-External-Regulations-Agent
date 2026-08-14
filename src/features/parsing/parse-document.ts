@@ -17,6 +17,8 @@ export interface ParseQuality {
   failedPageCount: number;
   lowTextPages: number[];
   extractionCoverage: number;
+  ocrFailedPages: number[];
+  finalizationBlocked: boolean;
 }
 
 export interface ParseResult {
@@ -64,6 +66,7 @@ export async function parseDocument(
   let successfulPages: number[] = [];
   let failedPages: Array<{ page: number; error: string }> = [];
   let lowTextPages: number[] = [];
+  let ocrFailedPages: number[] = [];
 
   if (kind === "pdf") {
     const { parsePdf } = await raceWithAbort(import("./parse-pdf"), signal);
@@ -73,6 +76,7 @@ export async function parseDocument(
     successfulPages = parsed.successfulPages;
     failedPages = parsed.failedPages;
     lowTextPages = parsed.lowTextPages;
+    ocrFailedPages = parsed.ocrFailedPages;
   } else if (kind === "docx") {
     const { parseDocx } = await raceWithAbort(import("./parse-docx"), signal);
     units = await parseDocx(bytes, sourceId, sourceType, signal);
@@ -110,6 +114,8 @@ export async function parseDocument(
       failedPageCount: failedPages.length,
       lowTextPages,
       extractionCoverage,
+      ocrFailedPages,
+      finalizationBlocked: failedPages.length > 0,
     },
   };
 }

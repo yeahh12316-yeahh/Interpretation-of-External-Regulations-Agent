@@ -484,6 +484,151 @@ describe("page failures and stable anchors", () => {
     ).toBe(true);
   });
 
+  test("replaces a low-text PDF page with located OCR units", async () => {
+    const fakePdf = {
+      numPages: 1,
+      getPage: async () => ({
+        getTextContent: async () => ({ items: [] }),
+      }),
+    };
+
+    const result = await parsePdfPages(
+      fakePdf,
+      "SRC-regulatory_text-scanned",
+      "regulatory_text",
+      new AbortController().signal,
+      {
+        renderPageBitmap: async ({ pageNumber, sourceId, sourceType }) => ({
+          pageNumber,
+          sourceId,
+          sourceType,
+          image: {} as HTMLCanvasElement,
+          width: 1200,
+          height: 1600,
+        }),
+        runOcr: async (pages) =>
+          pages.map((page) => ({
+            unitId: `${page.sourceId}:p${page.pageNumber}:ocr`,
+            sourceId: page.sourceId,
+            sourceType: page.sourceType,
+            page: page.pageNumber,
+            method: "ocr" as const,
+            confidence: 0.78,
+            text: "第一条 银行业金融机构不得泄露客户信息。",
+            originalOcrText: "第一条 银行业金融机构不得泄露客户信息。",
+            correctedText: null,
+            reviewStatus: "unreviewed" as const,
+            reviewedAt: null,
+            boundingBox: { x: 20, y: 40, width: 800, height: 60 },
+            regions: [
+              {
+                text: "第一条 银行业金融机构不得泄露客户信息。",
+                confidence: 0.78,
+                boundingBox: { x: 20, y: 40, width: 800, height: 60 },
+                lowConfidence: false,
+              },
+            ],
+            lowConfidenceCharacters: [],
+          })),
+      },
+    );
+
+    expect(result.units).toEqual([
+      expect.objectContaining({
+        page: 1,
+        text: "第一条 银行业金融机构不得泄露客户信息。",
+        extractionMethod: "ocr",
+        confidence: 0.78,
+        originalOcrText: "第一条 银行业金融机构不得泄露客户信息。",
+        reviewStatus: "unreviewed",
+        boundingBox: { x: 20, y: 40, width: 800, height: 60 },
+      }),
+    ]);
+    expect(result.failedPages).toEqual([]);
+    expect(result.ocrFailedPages).toEqual([]);
+  });
+
+  test("records an OCR failure as a finalization blocker", async () => {
+    const fakePdf = {
+      numPages: 1,
+      getPage: async () => ({ getTextContent: async () => ({ items: [] }) }),
+    };
+
+    const result = await parsePdfPages(
+      fakePdf,
+      "SRC-regulatory_text-scanned-failure",
+      "regulatory_text",
+      new AbortController().signal,
+      {
+        renderPageBitmap: async ({ pageNumber, sourceId, sourceType }) => ({
+          pageNumber,
+          sourceId,
+          sourceType,
+          image: {} as HTMLCanvasElement,
+          width: 1200,
+          height: 1600,
+        }),
+        runOcr: async (pages) =>
+          pages.map((page) => ({
+            unitId: `${page.sourceId}:p${page.pageNumber}:ocr`,
+            sourceId: page.sourceId,
+            sourceType: page.sourceType,
+            page: page.pageNumber,
+            method: "ocr" as const,
+            confidence: 0,
+            text: "",
+            originalOcrText: "",
+            correctedText: null,
+            reviewStatus: "failed" as const,
+            reviewedAt: null,
+            boundingBox: { x: 0, y: 0, width: 1200, height: 1600 },
+            regions: [],
+            lowConfidenceCharacters: [],
+            error: "页面 OCR 识别失败" as const,
+          })),
+      },
+    );
+
+    expect(result.ocrFailedPages).toEqual([1]);
+    expect(result.failedPages).toEqual([
+      { page: 1, error: "页面 OCR 识别失败" },
+    ]);
+    expect(result.successfulPages).toEqual([]);
+  });
+
+  test("turns an OCR worker startup failure into explicit page failures", async () => {
+    const fakePdf = {
+      numPages: 1,
+      getPage: async () => ({ getTextContent: async () => ({ items: [] }) }),
+    };
+
+    const result = await parsePdfPages(
+      fakePdf,
+      "SRC-regulatory_text-worker-failure",
+      "regulatory_text",
+      new AbortController().signal,
+      {
+        renderPageBitmap: async ({ pageNumber, sourceId, sourceType }) => ({
+          pageNumber,
+          sourceId,
+          sourceType,
+          image: {} as HTMLCanvasElement,
+          width: 1200,
+          height: 1600,
+        }),
+        runOcr: async () => {
+          throw new Error("synthetic worker startup detail");
+        },
+      },
+    );
+
+    expect(result.failedPages).toEqual([
+      { page: 1, error: "页面 OCR 识别失败" },
+    ]);
+    expect(result.ocrFailedPages).toEqual([1]);
+    expect(result.units).toEqual([]);
+  });
+
   test("propagates article context into deterministic reverse-location anchors", () => {
     const units = [
       {

@@ -3,6 +3,11 @@ import {
   getDocument,
   GlobalWorkerOptions,
 } from "pdfjs-dist/legacy/build/pdf.mjs";
+import type {
+  PDFPageProxy,
+  PageViewport,
+  RenderTask,
+} from "pdfjs-dist/legacy/build/pdf.mjs";
 
 import type { SourceType } from "../../domain/source";
 import {
@@ -16,6 +21,13 @@ import {
   type BoundingBox,
   type ParsedSourceUnit,
 } from "./build-anchors";
+import { isScannedPage } from "./ocr/detect-scanned-page";
+import {
+  ocrPages,
+  type OcrPageBitmap,
+  type OcrPageResult,
+  type OcrProgress,
+} from "./ocr/ocr-pipeline";
 
 const testProcess = globalThis as typeof globalThis & {
   process?: { cwd(): string };
@@ -31,8 +43,6 @@ const testWorkerUrl = testProcess.process
 GlobalWorkerOptions.workerSrc =
   import.meta.env.MODE === "test" && testWorkerUrl ? testWorkerUrl : workerUrl;
 
-const LOW_TEXT_CHARACTER_THRESHOLD = 12;
-
 interface PdfTextItem {
   str: string;
   transform?: readonly number[];
@@ -42,6 +52,8 @@ interface PdfTextItem {
 
 interface PdfPageLike {
   getTextContent(): Promise<{ items: readonly unknown[] }>;
+  getViewport?(options: { scale: number }): PageViewport;
+  render?(parameters: Parameters<PDFPageProxy["render"]>[0]): RenderTask;
 }
 
 export interface PdfDocumentLike {
@@ -54,7 +66,60 @@ export interface PdfPageParseResult {
   successfulPages: number[];
   failedPages: Array<{ page: number; error: string }>;
   lowTextPages: number[];
+  ocrFailedPages: number[];
 }
+
+interface RenderPageBitmapInput {
+  page: PdfPageLike;
+  pageNumber: number;
+  sourceId: string;
+  sourceType: SourceType;
+  signal: AbortSignal;
+}
+
+export interface PdfOcrDependencies {
+  renderPageBitmap?: (input: RenderPageBitmapInput) => Promise<OcrPageBitmap>;
+  runOcr?: (
+    pages: readonly OcrPageBitmap[],
+    signal: AbortSignal,
+    onProgress: (progress: OcrProgress) => void,
+  ) => Promise<OcrPageResult[]>;
+  onOcrProgress?: (progress: OcrProgress) => void;
+}
+
+const canRenderPage = (
+  page: PdfPageLike,
+): page is Required<Pick<PdfPageLike, "getViewport" | "render">> &
+  PdfPageLike =>
+  typeof page.getViewport === "function" && typeof page.render === "function";
+
+const renderPageBitmap = async ({
+  page,
+  pageNumber,
+  sourceId,
+  sourceType,
+  signal,
+}: RenderPageBitmapInput): Promise<OcrPageBitmap> => {
+  throwIfAborted(signal);
+  if (!canRenderPage(page) || typeof document === "undefined")
+    throw new Error("PDF 页面不支持本地 OCR 渲染");
+  const viewport = page.getViewport({ scale: 2 });
+  const canvas = document.createElement("canvas");
+  canvas.width = Math.ceil(viewport.width);
+  canvas.height = Math.ceil(viewport.height);
+  const canvasContext = canvas.getContext("2d", { willReadFrequently: true });
+  if (!canvasContext) throw new Error("PDF 页面位图创建失败");
+  const rendering = page.render({ canvas, canvasContext, viewport });
+  await raceWithAbort(rendering.promise, signal);
+  return {
+    pageNumber,
+    sourceId,
+    sourceType,
+    image: canvas,
+    width: canvas.width,
+    height: canvas.height,
+  };
+};
 
 const isTextItem = (item: unknown): item is PdfTextItem =>
   typeof item === "object" &&
@@ -155,13 +220,16 @@ export async function parsePdfPages(
   sourceId: string,
   sourceType: SourceType,
   signal: AbortSignal,
+  ocrDependencies: PdfOcrDependencies = {},
 ): Promise<PdfPageParseResult> {
   const result: PdfPageParseResult = {
     units: [],
     successfulPages: [],
     failedPages: [],
     lowTextPages: [],
+    ocrFailedPages: [],
   };
+  const scannedBitmaps: OcrPageBitmap[] = [];
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     throwIfAborted(signal);
@@ -175,8 +243,10 @@ export async function parsePdfPages(
         0,
       );
       result.successfulPages.push(pageNumber);
-      if (pageCharacterCount < LOW_TEXT_CHARACTER_THRESHOLD)
-        result.lowTextPages.push(pageNumber);
+      const lowText = isScannedPage(
+        lines.map((line) => lineText(line.items)).join(""),
+      );
+      if (lowText) result.lowTextPages.push(pageNumber);
       const sourceLines =
         lines.length > 0 ? lines : [{ y: null, firstItemIndex: 0, items: [] }];
       result.units.push(
@@ -190,18 +260,131 @@ export async function parsePdfPages(
             paragraphIndex,
             text,
             extractionMethod: "text_layer" as const,
-            confidence:
-              pageCharacterCount < LOW_TEXT_CHARACTER_THRESHOLD ? 0.25 : 1,
+            confidence: lowText ? 0.25 : 1,
             boundingBox: boundingBoxOf(line.items),
           };
         }),
       );
+      const bitmapRenderer =
+        ocrDependencies.renderPageBitmap ?? renderPageBitmap;
+      if (
+        lowText &&
+        (ocrDependencies.renderPageBitmap || canRenderPage(page))
+      ) {
+        try {
+          scannedBitmaps.push(
+            await bitmapRenderer({
+              page,
+              pageNumber,
+              sourceId,
+              sourceType,
+              signal,
+            }),
+          );
+        } catch (error) {
+          if (signal.aborted || isAbortError(error)) throw abortError();
+          result.ocrFailedPages.push(pageNumber);
+          result.failedPages.push({
+            page: pageNumber,
+            error: "页面 OCR 渲染失败",
+          });
+          result.successfulPages = result.successfulPages.filter(
+            (successfulPage) => successfulPage !== pageNumber,
+          );
+        }
+      }
     } catch (error) {
       if (signal.aborted || isAbortError(error)) {
         throw abortError();
       }
       result.failedPages.push({ page: pageNumber, error: "页面文本提取失败" });
     }
+  }
+
+  if (scannedBitmaps.length > 0) {
+    const runOcr = ocrDependencies.runOcr ?? ocrPages;
+    let ocrResults: OcrPageResult[];
+    try {
+      ocrResults = await runOcr(
+        scannedBitmaps,
+        signal,
+        ocrDependencies.onOcrProgress ?? (() => undefined),
+      );
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw abortError();
+      ocrResults = scannedBitmaps.map((bitmap) => ({
+        unitId: `${bitmap.sourceId}:p${bitmap.pageNumber}:ocr`,
+        sourceId: bitmap.sourceId,
+        sourceType: bitmap.sourceType,
+        page: bitmap.pageNumber,
+        method: "ocr",
+        confidence: 0,
+        text: "",
+        originalOcrText: "",
+        correctedText: null,
+        reviewStatus: "failed",
+        reviewedAt: null,
+        boundingBox: {
+          x: 0,
+          y: 0,
+          width: bitmap.width,
+          height: bitmap.height,
+        },
+        regions: [],
+        lowConfidenceCharacters: [],
+        error: "页面 OCR 识别失败",
+      }));
+    }
+    for (const ocrResult of ocrResults) {
+      result.units = result.units.filter(
+        (unit) => unit.page !== ocrResult.page,
+      );
+      if (ocrResult.reviewStatus === "failed" || ocrResult.error) {
+        result.ocrFailedPages.push(ocrResult.page);
+        result.failedPages.push({
+          page: ocrResult.page,
+          error: ocrResult.error ?? "页面 OCR 识别失败",
+        });
+        result.successfulPages = result.successfulPages.filter(
+          (successfulPage) => successfulPage !== ocrResult.page,
+        );
+        continue;
+      }
+      const locatedRegions =
+        ocrResult.regions.length > 0
+          ? ocrResult.regions
+          : [
+              {
+                text: ocrResult.text,
+                confidence: ocrResult.confidence,
+                boundingBox: ocrResult.boundingBox,
+                lowConfidence: ocrResult.confidence < 0.7,
+              },
+            ];
+      result.units.push(
+        ...locatedRegions.map((region, paragraphIndex) => ({
+          unitId: `${ocrResult.unitId}:r${paragraphIndex}`,
+          sourceId: ocrResult.sourceId,
+          sourceType: ocrResult.sourceType,
+          page: ocrResult.page,
+          article: articleFromText(region.text),
+          paragraphIndex,
+          text: region.text,
+          extractionMethod: "ocr" as const,
+          confidence: region.confidence,
+          boundingBox: region.boundingBox,
+          originalOcrText: region.text,
+          correctedText: null,
+          reviewStatus: "unreviewed" as const,
+          reviewedAt: null,
+        })),
+      );
+    }
+    result.units.sort(
+      (left, right) =>
+        (left.page ?? 0) - (right.page ?? 0) ||
+        left.paragraphIndex - right.paragraphIndex,
+    );
   }
 
   return result;
