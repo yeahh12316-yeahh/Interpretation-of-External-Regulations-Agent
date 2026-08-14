@@ -1,11 +1,13 @@
 import type { Finding } from "../../domain/finding";
 import type { SourceAnchor, SourceUnit } from "../../domain/source";
+import type { AtomicRequirement } from "../analysis/skill-orchestrator";
 import type { ParsedSourceUnit } from "../parsing/build-anchors";
 import {
   extractDates,
   extractModalTerms,
   extractNumbers,
   normalizeText,
+  protectedClaimSkeleton,
 } from "./normalize-text";
 
 export type ValidationRule =
@@ -38,6 +40,7 @@ export interface SourceIndexInput {
   parsedUnits: readonly ParsedSourceUnit[];
   findings?: readonly Finding[];
   officialPrimarySourceIds?: OfficialPrimarySourceIds;
+  atomicRequirements?: readonly AtomicRequirement[];
 }
 
 export interface IndexedParsedUnit {
@@ -53,6 +56,10 @@ export interface SourceIndex {
   readonly findingById: ReadonlyMap<string, Finding>;
   readonly indexedUnits: readonly IndexedParsedUnit[];
   readonly officialPrimarySourceIds?: OfficialPrimarySourceIds;
+  readonly atomicRequirementsByFindingId: ReadonlyMap<
+    string,
+    readonly AtomicRequirement[]
+  >;
 }
 
 const anchorKey = (anchor: SourceAnchor): string => JSON.stringify(anchor);
@@ -62,6 +69,7 @@ export function createSourceIndex({
   parsedUnits,
   findings = [],
   officialPrimarySourceIds,
+  atomicRequirements = [],
 }: SourceIndexInput): SourceIndex {
   const sourceById = new Map<string, SourceUnit[]>();
   for (const source of sources) {
@@ -91,6 +99,16 @@ export function createSourceIndex({
     ),
     indexedUnits,
     officialPrimarySourceIds,
+    atomicRequirementsByFindingId: new Map(
+      [...new Set(atomicRequirements.map(({ findingId }) => findingId))].map(
+        (findingId) => [
+          findingId,
+          atomicRequirements.filter(
+            (requirement) => requirement.findingId === findingId,
+          ),
+        ],
+      ),
+    ),
   };
 }
 
@@ -188,6 +206,22 @@ const evidenceFor = (finding: Finding, index: SourceIndex): string => {
   ].join("\n");
 };
 
+const OFFICIAL_WRAPPER_LABELS: Readonly<Record<string, string>> = {
+  "official_context:policy_background": "政策背景",
+  "official_context:regulatory_intent": "监管意图",
+  "official_context:implementation_guidance": "实施说明",
+};
+
+const officialWrapperValid = (finding: Finding): boolean => {
+  const label = OFFICIAL_WRAPPER_LABELS[finding.category];
+  if (!label || finding.sourceAnchors.length !== 1) return false;
+  const excerpt = finding.sourceAnchors[0].quote;
+  return (
+    finding.statement ===
+    `官方解读材料摘录（${label}）：“${excerpt}”。该摘录仅作为官方说明材料，不建立或覆盖监管文件效力、适用性或其他法律结论，须经人工合规复核。`
+  );
+};
+
 const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
   if (
     finding.claimType === "ai_inference" ||
@@ -195,8 +229,51 @@ const modalTermsPreserved = (finding: Finding, index: SourceIndex): boolean => {
   ) {
     return true;
   }
+  if (finding.claimType === "official_explanation") {
+    return officialWrapperValid(finding);
+  }
   const evidenceTerms = extractModalTerms(evidenceFor(finding, index)).sort();
   const statementTerms = extractModalTerms(finding.statement).sort();
+  const hasProtectedClaim =
+    statementTerms.length > 0 ||
+    extractDates(finding.statement).length > 0 ||
+    extractNumbers(finding.statement).length > 0;
+  if (
+    hasProtectedClaim &&
+    !finding.sourceAnchors.some((anchor) =>
+      protectedClaimSkeleton(anchor.quote).includes(
+        protectedClaimSkeleton(finding.statement),
+      ),
+    )
+  ) {
+    return false;
+  }
+  if (finding.category === "atomic_requirement") {
+    const requirements =
+      index.atomicRequirementsByFindingId.get(finding.findingId) ?? [];
+    if (requirements.length > 0) {
+      if (requirements.length !== 1) return false;
+      const [requirement] = requirements;
+      const requirementAnchors = new Set(
+        requirement.sourceAnchors.map(anchorKey),
+      );
+      if (
+        requirementAnchors.size !== finding.sourceAnchors.length ||
+        finding.sourceAnchors.some(
+          (anchor) => !requirementAnchors.has(anchorKey(anchor)),
+        )
+      ) {
+        return false;
+      }
+      const structuredTerms = extractModalTerms(
+        requirement.strength ?? "",
+      ).sort();
+      return (
+        structuredTerms.join("\u0000") === statementTerms.join("\u0000") &&
+        structuredTerms.join("\u0000") === evidenceTerms.join("\u0000")
+      );
+    }
+  }
   return evidenceTerms.join("\u0000") === statementTerms.join("\u0000");
 };
 
@@ -222,6 +299,7 @@ const inferenceProvenanceMatches = (
 ): boolean => {
   if (finding.claimType === "official_explanation") {
     if (finding.inferenceParents.length === 0) return false;
+    if (!index.officialPrimarySourceIds) return false;
     const parents = finding.inferenceParents.map((id) =>
       index.findingById.get(id),
     );
@@ -230,7 +308,9 @@ const inferenceProvenanceMatches = (
         (parent) =>
           !parent ||
           parent.findingId === finding.findingId ||
-          parent.claimType !== "regulatory_fact" ||
+          !["regulatory_fact", "pending_confirmation"].includes(
+            parent.claimType,
+          ) ||
           parent.sourceAnchors.length === 0 ||
           parent.sourceAnchors.some(
             (anchor) =>
@@ -241,21 +321,22 @@ const inferenceProvenanceMatches = (
     ) {
       return false;
     }
-    if (index.officialPrimarySourceIds) {
-      return finding.sourceAnchors.every((officialAnchor) => {
-        const allowed =
-          index.officialPrimarySourceIds?.[officialAnchor.sourceId];
-        return (
-          allowed !== undefined &&
-          parents.every((parent) =>
-            parent!.sourceAnchors.every((anchor) =>
-              allowed.includes(anchor.sourceId),
-            ),
-          )
-        );
-      });
-    }
-    return true;
+    const parentSourceIds = [
+      ...new Set(
+        parents.flatMap((parent) =>
+          parent!.sourceAnchors.map(({ sourceId }) => sourceId),
+        ),
+      ),
+    ].sort();
+    return finding.sourceAnchors.every((officialAnchor) => {
+      const allowed = index.officialPrimarySourceIds?.[officialAnchor.sourceId];
+      if (!allowed) return false;
+      const uniqueAllowed = [...new Set(allowed)].sort();
+      return (
+        uniqueAllowed.length === allowed.length &&
+        uniqueAllowed.join("\u0000") === parentSourceIds.join("\u0000")
+      );
+    });
   }
   if (finding.inferenceParents.length === 0) {
     return finding.claimType !== "ai_inference";
@@ -314,8 +395,12 @@ export function validateFinding(
   );
 
   const evidence = evidenceFor(finding, index);
-  const statementDates = extractDates(finding.statement);
-  const statementNumbers = extractNumbers(finding.statement);
+  const protectedClaimText =
+    finding.claimType === "official_explanation"
+      ? finding.sourceAnchors.map(({ quote }) => quote).join("\n")
+      : finding.statement;
+  const statementDates = extractDates(protectedClaimText);
+  const statementNumbers = extractNumbers(protectedClaimText);
   const datesPassed = tokensAreAuthorized(
     statementDates,
     extractDates(evidence),

@@ -2,6 +2,7 @@ import { describe, expect, test } from "vitest";
 
 import type { Finding } from "../../domain/finding";
 import type { SourceUnit } from "../../domain/source";
+import type { AtomicRequirement } from "../analysis/skill-orchestrator";
 import type { ParsedSourceUnit } from "../parsing/build-anchors";
 import {
   extractDates,
@@ -9,7 +10,11 @@ import {
   extractNumbers,
   normalizeText,
 } from "./normalize-text";
-import { createSourceIndex, validateFinding } from "./validate-finding";
+import {
+  createSourceIndex,
+  type OfficialPrimarySourceIds,
+  validateFinding,
+} from "./validate-finding";
 
 const sources: SourceUnit[] = [
   {
@@ -99,6 +104,10 @@ describe("validateFinding", () => {
     expect(normalizeText("机构应当\n建立 制度")).toBe(
       normalizeText("机构应当建立制度"),
     );
+    expect(normalizeText("A B")).not.toBe(normalizeText("AB"));
+    expect(normalizeText("机\n构应当建立制度Ａ")).toBe(
+      normalizeText("机构应当建立制度A"),
+    );
 
     const numericSource: SourceUnit = {
       sourceId: "REG-NUMERIC",
@@ -142,8 +151,15 @@ describe("validateFinding", () => {
 
   test("extracts amount units, Chinese dates, and the complete modal vocabulary", () => {
     expect(
-      extractNumbers("上限为１亿元，不是１万元，共十项，比例１０％。"),
-    ).toEqual(["1亿元", "1万元", "10项", "10%"]);
+      extractNumbers(
+        "上限为１亿元，不是１万元，共十项，比例１０％，另有百分之十，误差千分之一点五。",
+      ),
+    ).toEqual(["100000000元", "10000元", "10项", "0.1比例", "0.0015比例"]);
+    expect(extractNumbers("人民币一点五亿元")).toEqual(["150000000元"]);
+    expect(extractNumbers("一万亿元与一百万元")).toEqual([
+      "1000000000000元",
+      "1000000元",
+    ]);
     expect(extractDates("二〇二六年一月一日生效")).toContain("2026-01-01");
     expect(
       extractModalTerms("可以、宜、应、须、应当、必须、不得、禁止、严禁"),
@@ -158,6 +174,11 @@ describe("validateFinding", () => {
       "禁止",
       "严禁",
     ]);
+    expect(
+      extractModalTerms(
+        "响应、供应、适应、对应、相应与应用均不是模态词；机构应建立制度，可以办理。",
+      ),
+    ).toEqual(["应", "可以"]);
   });
 
   test("keeps quote matching independent from contradictory modal, date, and amount evidence", () => {
@@ -204,6 +225,51 @@ describe("validateFinding", () => {
     expect(results.modal_strength.passed).toBe(false);
     expect(results.dates.passed).toBe(false);
     expect(results.numbers.passed).toBe(false);
+  });
+
+  test("fails closed on a generic paraphrase whose protected amount is not directly supported", () => {
+    const evidenceText = "费用最高为100000000元。";
+    const evidenceSource: SourceUnit = {
+      sourceId: "REG-PARAPHRASE",
+      sourceType: "regulatory_text",
+      title: "合成金额文件",
+      content: evidenceText,
+    };
+    const evidenceUnit: ParsedSourceUnit = {
+      sourceId: evidenceSource.sourceId,
+      sourceType: evidenceSource.sourceType,
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: evidenceText,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const paraphrase = finding({
+      statement: "额度上限为一亿元。",
+      sourceAnchors: [
+        {
+          sourceId: evidenceSource.sourceId,
+          sourceType: evidenceSource.sourceType,
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: evidenceText,
+        },
+      ],
+    });
+    const results = resultFor(
+      paraphrase,
+      createSourceIndex({
+        sources: [evidenceSource],
+        parsedUnits: [evidenceUnit],
+        findings: [paraphrase],
+      }),
+    );
+
+    expect(results.quote_match.passed).toBe(true);
+    expect(results.numbers.passed).toBe(true);
+    expect(results.modal_strength.passed).toBe(false);
   });
 
   test("accepts equivalent Arabic and Chinese-numeral dates without changing the date", () => {
@@ -270,6 +336,63 @@ describe("validateFinding", () => {
       passed: false,
       severity: "error",
     });
+  });
+
+  test("uses the linked AtomicRequirement strength instead of trusting matching prose", () => {
+    const strictFinding = finding({
+      category: "atomic_requirement",
+      statement: "机构严禁在2026年12月31日前收取超过10%的费用。",
+      sourceAnchors: [
+        {
+          ...finding().sourceAnchors[0],
+          quote: "机构严禁在2026年12月31日前收取超过10%的费用。",
+        },
+      ],
+    });
+    const strictSource: SourceUnit = {
+      ...sources[0],
+      content: strictFinding.sourceAnchors[0].quote,
+    };
+    const strictUnit: ParsedSourceUnit = {
+      ...parsedUnits[0],
+      text: strictFinding.sourceAnchors[0].quote,
+    };
+    const atomic: AtomicRequirement = {
+      requirementId: "AR-F1",
+      findingId: "F1",
+      subject: "机构",
+      action: "收取",
+      object: "费用",
+      condition: "2026年12月31日前",
+      frequency: null,
+      deadline: "2026年12月31日",
+      strength: "不得",
+      responsibility: null,
+      exceptions: null,
+      sharedContext: null,
+      missingFacts: [],
+      sourceAnchors: strictFinding.sourceAnchors,
+      confidence: 1,
+      manualVerificationRequired: false,
+    };
+    const wrongStrength = createSourceIndex({
+      sources: [strictSource],
+      parsedUnits: [strictUnit],
+      findings: [strictFinding],
+      atomicRequirements: [atomic],
+    });
+    expect(resultFor(strictFinding, wrongStrength).modal_strength.passed).toBe(
+      false,
+    );
+    const correctStrength = createSourceIndex({
+      sources: [strictSource],
+      parsedUnits: [strictUnit],
+      findings: [strictFinding],
+      atomicRequirements: [{ ...atomic, strength: "严禁" }],
+    });
+    expect(
+      resultFor(strictFinding, correctStrength).modal_strength.passed,
+    ).toBe(true);
   });
 
   test("uses parsed locators to distinguish the same quote on different pages", () => {
@@ -489,7 +612,7 @@ describe("validateFinding", () => {
     ).toBe(false);
     expect(
       resultFor(official, evidenceIndex([parent])).inference_parent.passed,
-    ).toBe(true);
+    ).toBe(false);
     expect(
       resultFor(official, evidenceIndex([parent], { "OFF-1": ["OTHER-REG"] }))
         .inference_parent.passed,
@@ -502,10 +625,11 @@ describe("validateFinding", () => {
 
   test("does not apply a primary parent's modal words to an official explanation", () => {
     const parent = finding({ findingId: "PRIMARY" });
+    const excerpt = "官方解读说明政策目标。";
     const official = finding({
       findingId: "OFFICIAL",
       category: "official_context:policy_background",
-      statement: "官方解读说明政策目标。",
+      statement: `官方解读材料摘录（政策背景）：“${excerpt}”。该摘录仅作为官方说明材料，不建立或覆盖监管文件效力、适用性或其他法律结论，须经人工合规复核。`,
       claimType: "official_explanation",
       inferenceParents: ["PRIMARY"],
       sourceAnchors: [
@@ -515,7 +639,7 @@ describe("validateFinding", () => {
           page: null,
           article: null,
           paragraphIndex: 0,
-          quote: "官方解读说明政策目标。",
+          quote: excerpt,
         },
       ],
     });
@@ -525,7 +649,7 @@ describe("validateFinding", () => {
       page: null,
       article: null,
       paragraphIndex: 0,
-      text: "官方解读说明政策目标。",
+      text: excerpt,
       extractionMethod: "docx_xml",
       confidence: 1,
     };
@@ -533,11 +657,106 @@ describe("validateFinding", () => {
       sources,
       parsedUnits: [...parsedUnits, officialUnit],
       findings: [parent, official],
+      officialPrimarySourceIds: { "OFF-1": ["REG-1"] },
     });
 
     const results = resultFor(official, index);
     expect(results.inference_parent.passed).toBe(true);
     expect(results.modal_strength.passed).toBe(true);
+  });
+
+  test("validates the actual Task 7 official wrapper with a paired pending regulatory parent", () => {
+    const regulatorySource: SourceUnit = {
+      sourceId: "REG-TASK7",
+      sourceType: "regulatory_text",
+      title: "合成监管文件",
+      content: "《监管办法》",
+    };
+    const officialSource: SourceUnit = {
+      sourceId: "OFF-TASK7",
+      sourceType: "official_interpretation",
+      title: "合成官方解读",
+      content: "供应安排比例为百分之十。",
+    };
+    const regulatoryUnit: ParsedSourceUnit = {
+      sourceId: "REG-TASK7",
+      sourceType: "regulatory_text",
+      page: 1,
+      article: null,
+      paragraphIndex: 0,
+      text: "《监管办法》",
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const officialUnit: ParsedSourceUnit = {
+      sourceId: "OFF-TASK7",
+      sourceType: "official_interpretation",
+      page: null,
+      article: null,
+      paragraphIndex: 0,
+      text: officialSource.content,
+      extractionMethod: "docx_xml",
+      confidence: 1,
+    };
+    const parent: Finding = {
+      ...finding(),
+      findingId: "EXTRACTED-TITLE",
+      category: "pending_confirmation:document_identity:document_title",
+      statement:
+        "待确认的文件身份提取（文件名称）：原文摘录“《监管办法》”。该提取仅保留证据，不构成已确认的文件身份、效力、适用性或其他法律结论，须经人工合规复核后方可确认。",
+      claimType: "pending_confirmation",
+      sourceAnchors: [
+        {
+          sourceId: "REG-TASK7",
+          sourceType: "regulatory_text",
+          page: 1,
+          article: null,
+          paragraphIndex: 0,
+          quote: "《监管办法》",
+        },
+      ],
+    };
+    const official: Finding = {
+      ...finding(),
+      findingId: "OFFICIAL-EXCERPT",
+      category: "official_context:implementation_guidance",
+      statement: `官方解读材料摘录（实施说明）：“${officialSource.content}”。该摘录仅作为官方说明材料，不建立或覆盖监管文件效力、适用性或其他法律结论，须经人工合规复核。`,
+      claimType: "official_explanation",
+      sourceAnchors: [
+        {
+          sourceId: "OFF-TASK7",
+          sourceType: "official_interpretation",
+          page: null,
+          article: null,
+          paragraphIndex: 0,
+          quote: officialSource.content,
+        },
+      ],
+      inferenceParents: [parent.findingId],
+    };
+    const indexFor = (pairing?: OfficialPrimarySourceIds) =>
+      createSourceIndex({
+        sources: [regulatorySource, officialSource],
+        parsedUnits: [regulatoryUnit, officialUnit],
+        findings: [parent, official],
+        officialPrimarySourceIds: pairing,
+      });
+
+    const valid = resultFor(
+      official,
+      indexFor({
+        "OFF-TASK7": ["REG-TASK7"],
+      }),
+    );
+    expect(valid.quote_match.passed).toBe(true);
+    expect(valid.modal_strength.passed).toBe(true);
+    expect(valid.numbers.passed).toBe(true);
+    expect(valid.inference_parent.passed).toBe(true);
+    expect(resultFor(official, indexFor()).inference_parent.passed).toBe(false);
+    expect(
+      resultFor(official, indexFor({ "OFF-TASK7": ["OTHER-REGULATORY"] }))
+        .inference_parent.passed,
+    ).toBe(false);
   });
 
   test("always returns the complete stable rule set with messages and severities", () => {
