@@ -998,8 +998,9 @@ const executionPlanFingerprint = async (
   );
 };
 
-const stageForPriorFinding = (
-  finding: ReanalysisDirective["priorFindings"][number],
+/** Single Task 7 category-to-stage mapping used by live and restored runs. */
+export const analysisStageForFinding = (
+  finding: Pick<Finding, "category" | "claimType">,
 ): AnalysisStage => {
   if (finding.category === "atomic_requirement") return "atomic_clauses";
   if (finding.category.startsWith("pending_confirmation:atomic_conflict"))
@@ -1018,6 +1019,98 @@ const stageForPriorFinding = (
   )
     return "institution_impact";
   return "key_matters";
+};
+
+interface ReanalysisAuthorization {
+  readonly targetFindingIds: readonly string[];
+  readonly allowedStages: readonly AnalysisStage[];
+  readonly allowedSourceIds: readonly string[];
+}
+
+const assertAuthorizedSources = (
+  sourceIds: readonly string[],
+  authorization: ReanalysisAuthorization,
+  label: string,
+): void => {
+  const allowedSources = new Set(authorization.allowedSourceIds);
+  if (
+    sourceIds.length === 0 ||
+    sourceIds.some((sourceId) => !allowedSources.has(sourceId))
+  )
+    throw new Error(`${label}超出重分析授权来源范围`);
+};
+
+/** Authorizes an existing target against the same scope used by live Task 7. */
+export const assertReanalysisTargetAuthorized = (
+  target: Pick<Finding, "category" | "claimType"> & {
+    readonly sourceIds: readonly string[];
+  },
+  authorization: ReanalysisAuthorization,
+): void => {
+  if (!authorization.allowedStages.includes(analysisStageForFinding(target)))
+    throw new Error("重分析目标类别与授权阶段不一致");
+  assertAuthorizedSources(target.sourceIds, authorization, "重分析目标来源");
+};
+
+/**
+ * Applies the closed live Task 7 stage/source policy to a replacement artifact
+ * set. Persistence restore calls this same helper so a re-sealed payload cannot
+ * gain authority by widening version-level source/scope metadata.
+ */
+export const assertReanalysisArtifactsAuthorized = (
+  artifacts: Pick<
+    AnalysisDraft,
+    "findings" | "atomicRequirements" | "inferenceRelationships" | "conflicts"
+  >,
+  authorization: ReanalysisAuthorization,
+): void => {
+  const targetIds = [...authorization.targetFindingIds].sort();
+  const actualFindingIds = artifacts.findings
+    .map(({ findingId }) => findingId)
+    .sort();
+  if (targetIds.join("\u0000") !== actualFindingIds.join("\u0000"))
+    throw new Error("重分析结果必须精确覆盖授权目标，且不得包含额外结论");
+
+  const allowedStages = new Set(authorization.allowedStages);
+  for (const finding of artifacts.findings) {
+    if (!allowedStages.has(analysisStageForFinding(finding)))
+      throw new Error("重分析结果类别超出授权阶段范围");
+    assertAuthorizedSources(
+      finding.sourceAnchors.map(({ sourceId }) => sourceId),
+      authorization,
+      "重分析结果锚点",
+    );
+  }
+  for (const requirement of artifacts.atomicRequirements) {
+    if (
+      !targetIds.includes(requirement.findingId) ||
+      !allowedStages.has("atomic_clauses")
+    )
+      throw new Error("重分析原子要求超出授权目标或阶段范围");
+    assertAuthorizedSources(
+      requirement.sourceAnchors.map(({ sourceId }) => sourceId),
+      authorization,
+      "重分析原子要求锚点",
+    );
+  }
+  for (const relationship of artifacts.inferenceRelationships) {
+    if (!allowedStages.has("institution_impact"))
+      throw new Error("重分析推导关系超出授权阶段范围");
+    assertAuthorizedSources(
+      relationship.sourceAnchors.map(({ sourceId }) => sourceId),
+      authorization,
+      "重分析推导关系锚点",
+    );
+  }
+  for (const conflict of artifacts.conflicts) {
+    if (!allowedStages.has("document_identity"))
+      throw new Error("重分析来源冲突超出授权阶段范围");
+    assertAuthorizedSources(
+      conflict.sourceAnchors.map(({ sourceId }) => sourceId),
+      authorization,
+      "重分析来源冲突锚点",
+    );
+  }
 };
 
 const normalizeReanalysisDirective = (
@@ -1060,16 +1153,9 @@ const normalizeReanalysisDirective = (
     };
     if (prior.findingHash !== evidenceDigest(summary))
       throw new Error("重分析先前结论摘要哈希无效");
-    if (
-      prior.sourceIds.length === 0 ||
-      new Set(prior.sourceIds).size !== prior.sourceIds.length ||
-      prior.sourceIds.some(
-        (sourceId) => !directive.allowedSourceIds.includes(sourceId),
-      )
-    )
-      throw new Error("重分析先前结论来源超出授权范围");
-    if (!directive.allowedStages.includes(stageForPriorFinding(prior)))
-      throw new Error("重分析目标类别与授权阶段不一致");
+    if (new Set(prior.sourceIds).size !== prior.sourceIds.length)
+      throw new Error("重分析先前结论来源不得重复");
+    assertReanalysisTargetAuthorized(prior, directive);
     if (
       (prior.category === "atomic_requirement") !==
       (prior.atomicKind === "atomic")
@@ -2139,16 +2225,13 @@ const finalizeDraft = (
     completed: true,
   });
   if (directive) {
-    const actualIds = draft.findings.map(({ findingId }) => findingId).sort();
-    const expectedIds = [...directive.targetFindingIds].sort();
-    if (actualIds.join("\u0000") !== expectedIds.join("\u0000"))
-      throw new Error("重分析结果必须精确覆盖授权目标，且不得包含额外结论");
-    const allowedSources = new Set(directive.allowedSourceIds);
+    assertReanalysisArtifactsAuthorized(draft, directive);
     const priorById = new Map(
       directive.priorFindings.map((finding) => [finding.findingId, finding]),
     );
     for (const finding of draft.findings) {
-      const prior = priorById.get(finding.findingId)!;
+      const prior = priorById.get(finding.findingId);
+      if (!prior) throw new Error("重分析结果包含未授权目标");
       if (finding.category !== prior.category)
         throw new Error("重分析结果类别违反目标精确约束");
       if (finding.claimType !== prior.claimType)
@@ -2159,22 +2242,6 @@ const finalizeDraft = (
           : "non_atomic") !== prior.atomicKind
       )
         throw new Error("重分析结果原子类型违反目标精确约束");
-      if (
-        finding.sourceAnchors.length === 0 ||
-        finding.sourceAnchors.some(
-          ({ sourceId }) => !allowedSources.has(sourceId),
-        )
-      )
-        throw new Error("重分析结果锚点超出授权来源范围");
-    }
-    for (const requirement of draft.atomicRequirements) {
-      if (
-        !expectedIds.includes(requirement.findingId) ||
-        requirement.sourceAnchors.some(
-          ({ sourceId }) => !allowedSources.has(sourceId),
-        )
-      )
-        throw new Error("重分析原子要求超出授权目标或来源范围");
     }
   }
   return draft;

@@ -471,6 +471,316 @@ it("restores current findings with append-only audit and attestation records and
     ),
   ).rejects.toThrow(/provenance|指令|类别|category|重分析/);
 
+  const changedAtomicFinding = {
+    ...originalVersion.findings[0],
+    statement: "机构应建立健全制度",
+  };
+  const changedAtomicRequirement = {
+    ...originalVersion.atomicRequirements[0],
+    object: "健全制度",
+  };
+  const wrongStageV2 = createAnalysisVersion({
+    ...originalVersionContent,
+    versionId: "V2",
+    parentVersionHash: originalVersion.versionHash,
+    createdAt: "2026-08-15T03:46:00.000Z",
+    reason: "错误阶段重新封签",
+    findings: [changedAtomicFinding],
+    atomicRequirements: [changedAtomicRequirement],
+    scope: ["atomic_clauses", "key_matters"],
+    reanalysisProvenance: createReanalysisProvenance({
+      requestId: evidenceDigest("wrong-stage-request"),
+      reason: "错误阶段重新封签",
+      targetFindingIds: ["F1"],
+      priorTargets: [
+        {
+          findingId: "F1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "atomic",
+        },
+      ],
+      allowedSourceIds: ["REG-A"],
+      allowedStages: ["key_matters"],
+      replacedDescendantIds: [],
+      replacement: {
+        findings: [changedAtomicFinding],
+        atomicRequirements: [changedAtomicRequirement],
+        inferenceRelationships: [],
+        conflicts: [],
+      },
+      parentVersionHash: originalVersion.versionHash,
+    }),
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: { ...saved.project, findings: [changedAtomicFinding] },
+        atomicRequirements: [changedAtomicRequirement],
+        reviewAudits: [],
+        reviewActions: [],
+        ruleReviewAttestations: [],
+        analysisVersions: [originalVersion, wrongStageV2],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/阶段|stage|provenance|授权/);
+
+  const sourceB = {
+    sourceId: "REG-B",
+    sourceType: "regulatory_text" as const,
+    title: "乙办法",
+    content: "第二条 机构应报告事项",
+  };
+  const unitB = {
+    unitId: "U-B",
+    sourceId: "REG-B",
+    sourceType: "regulatory_text" as const,
+    page: null,
+    article: "第二条",
+    paragraphIndex: 0,
+    text: sourceB.content,
+    extractionMethod: "plain_text" as const,
+    confidence: 1,
+  };
+  const parseResultB = {
+    fileHash: "b".repeat(64),
+    source: sourceB,
+    pageCount: null,
+    successfulPages: [],
+    failedPages: [],
+    units: [unitB],
+    ocrReviews: [],
+    anchors: buildAnchors([unitB]),
+    quality: {
+      totalCharacters: sourceB.content.length,
+      parsedUnitCount: 1,
+      failedPageCount: 0,
+      lowTextPages: [],
+      extractionCoverage: 1,
+      ocrFailedPages: [],
+      finalizationBlocked: false,
+    },
+  };
+  const wrongPriorSourceV2 = createAnalysisVersion({
+    ...originalVersionContent,
+    versionId: "V2",
+    parentVersionHash: originalVersion.versionHash,
+    createdAt: "2026-08-15T03:47:00.000Z",
+    reason: "错误来源重新封签",
+    findings: [changedAtomicFinding],
+    atomicRequirements: [changedAtomicRequirement],
+    sourceIds: ["REG-A", "REG-B"],
+    reanalysisProvenance: createReanalysisProvenance({
+      requestId: evidenceDigest("wrong-source-request"),
+      reason: "错误来源重新封签",
+      targetFindingIds: ["F1"],
+      priorTargets: [
+        {
+          findingId: "F1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "atomic",
+        },
+      ],
+      allowedSourceIds: ["REG-B"],
+      allowedStages: ["atomic_clauses"],
+      replacedDescendantIds: [],
+      replacement: {
+        findings: [changedAtomicFinding],
+        atomicRequirements: [changedAtomicRequirement],
+        inferenceRelationships: [],
+        conflicts: [],
+      },
+      parentVersionHash: originalVersion.versionHash,
+    }),
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          sourceUnits: [source, sourceB],
+          findings: [changedAtomicFinding],
+        },
+        parseResults: [saved.parseResults[0], parseResultB],
+        parsedUnits: [unit, unitB],
+        atomicRequirements: [changedAtomicRequirement],
+        reviewAudits: [],
+        reviewActions: [],
+        ruleReviewAttestations: [],
+        analysisVersions: [originalVersion, wrongPriorSourceV2],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/来源|source|provenance|授权/);
+
+  const keyAnchorB = {
+    sourceId: "REG-B",
+    sourceType: "regulatory_text" as const,
+    page: null,
+    article: "第二条",
+    paragraphIndex: 0,
+    quote: "机构应报告事项",
+  };
+  const priorAtomicFindingB = {
+    ...originalVersion.findings[0],
+    statement: "机构应报告事项",
+    sourceAnchors: [keyAnchorB],
+  };
+  const priorAtomicRequirementB = {
+    ...originalVersion.atomicRequirements[0],
+    action: "报告",
+    object: "事项",
+    sourceAnchors: [keyAnchorB],
+  };
+  const sourceScopedV1 = createAnalysisVersion({
+    ...originalVersionContent,
+    findings: [priorAtomicFindingB],
+    atomicRequirements: [priorAtomicRequirementB],
+    sourceIds: ["REG-A", "REG-B"],
+  });
+  const unauthorizedReplacementV2 = createAnalysisVersion({
+    ...originalVersionContent,
+    versionId: "V2",
+    parentVersionHash: sourceScopedV1.versionHash,
+    createdAt: "2026-08-15T03:47:30.000Z",
+    reason: "替换工件来源越权重新封签",
+    findings: [changedAtomicFinding],
+    atomicRequirements: [changedAtomicRequirement],
+    sourceIds: ["REG-A", "REG-B"],
+    reanalysisProvenance: createReanalysisProvenance({
+      requestId: evidenceDigest("replacement-source-request"),
+      reason: "替换工件来源越权重新封签",
+      targetFindingIds: ["F1"],
+      priorTargets: [
+        {
+          findingId: "F1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "atomic",
+        },
+      ],
+      allowedSourceIds: ["REG-B"],
+      allowedStages: ["atomic_clauses"],
+      replacedDescendantIds: [],
+      replacement: {
+        findings: [changedAtomicFinding],
+        atomicRequirements: [changedAtomicRequirement],
+        inferenceRelationships: [],
+        conflicts: [],
+      },
+      parentVersionHash: sourceScopedV1.versionHash,
+    }),
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          sourceUnits: [source, sourceB],
+          findings: [changedAtomicFinding],
+        },
+        parseResults: [saved.parseResults[0], parseResultB],
+        parsedUnits: [unit, unitB],
+        atomicRequirements: [changedAtomicRequirement],
+        reviewAudits: [],
+        reviewActions: [],
+        ruleReviewAttestations: [],
+        analysisVersions: [sourceScopedV1, unauthorizedReplacementV2],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/替换|锚点|来源|source|provenance|授权/);
+
+  const keyFindingB = {
+    ...originalVersion.findings[0],
+    findingId: "KEY-B",
+    category: "key_matter:core_requirement",
+    statement: "机构应报告事项",
+    sourceAnchors: [keyAnchorB],
+  };
+  const mixedV1 = createAnalysisVersion({
+    ...originalVersionContent,
+    projectId: "P-MIXED-AUTH",
+    findings: [originalVersion.findings[0], keyFindingB],
+    atomicRequirements: [originalVersion.atomicRequirements[0]],
+    replacedFindingIds: ["F1", "KEY-B"],
+    sourceIds: ["REG-A", "REG-B"],
+    scope: ["atomic_clauses", "key_matters"],
+  });
+  const changedKeyFindingB = {
+    ...keyFindingB,
+    statement: "机构应准确报告事项",
+  };
+  const mixedReplacement = {
+    findings: [changedAtomicFinding, changedKeyFindingB],
+    atomicRequirements: [changedAtomicRequirement],
+    inferenceRelationships: [],
+    conflicts: [],
+  };
+  const mixedV2 = createAnalysisVersion({
+    ...originalVersionContent,
+    projectId: "P-MIXED-AUTH",
+    versionId: "V2",
+    parentVersionHash: mixedV1.versionHash,
+    createdAt: "2026-08-15T03:48:00.000Z",
+    reason: "双来源双目标重分析",
+    ...mixedReplacement,
+    replacedFindingIds: ["F1", "KEY-B"],
+    sourceIds: ["REG-A", "REG-B"],
+    scope: ["atomic_clauses", "key_matters"],
+    reanalysisProvenance: createReanalysisProvenance({
+      requestId: evidenceDigest("mixed-source-request"),
+      reason: "双来源双目标重分析",
+      targetFindingIds: ["F1", "KEY-B"],
+      priorTargets: [
+        {
+          findingId: "F1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "atomic",
+        },
+        {
+          findingId: "KEY-B",
+          category: "key_matter:core_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "non_atomic",
+        },
+      ],
+      allowedSourceIds: ["REG-A", "REG-B"],
+      allowedStages: ["atomic_clauses", "key_matters"],
+      replacedDescendantIds: [],
+      replacement: mixedReplacement,
+      parentVersionHash: mixedV1.versionHash,
+    }),
+  });
+  const mixedSession = sealWorkflowSession({
+    ...saved,
+    revision: 0,
+    project: {
+      ...saved.project,
+      projectId: "P-MIXED-AUTH",
+      sourceUnits: [source, sourceB],
+      findings: [changedAtomicFinding, changedKeyFindingB],
+    },
+    parseResults: [saved.parseResults[0], parseResultB],
+    parsedUnits: [unit, unitB],
+    atomicRequirements: [changedAtomicRequirement],
+    reviewAudits: [],
+    reviewActions: [],
+    ruleReviewAttestations: [],
+    analysisVersions: [mixedV1, mixedV2],
+  });
+  await expect(
+    workflowSessionRepository.save(mixedSession, 0),
+  ).resolves.toEqual(
+    expect.objectContaining({ project: mixedSession.project }),
+  );
+
   const officialSource = {
     sourceId: "OFF-A",
     sourceType: "official_interpretation" as const,

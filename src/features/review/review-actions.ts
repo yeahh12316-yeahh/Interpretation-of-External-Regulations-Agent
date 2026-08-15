@@ -11,6 +11,7 @@ import type {
 import {
   AnalysisArtifactsSchema,
   AtomicRequirementSchema,
+  analysisStageForFinding as task7AnalysisStageForFinding,
 } from "../analysis/skill-orchestrator";
 import { evidenceDigest, stableValue } from "../evidence/evidence-hash";
 import {
@@ -781,25 +782,8 @@ const uniqueNonEmpty = (
   return values;
 };
 
-export const analysisStageForFinding = (finding: Finding): AnalysisStage => {
-  if (finding.category === "atomic_requirement") return "atomic_clauses";
-  if (finding.category.startsWith("pending_confirmation:atomic_conflict"))
-    return "atomic_clauses";
-  if (
-    finding.category.startsWith("document_identity:") ||
-    finding.category.startsWith("pending_confirmation:document_identity:") ||
-    finding.category.startsWith("official_context:") ||
-    finding.category.startsWith("pending_confirmation:file_profile") ||
-    finding.category.startsWith("pending_confirmation:source_conflict")
-  )
-    return "document_identity";
-  if (
-    finding.claimType === "ai_inference" ||
-    finding.category.startsWith("institution_impact")
-  )
-    return "institution_impact";
-  return "key_matters";
-};
+/** Compatibility export backed by Task 7's single authoritative mapping. */
+export const analysisStageForFinding = task7AnalysisStageForFinding;
 
 export const returnForReanalysis = (
   state: ReviewWorkflowState,

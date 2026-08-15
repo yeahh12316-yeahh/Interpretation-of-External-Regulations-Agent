@@ -7,6 +7,8 @@ import {
   AtomicRequirementSchema,
   InferenceRelationshipSchema,
   SourceConflictSchema,
+  assertReanalysisArtifactsAuthorized,
+  assertReanalysisTargetAuthorized,
 } from "../features/analysis/skill-orchestrator";
 import type { ParseResult } from "../features/parsing/parse-document";
 import { buildAnchors } from "../features/parsing/build-anchors";
@@ -652,6 +654,23 @@ const parseSession = (value: unknown): WorkflowSession => {
             replaced.has(regulatoryFindingId) ||
             replaced.has(interpretationFindingId),
         );
+      if (provenance) {
+        for (const findingId of version.replacedFindingIds) {
+          const prior = previousById.get(findingId);
+          if (!prior) continue;
+          assertReanalysisTargetAuthorized(
+            {
+              category: prior.category,
+              claimType: prior.claimType,
+              sourceIds: [
+                ...new Set(prior.sourceAnchors.map(({ sourceId }) => sourceId)),
+              ],
+            },
+            provenance,
+          );
+        }
+        assertReanalysisArtifactsAuthorized(replacementArtifacts, provenance);
+      }
       if (
         !provenance ||
         provenance.parentVersionHash !== priorVersion.versionHash ||
