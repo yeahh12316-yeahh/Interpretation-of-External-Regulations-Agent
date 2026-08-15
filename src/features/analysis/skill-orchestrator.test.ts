@@ -183,12 +183,14 @@ describe("runAnalysis", () => {
             findingId: priorFinding.findingId,
             category: priorFinding.category,
             claimType: priorFinding.claimType,
+            atomicKind: "atomic",
             statement: priorFinding.statement,
             sourceIds: ["REG-1"],
             findingHash: evidenceDigest({
               findingId: priorFinding.findingId,
               category: priorFinding.category,
               claimType: priorFinding.claimType,
+              atomicKind: "atomic",
               statement: priorFinding.statement,
               sourceIds: ["REG-1"],
             }),
@@ -206,6 +208,14 @@ describe("runAnalysis", () => {
     );
     expect(draft.runs[0]).toMatchObject({
       reanalysisTargetFindingIds: ["REQ-1"],
+      reanalysisTargetBindings: [
+        {
+          findingId: "REQ-1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "atomic",
+        },
+      ],
     });
   });
 
@@ -228,12 +238,14 @@ describe("runAnalysis", () => {
           findingId: "REQ-1",
           category: "atomic_requirement",
           claimType: "regulatory_fact" as const,
+          atomicKind: "atomic" as const,
           statement: priorFinding.statement,
           sourceIds: ["REG-1"],
           findingHash: evidenceDigest({
             findingId: priorFinding.findingId,
             category: priorFinding.category,
             claimType: priorFinding.claimType,
+            atomicKind: "atomic",
             statement: priorFinding.statement,
             sourceIds: ["REG-1"],
           }),
@@ -285,6 +297,90 @@ describe("runAnalysis", () => {
         reanalysisDirective: directive,
       }),
     ).rejects.toThrow(/覆盖|目标/);
+  });
+
+  it("rejects same-stage category and claim-type drift during targeted reanalysis", async () => {
+    const keyAnchor = anchor();
+    const priorKey = {
+      findingId: "KEY-1",
+      category: "key_matter:effective_date",
+      claimType: "regulatory_fact" as const,
+      atomicKind: "non_atomic" as const,
+      statement: regulatorySource.content,
+      sourceIds: ["REG-1"],
+    };
+    const keyDirective = {
+      reason: "核对生效日期",
+      targetFindingIds: ["KEY-1"],
+      allowedStages: ["key_matters" as const],
+      allowedSourceIds: ["REG-1"],
+      priorFindings: [{ ...priorKey, findingHash: evidenceDigest(priorKey) }],
+    };
+    const categoryDriftGateway = new RecordingGateway((request) =>
+      request.schemaName === "analysis_key_matters_v1"
+        ? {
+            findings: [
+              {
+                ...baseFinding,
+                findingId: "KEY-1",
+                category: "key_matter:prohibition",
+                statement: regulatorySource.content,
+                claimType: "regulatory_fact",
+                sourceAnchors: [keyAnchor],
+              },
+            ],
+          }
+        : emptyResponse(request),
+    );
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource],
+        gateway: categoryDriftGateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+        reanalysisDirective: keyDirective,
+      }),
+    ).rejects.toThrow(/类别|category|约束/i);
+
+    const atomicPrior = {
+      findingId: "REQ-1",
+      category: "atomic_requirement",
+      claimType: "regulatory_fact" as const,
+      atomicKind: "atomic" as const,
+      statement: "商业银行应当建立数据治理机制",
+      sourceIds: ["REG-1"],
+    };
+    const claimDriftGateway = new RecordingGateway((request) => {
+      const response = successfulResponse(request) as Record<string, unknown>;
+      if (request.schemaName !== "analysis_atomic_clauses_v1") return response;
+      return {
+        ...response,
+        findings: [
+          {
+            ...(response.findings as Array<Record<string, unknown>>)[0],
+            claimType: "pending_confirmation",
+            requiredReview: true,
+          },
+        ],
+      };
+    });
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource],
+        gateway: claimDriftGateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+        reanalysisDirective: {
+          reason: "核对要求",
+          targetFindingIds: ["REQ-1"],
+          allowedStages: ["atomic_clauses"],
+          allowedSourceIds: ["REG-1"],
+          priorFindings: [
+            { ...atomicPrior, findingHash: evidenceDigest(atomicPrior) },
+          ],
+        },
+      }),
+    ).rejects.toThrow(/claimType|主张类型|约束/i);
   });
 
   it("runs stages in order, preserves atomic/inference provenance, and records restart metadata", async () => {

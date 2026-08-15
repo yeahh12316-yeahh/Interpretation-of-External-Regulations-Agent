@@ -312,6 +312,7 @@ export function WorkflowShell({
       },
       atomicRequirements: [],
       reviewAudits: [],
+      reviewActions: [],
       ruleReviewAttestations: [],
       analysisVersions: [],
       pendingReanalysis: null,
@@ -349,6 +350,7 @@ export function WorkflowShell({
       parseResults: value.parseResults,
       atomicRequirements: value.atomicRequirements,
       reviewAudits: value.reviewAudits,
+      reviewActions: value.reviewActions,
       ruleReviewAttestations: value.ruleReviewAttestations,
       analysisVersions: value.analysisVersions,
       pendingReanalysis: value.pendingReanalysis,
@@ -458,6 +460,8 @@ export function WorkflowShell({
         ...completeReanalysis(current, {
           findings: draft.findings,
           atomicRequirements: draft.atomicRequirements,
+          inferenceRelationships: draft.inferenceRelationships,
+          conflicts: draft.conflicts,
         }),
       });
       setMessage({ kind: "status", text: "定向重分析完成，已生成新版本" });
@@ -474,6 +478,7 @@ export function WorkflowShell({
       atomicRequirements: draft.atomicRequirements,
       selectedFindingId: draft.findings[0]?.findingId ?? null,
       reviewAudits: [],
+      reviewActions: [],
       ruleReviewAttestations: [],
       analysisVersions: [
         ...current.analysisVersions,
@@ -486,6 +491,8 @@ export function WorkflowShell({
           reason: "监管分析",
           findings: draft.findings,
           atomicRequirements: draft.atomicRequirements,
+          inferenceRelationships: draft.inferenceRelationships,
+          conflicts: draft.conflicts,
           replacedFindingIds: draft.findings.map(({ findingId }) => findingId),
           sourceIds: current.project.sourceUnits.map(
             ({ sourceId }) => sourceId,

@@ -2,7 +2,12 @@ import { z } from "zod";
 
 import type { Project } from "../domain/project";
 import { FindingSchema, ProjectSchema } from "../domain/schemas";
-import { AtomicRequirementSchema } from "../features/analysis/skill-orchestrator";
+import {
+  AnalysisArtifactsSchema,
+  AtomicRequirementSchema,
+  InferenceRelationshipSchema,
+  SourceConflictSchema,
+} from "../features/analysis/skill-orchestrator";
 import type { ParseResult } from "../features/parsing/parse-document";
 import { buildAnchors } from "../features/parsing/build-anchors";
 import { projectDatabase } from "../features/projects/db";
@@ -18,7 +23,11 @@ import {
   RuleReviewAttestationsSchema,
   ruleReviewBinding,
 } from "../features/evidence/review-attestation";
-import { analysisVersionHash } from "../features/review/review-actions";
+import {
+  analysisStageForFinding,
+  analysisVersionHash,
+  replayReviewedFindings,
+} from "../features/review/review-actions";
 import type { ReviewWorkflowState } from "../features/review/review-actions";
 
 const SourceTypeSchema = z.enum(["regulatory_text", "official_interpretation"]);
@@ -185,6 +194,35 @@ const ReviewAuditSchema = z
     reviewedAt: z.string().datetime(),
   })
   .strict();
+const ReviewActionSchema = z.discriminatedUnion("action", [
+  z
+    .object({
+      actionId: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+      action: z.enum(["confirm", "soft_delete"]),
+      findingId: z.string().min(1),
+      beforeSnapshot: FindingSchema,
+      beforeHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+      afterSnapshot: FindingSchema,
+      afterHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+      reviewer: z.string().min(1),
+      reason: z.string().min(1),
+      actedAt: z.string().datetime(),
+    })
+    .strict(),
+  z
+    .object({
+      actionId: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+      action: z.literal("add_human"),
+      findingId: z.string().min(1),
+      beforeHash: z.null(),
+      afterSnapshot: FindingSchema,
+      afterHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+      reviewer: z.string().min(1),
+      reason: z.string().min(1),
+      actedAt: z.string().datetime(),
+    })
+    .strict(),
+]);
 const AnalysisStageSchema = z.enum([
   "document_identity",
   "atomic_clauses",
@@ -201,9 +239,11 @@ const AnalysisVersionSchema = z
     reason: z.string().min(1),
     findings: z.array(FindingSchema),
     atomicRequirements: z.array(AtomicRequirementSchema),
+    inferenceRelationships: z.array(InferenceRelationshipSchema),
+    conflicts: z.array(SourceConflictSchema),
     replacedFindingIds: z.array(z.string().min(1)).min(1),
-    sourceIds: z.array(z.string().min(1)),
-    scope: z.array(AnalysisStageSchema),
+    sourceIds: z.array(z.string().min(1)).min(1),
+    scope: z.array(AnalysisStageSchema).min(1),
   })
   .strict();
 const ReanalysisRequestSchema = z
@@ -229,6 +269,7 @@ const ReanalysisRequestSchema = z
               "pending_confirmation",
               "human_judgment",
             ]),
+            atomicKind: z.enum(["atomic", "non_atomic"]),
             statement: z.string().min(1),
             sourceIds: z.array(z.string().min(1)).min(1),
             findingHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
@@ -236,6 +277,7 @@ const ReanalysisRequestSchema = z
           .strict(),
       )
       .min(1),
+    requestHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
   })
   .strict();
 
@@ -254,6 +296,7 @@ const WorkflowSessionSchema = z
     parsedUnits: z.array(ParsedUnitSchema),
     atomicRequirements: z.array(AtomicRequirementSchema),
     reviewAudits: z.array(ReviewAuditSchema),
+    reviewActions: z.array(ReviewActionSchema),
     ruleReviewAttestations: RuleReviewAttestationsSchema,
     analysisVersions: z.array(AnalysisVersionSchema),
     pendingReanalysis: ReanalysisRequestSchema.nullable(),
@@ -301,6 +344,7 @@ export const createEmptyWorkflowSession = (
     parsedUnits: [],
     atomicRequirements: [],
     reviewAudits: [],
+    reviewActions: [],
     ruleReviewAttestations: [],
     analysisVersions: [],
     pendingReanalysis: null,
@@ -406,19 +450,42 @@ const parseSession = (value: unknown): WorkflowSession => {
 
   const versionIds = new Set<string>();
   let parentVersionHash: string | null = null;
-  for (const version of session.analysisVersions) {
+  let previousVersion: (typeof session.analysisVersions)[number] | undefined;
+  for (const [versionIndex, version] of session.analysisVersions.entries()) {
     const { versionHash: _versionHash, ...unhashed } = version;
+    const artifacts = AnalysisArtifactsSchema.safeParse({
+      findings: version.findings,
+      atomicRequirements: version.atomicRequirements,
+      inferenceRelationships: version.inferenceRelationships,
+      conflicts: version.conflicts,
+    });
+    const artifactAnchors = [
+      ...version.findings.flatMap(({ sourceAnchors }) => sourceAnchors),
+      ...version.atomicRequirements.flatMap(
+        ({ sourceAnchors }) => sourceAnchors,
+      ),
+      ...version.inferenceRelationships.flatMap(
+        ({ sourceAnchors }) => sourceAnchors,
+      ),
+      ...version.conflicts.flatMap(({ sourceAnchors }) => sourceAnchors),
+    ];
     if (
       versionIds.has(version.versionId) ||
+      version.versionId !== `V${versionIndex + 1}` ||
       version.projectId !== session.project.projectId ||
       version.parentVersionHash !== parentVersionHash ||
       version.versionHash !== analysisVersionHash(unhashed) ||
+      !artifacts.success ||
       new Set(version.sourceIds).size !== version.sourceIds.length ||
       version.sourceIds.some((sourceId) => !sourceIds.has(sourceId)) ||
-      version.atomicRequirements.some(
-        ({ findingId }) =>
-          version.findings.find(({ findingId: id }) => id === findingId)
-            ?.category !== "atomic_requirement",
+      artifactAnchors.some(
+        ({ sourceId }) => !version.sourceIds.includes(sourceId),
+      ) ||
+      version.findings.some(
+        ({ claimType, reviewStatus, revisionRecords }) =>
+          claimType === "human_judgment" ||
+          reviewStatus !== "unreviewed" ||
+          revisionRecords.length !== 0,
       ) ||
       new Set(version.replacedFindingIds).size !==
         version.replacedFindingIds.length ||
@@ -428,92 +495,103 @@ const parseSession = (value: unknown): WorkflowSession => {
       )
     )
       throw new Error("工作流分析版本哈希、父链、项目或工件绑定无效");
+    const replaced = new Set(version.replacedFindingIds);
+    if (!previousVersion) {
+      if (
+        stableValue([...replaced].sort()) !==
+        stableValue(version.findings.map(({ findingId }) => findingId).sort())
+      )
+        throw new Error("首个分析版本必须声明完整初始 Finding 范围");
+    } else {
+      const priorVersion = previousVersion;
+      const previousById = new Map(
+        priorVersion.findings.map((finding) => [finding.findingId, finding]),
+      );
+      const currentById = new Map(
+        version.findings.map((finding) => [finding.findingId, finding]),
+      );
+      const invalidated = new Set(replaced);
+      let expanded = true;
+      while (expanded) {
+        expanded = false;
+        for (const finding of priorVersion.findings) {
+          if (
+            !invalidated.has(finding.findingId) &&
+            finding.inferenceParents.some((parentId) =>
+              invalidated.has(parentId),
+            )
+          ) {
+            invalidated.add(finding.findingId);
+            expanded = true;
+          }
+        }
+      }
+      const expectedCurrentIds = priorVersion.findings
+        .filter(
+          ({ findingId }) =>
+            !invalidated.has(findingId) || replaced.has(findingId),
+        )
+        .map(({ findingId }) => findingId)
+        .sort();
+      const unchangedAtomic = (
+        findingId: string,
+        atomics: typeof version.atomicRequirements,
+      ) => atomics.filter((item) => item.findingId === findingId);
+      if (
+        version.replacedFindingIds.some(
+          (findingId) =>
+            !previousById.has(findingId) || !currentById.has(findingId),
+        ) ||
+        stableValue([...currentById.keys()].sort()) !==
+          stableValue(expectedCurrentIds) ||
+        version.findings.some(
+          (finding) =>
+            !replaced.has(finding.findingId) &&
+            stableValue(finding) !==
+              stableValue(previousById.get(finding.findingId)),
+        ) ||
+        version.findings.some(
+          (finding) =>
+            !replaced.has(finding.findingId) &&
+            stableValue(
+              unchangedAtomic(finding.findingId, version.atomicRequirements),
+            ) !==
+              stableValue(
+                unchangedAtomic(
+                  finding.findingId,
+                  priorVersion.atomicRequirements,
+                ),
+              ),
+        )
+      )
+        throw new Error("分析版本替换目标、失效后代或未变工件派生无效");
+    }
     versionIds.add(version.versionId);
     parentVersionHash = version.versionHash;
+    previousVersion = version;
   }
+  const latestVersion = session.analysisVersions.at(-1);
+  const replayedFindings = replayReviewedFindings(
+    latestVersion,
+    session.reviewAudits,
+    session.reviewActions,
+  );
   if (
-    session.project.findings.some(
-      (finding) =>
-        finding.claimType !== "human_judgment" &&
-        !session.analysisVersions.some((version) =>
-          version.findings.some(
-            ({ findingId }) => findingId === finding.findingId,
-          ),
-        ),
-    )
+    stableValue(replayedFindings) !== stableValue(session.project.findings) ||
+    stableValue(latestVersion?.atomicRequirements ?? []) !==
+      stableValue(session.atomicRequirements)
   )
-    throw new Error("当前分析结论未绑定任何完整分析版本");
+    throw new Error(
+      "当前结论或原子工件不能由最新分析版本及受控复核日志唯一派生",
+    );
   const findings = new Map(
     session.project.findings.map((finding) => [finding.findingId, finding]),
   );
   if (
     findings.size !== session.project.findings.length ||
-    new Set(
-      session.atomicRequirements.map(({ requirementId }) => requirementId),
-    ).size !== session.atomicRequirements.length ||
-    session.atomicRequirements.some(
-      ({ findingId }) =>
-        findings.get(findingId)?.category !== "atomic_requirement",
-    ) ||
-    session.project.findings.some(
-      (finding) =>
-        finding.category === "atomic_requirement" &&
-        session.atomicRequirements.filter(
-          ({ findingId }) => findingId === finding.findingId,
-        ).length !== 1,
-    )
+    (!latestVersion && session.project.findings.length > 0)
   )
     throw new Error("当前 Finding 与 AtomicRequirement 工件绑定无效");
-  for (const [findingId, finding] of findings) {
-    const chain = session.reviewAudits.filter(
-      (audit) => audit.findingId === findingId,
-    );
-    const original = [...session.analysisVersions]
-      .reverse()
-      .find(({ replacedFindingIds }) => replacedFindingIds.includes(findingId))
-      ?.findings.find(({ findingId: id }) => id === findingId);
-    if (
-      chain.length > 0 &&
-      (!original ||
-        stableValue(chain[0].beforeSnapshot) !== stableValue(original))
-    )
-      throw new Error("首条复核审计未绑定原始分析版本");
-    for (let index = 0; index < chain.length; index += 1) {
-      const audit = chain[index];
-      if (
-        audit.beforeHash !== reviewSnapshotHash(audit.beforeSnapshot) ||
-        audit.afterHash !== reviewSnapshotHash(audit.afterSnapshot) ||
-        audit.beforeHash === audit.afterHash ||
-        (index > 0 &&
-          stableValue(chain[index - 1].afterSnapshot) !==
-            stableValue(audit.beforeSnapshot))
-      )
-        throw new Error("工作流复核审计哈希链无效");
-    }
-    if (
-      chain.length > 0 &&
-      stableValue(chain.at(-1)!.afterSnapshot) !== stableValue(finding)
-    ) {
-      throw new Error("工作流复核审计链未绑定当前结论");
-    }
-    if (
-      finding.claimType !== "human_judgment" &&
-      (finding.reviewStatus === "confirmed" ||
-        finding.reviewStatus === "modified" ||
-        finding.reviewStatus === "deleted") &&
-      chain.length === 0
-    ) {
-      throw new Error("工作流已修订结论缺少审计链");
-    }
-    if (
-      finding.claimType === "human_judgment" &&
-      (finding.reviewStatus !== "confirmed" ||
-        finding.revisionRecords.length === 0)
-    )
-      throw new Error("人工判断缺少结构化复核动作");
-  }
-  if (session.reviewAudits.some((audit) => !findings.has(audit.findingId)))
-    throw new Error("工作流复核审计引用不存在的结论");
 
   const attestationKeys = new Set<string>();
   for (const attestation of session.ruleReviewAttestations) {
@@ -540,16 +618,53 @@ const parseSession = (value: unknown): WorkflowSession => {
 
   if (session.pendingReanalysis) {
     const request = session.pendingReanalysis;
+    const { requestHash: _requestHash, ...requestContent } = request;
+    const invalidated = new Set(request.targetFindingIds);
+    let expanded = true;
+    while (expanded) {
+      expanded = false;
+      for (const finding of session.project.findings) {
+        if (
+          !invalidated.has(finding.findingId) &&
+          finding.inferenceParents.some((parentId) => invalidated.has(parentId))
+        ) {
+          invalidated.add(finding.findingId);
+          expanded = true;
+        }
+      }
+    }
+    const expectedInvalidated = session.project.findings
+      .filter(({ findingId }) => invalidated.has(findingId))
+      .map(({ findingId }) => findingId);
     if (
+      request.requestHash !== evidenceDigest(requestContent) ||
+      session.project.workflowStep !== "analysis" ||
       new Set(request.targetFindingIds).size !==
         request.targetFindingIds.length ||
       request.targetFindingIds.length !== request.priorFindings.length ||
+      new Set(request.sourceIds).size !== request.sourceIds.length ||
+      new Set(request.scope).size !== request.scope.length ||
       request.sourceIds.some((sourceId) => !sourceIds.has(sourceId)) ||
+      stableValue(request.invalidatedFindingIds) !==
+        stableValue(expectedInvalidated) ||
       request.priorFindings.some((prior) => {
         const { findingHash: _hash, ...summary } = prior;
+        const current = findings.get(prior.findingId);
         return (
           prior.findingHash !== evidenceDigest(summary) ||
+          !current ||
+          current.claimType === "human_judgment" ||
           !request.targetFindingIds.includes(prior.findingId) ||
+          current.category !== prior.category ||
+          current.claimType !== prior.claimType ||
+          current.statement !== prior.statement ||
+          (current.category === "atomic_requirement"
+            ? "atomic"
+            : "non_atomic") !== prior.atomicKind ||
+          !request.scope.includes(analysisStageForFinding(current)) ||
+          stableValue([
+            ...new Set(current.sourceAnchors.map(({ sourceId }) => sourceId)),
+          ]) !== stableValue(prior.sourceIds) ||
           prior.sourceIds.some(
             (sourceId) => !request.sourceIds.includes(sourceId),
           )

@@ -275,6 +275,8 @@ it("passes a trusted targeted directive and cancellation clears the request and 
         reason: "首次分析",
         findings: [finding],
         atomicRequirements: [],
+        inferenceRelationships: [],
+        conflicts: [],
         replacedFindingIds: ["F1"],
         sourceIds: ["REG-A"],
         scope: ["key_matters"],

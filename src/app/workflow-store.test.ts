@@ -3,9 +3,12 @@ import { beforeEach, expect, it } from "vitest";
 
 import { projectDatabase } from "../features/projects/db";
 import {
+  analysisVersionHash,
   attestValidationRule,
   confirmFinding,
   createAnalysisVersion,
+  modifyFinding,
+  returnForReanalysis,
 } from "../features/review/review-actions";
 import { buildAnchors } from "../features/parsing/build-anchors";
 import {
@@ -177,6 +180,8 @@ it("restores current findings with append-only audit and attestation records and
             manualVerificationRequired: true,
           },
         ],
+        inferenceRelationships: [],
+        conflicts: [],
         replacedFindingIds: ["F1"],
         sourceIds: ["REG-A"],
         scope: ["atomic_clauses"],
@@ -211,8 +216,120 @@ it("restores current findings with append-only audit and attestation records and
     ],
   };
   await expect(workflowSessionRepository.save(tampered, 0)).rejects.toThrow(
-    /哈希链/,
+    /审计|哈希|派生/,
   );
+
+  const originalVersion = saved.analysisVersions[0];
+  const { versionHash: _originalVersionHash, ...missingAtomicVersionContent } =
+    { ...originalVersion, atomicRequirements: [] };
+  const missingAtomicVersion = {
+    ...missingAtomicVersionContent,
+    versionHash: analysisVersionHash(missingAtomicVersionContent),
+  };
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        analysisVersions: [missingAtomicVersion],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/分析版本|工件/);
+
+  const { versionHash: _v1Hash, ...originalVersionContent } = originalVersion;
+  const v2 = createAnalysisVersion({
+    ...originalVersionContent,
+    versionId: "V2",
+    parentVersionHash: originalVersion.versionHash,
+    createdAt: "2026-08-15T03:00:00.000Z",
+    reason: "重分析",
+    findings: [
+      {
+        ...originalVersion.findings[0],
+        statement: "机构应建立健全制度",
+      },
+    ],
+    atomicRequirements: [
+      {
+        ...originalVersion.atomicRequirements[0],
+        object: "健全制度",
+      },
+    ],
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          findings: [...structuredClone(originalVersion.findings)],
+        },
+        atomicRequirements: structuredClone(originalVersion.atomicRequirements),
+        reviewAudits: [],
+        reviewActions: [],
+        ruleReviewAttestations: [],
+        analysisVersions: [originalVersion, v2],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/最新分析版本|派生/);
+
+  const fakeHuman = {
+    findingId: "H-FAKE",
+    category: "human_review",
+    statement: "伪造人工判断",
+    claimType: "human_judgment" as const,
+    sourceAnchors: [anchor],
+    inferenceParents: [],
+    reviewStatus: "confirmed" as const,
+    requiredReview: true,
+    revisionRecords: [
+      {
+        revisedBy: "伪造人",
+        revisedAt: "2026-08-15T03:30:00.000Z",
+        changeSummary: "仅伪造 revisionRecords",
+      },
+    ],
+  };
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          findings: [...saved.project.findings, fakeHuman],
+        },
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/ReviewAction|派生|复核动作/);
+
+  const pending = returnForReanalysis(
+    { ...saved, ...reviewed },
+    {
+      reason: "重核强度",
+      targetFindingIds: ["F1"],
+      sourceIds: ["REG-A"],
+      scope: ["atomic_clauses"],
+      requestedBy: "复核人",
+      requestedAt: "2026-08-15T03:00:00.000Z",
+    },
+  );
+  const stalePending = modifyFinding(pending, "F1", "机构应建立并维护制度", {
+    reviewer: "复核人",
+    reason: "请求发出后又修改",
+    reviewedAt: "2026-08-15T03:10:00.000Z",
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        ...stalePending,
+        revision: saved.revision,
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/重分析|摘要|目标/);
 
   await expect(
     workflowSessionRepository.save(
@@ -239,7 +356,7 @@ it("restores current findings with append-only audit and attestation records and
       },
       saved.revision,
     ),
-  ).rejects.toThrow(/人工规则确认/);
+  ).rejects.toThrow(/人工规则确认|原子工件|派生/);
 });
 
 it("uses compare-and-swap revisions and rejects stale concurrent saves", async () => {

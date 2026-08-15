@@ -27,6 +27,9 @@ test("production App preserves upload and enforces the five-step browser gate", 
 test("production flow analyzes, reviews, restores and reaches the report gate with a routed HTTPS model", async ({
   page,
 }) => {
+  const apiKey = "playwright-session-key";
+  const browserLogs: string[] = [];
+  page.on("console", (message) => browserLogs.push(message.text()));
   await page.route(
     "https://model.example/v1/chat/completions",
     async (route) => {
@@ -128,7 +131,7 @@ test("production flow analyzes, reviews, restores and reaches the report gate wi
   await page.getByRole("button", { name: "模型接口设置" }).click();
   const settings = page.getByRole("dialog", { name: "模型接口设置" });
   await settings.getByLabel("Base URL").fill("https://model.example/v1");
-  await settings.getByLabel("API Key").fill("playwright-session-key");
+  await settings.getByLabel("API Key").fill(apiKey);
   await settings
     .getByLabel("模型", { exact: true })
     .fill("local-deterministic-model");
@@ -190,4 +193,33 @@ test("production flow analyzes, reviews, restores and reaches the report gate wi
   await expect(page.getByRole("button", { name: "下一步" })).toBeEnabled();
   await page.getByRole("button", { name: "下一步" }).click();
   await expect(page.getByRole("heading", { name: "报告导出" })).toBeVisible();
+  const persistedSurface = await page.evaluate(async () => {
+    const records: unknown[] = [];
+    for (const database of await indexedDB.databases()) {
+      if (!database.name) continue;
+      const opened = await new Promise<IDBDatabase>((resolve, reject) => {
+        const request = indexedDB.open(database.name!);
+        request.onsuccess = () => resolve(request.result);
+        request.onerror = () => reject(request.error);
+      });
+      for (const storeName of [...opened.objectStoreNames]) {
+        const values = await new Promise<unknown[]>((resolve, reject) => {
+          const transaction = opened.transaction(storeName, "readonly");
+          const request = transaction.objectStore(storeName).getAll();
+          request.onsuccess = () => resolve(request.result);
+          request.onerror = () => reject(request.error);
+        });
+        records.push(...values);
+      }
+      opened.close();
+    }
+    return JSON.stringify({
+      indexedDb: records,
+      localStorage: { ...localStorage },
+      url: location.href,
+      reportDom: document.body.textContent,
+    });
+  });
+  expect(persistedSurface).not.toContain(apiKey);
+  expect(browserLogs.join("\n")).not.toContain(apiKey);
 });

@@ -304,6 +304,7 @@ const ReanalysisPriorFindingSchema = z
       "pending_confirmation",
       "human_judgment",
     ]),
+    atomicKind: z.enum(["atomic", "non_atomic"]),
     statement: z.string().min(1),
     sourceIds: z.array(z.string().min(1)).min(1),
     findingHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
@@ -343,6 +344,24 @@ export const AnalysisRunMetadataSchema = z
       .nullable()
       .default(null),
     reanalysisTargetFindingIds: z.array(z.string().min(1)).default([]),
+    reanalysisTargetBindings: z
+      .array(
+        z
+          .object({
+            findingId: z.string().min(1),
+            category: z.string().min(1),
+            claimType: z.enum([
+              "regulatory_fact",
+              "official_explanation",
+              "ai_inference",
+              "pending_confirmation",
+              "human_judgment",
+            ]),
+            atomicKind: z.enum(["atomic", "non_atomic"]),
+          })
+          .strict(),
+      )
+      .default([]),
   })
   .strict();
 
@@ -536,6 +555,199 @@ export const AnalysisDraftSchema = z
   });
 
 export type AnalysisDraft = z.infer<typeof AnalysisDraftSchema>;
+
+const artifactAnchorKey = (anchor: SourceAnchor): string =>
+  JSON.stringify(anchor);
+
+/** Closed, reusable validator for persisted Task 7 analysis artifacts. */
+export const AnalysisArtifactsSchema = z
+  .object({
+    findings: z.array(FindingSchema),
+    atomicRequirements: z.array(AtomicRequirementSchema),
+    inferenceRelationships: z.array(InferenceRelationshipSchema),
+    conflicts: z.array(SourceConflictSchema),
+  })
+  .strict()
+  .superRefine((artifacts, context) => {
+    const findingById = new Map(
+      artifacts.findings.map((finding) => [finding.findingId, finding]),
+    );
+    if (findingById.size !== artifacts.findings.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["findings"],
+        message: "分析版本 Finding ID 必须唯一",
+      });
+    }
+    const requirementIds = new Set(
+      artifacts.atomicRequirements.map(({ requirementId }) => requirementId),
+    );
+    const requirementFindingIds = new Set(
+      artifacts.atomicRequirements.map(({ findingId }) => findingId),
+    );
+    if (
+      requirementIds.size !== artifacts.atomicRequirements.length ||
+      requirementFindingIds.size !== artifacts.atomicRequirements.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["atomicRequirements"],
+        message: "分析版本 AtomicRequirement 必须唯一且与 Finding 一一关联",
+      });
+    }
+    for (const [index, requirement] of artifacts.atomicRequirements.entries()) {
+      const finding = findingById.get(requirement.findingId);
+      const allowedAnchors = new Set(
+        finding?.sourceAnchors.map(artifactAnchorKey) ?? [],
+      );
+      if (
+        finding?.category !== "atomic_requirement" ||
+        requirement.sourceAnchors.some(
+          (anchor) => !allowedAnchors.has(artifactAnchorKey(anchor)),
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["atomicRequirements", index],
+          message: "AtomicRequirement 必须唯一绑定原子 Finding 且锚点不得越界",
+        });
+      }
+    }
+    for (const [index, finding] of artifacts.findings.entries()) {
+      const linked = artifacts.atomicRequirements.filter(
+        ({ findingId }) => findingId === finding.findingId,
+      );
+      if (
+        (finding.category === "atomic_requirement" && linked.length !== 1) ||
+        (finding.category !== "atomic_requirement" && linked.length !== 0) ||
+        (finding.claimType !== "pending_confirmation" &&
+          finding.sourceAnchors.length === 0)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index],
+          message: "Finding 的原子工件或证据锚点不完整",
+        });
+      }
+    }
+    const relationshipIds = new Set(
+      artifacts.inferenceRelationships.map(
+        ({ relationshipId }) => relationshipId,
+      ),
+    );
+    const relationshipTargets = new Set(
+      artifacts.inferenceRelationships.map(({ toFindingId }) => toFindingId),
+    );
+    if (
+      relationshipIds.size !== artifacts.inferenceRelationships.length ||
+      relationshipTargets.size !== artifacts.inferenceRelationships.length
+    ) {
+      context.addIssue({
+        code: "custom",
+        path: ["inferenceRelationships"],
+        message: "推导关系 ID 与目标必须唯一",
+      });
+    }
+    for (const [
+      index,
+      relationship,
+    ] of artifacts.inferenceRelationships.entries()) {
+      const target = findingById.get(relationship.toFindingId);
+      const parents = [...relationship.fromFindingIds].sort();
+      const declared = [...(target?.inferenceParents ?? [])].sort();
+      const parentAnchors = new Set(
+        relationship.fromFindingIds.flatMap(
+          (findingId) =>
+            findingById.get(findingId)?.sourceAnchors.map(artifactAnchorKey) ??
+            [],
+        ),
+      );
+      if (
+        target?.claimType !== "ai_inference" ||
+        relationship.fromFindingIds.some((id) => !findingById.has(id)) ||
+        parents.join("\u0000") !== declared.join("\u0000") ||
+        relationship.sourceAnchors.some(
+          (anchor) => !parentAnchors.has(artifactAnchorKey(anchor)),
+        ) ||
+        target.sourceAnchors.some(
+          (anchor) => !parentAnchors.has(artifactAnchorKey(anchor)),
+        ) ||
+        [...new Set(relationship.sourceAnchors.map(artifactAnchorKey))]
+          .sort()
+          .join("\u0000") !==
+          [...new Set(target.sourceAnchors.map(artifactAnchorKey))]
+            .sort()
+            .join("\u0000")
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["inferenceRelationships", index],
+          message: "推导关系必须完整绑定 AI 结论、父结论与授权锚点",
+        });
+      }
+    }
+    for (const [index, finding] of artifacts.findings.entries()) {
+      if (
+        (finding.claimType === "ai_inference") !==
+        relationshipTargets.has(finding.findingId)
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "inferenceParents"],
+          message: "AI 推导 Finding 与推导关系必须完整一一对应",
+        });
+      }
+    }
+    const conflictIds = new Set(
+      artifacts.conflicts.map(({ conflictId }) => conflictId),
+    );
+    if (conflictIds.size !== artifacts.conflicts.length) {
+      context.addIssue({
+        code: "custom",
+        path: ["conflicts"],
+        message: "来源冲突 ID 必须唯一",
+      });
+    }
+    for (const [index, conflict] of artifacts.conflicts.entries()) {
+      const regulatory = findingById.get(conflict.regulatoryFindingId);
+      const official = findingById.get(conflict.interpretationFindingId);
+      const pending = findingById.get(conflict.conflictId);
+      const conflictParents = [
+        conflict.regulatoryFindingId,
+        conflict.interpretationFindingId,
+      ].sort();
+      const parentAnchorKeys = new Set(
+        [
+          ...(regulatory?.sourceAnchors ?? []),
+          ...(official?.sourceAnchors ?? []),
+        ].map(artifactAnchorKey),
+      );
+      const conflictAnchorKeys = conflict.sourceAnchors.map(artifactAnchorKey);
+      if (
+        regulatory?.claimType !== "regulatory_fact" ||
+        official?.claimType !== "official_explanation" ||
+        pending?.category !== "pending_confirmation:source_conflict" ||
+        [...(pending?.inferenceParents ?? [])].sort().join("\u0000") !==
+          conflictParents.join("\u0000") ||
+        new Set(conflictAnchorKeys).size !== conflictAnchorKeys.length ||
+        conflict.sourceAnchors.some(
+          (anchor) => !parentAnchorKeys.has(artifactAnchorKey(anchor)),
+        ) ||
+        [...new Set(pending?.sourceAnchors.map(artifactAnchorKey) ?? [])]
+          .sort()
+          .join("\u0000") !==
+          [...new Set(conflictAnchorKeys)].sort().join("\u0000")
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["conflicts", index],
+          message: "来源冲突必须完整绑定监管事实、官方解读与待确认 Finding",
+        });
+      }
+    }
+  });
+
+export type AnalysisArtifacts = z.infer<typeof AnalysisArtifactsSchema>;
 
 export interface AnalysisInput {
   sourceUnits: readonly SourceUnit[];
@@ -828,6 +1040,7 @@ const normalizeReanalysisDirective = (
       findingId: prior.findingId,
       category: prior.category,
       claimType: prior.claimType,
+      atomicKind: prior.atomicKind,
       statement: prior.statement,
       sourceIds: prior.sourceIds,
     };
@@ -843,6 +1056,11 @@ const normalizeReanalysisDirective = (
       throw new Error("重分析先前结论来源超出授权范围");
     if (!directive.allowedStages.includes(stageForPriorFinding(prior)))
       throw new Error("重分析目标类别与授权阶段不一致");
+    if (
+      (prior.category === "atomic_requirement") !==
+      (prior.atomicKind === "atomic")
+    )
+      throw new Error("重分析目标原子类型与类别不一致");
     if (prior.claimType === "human_judgment")
       throw new Error("人工判断不得由模型重分析替换");
   }
@@ -864,7 +1082,7 @@ const promptPayload = (
             allowedSourceIds: directive.allowedSourceIds,
             priorFindings: directive.priorFindings,
             outputConstraint:
-              "仅返回 targetFindingIds；不得新增、遗漏或替换为其他 ID。",
+              "仅返回 targetFindingIds；每个 ID 必须保持 priorFindings 中完全相同的 category、claimType 与 atomicKind；不得新增、遗漏或替换为其他 ID。",
           },
         }
       : payload,
@@ -1917,14 +2135,16 @@ const finalizeDraft = (
     );
     for (const finding of draft.findings) {
       const prior = priorById.get(finding.findingId)!;
+      if (finding.category !== prior.category)
+        throw new Error("重分析结果类别违反目标精确约束");
+      if (finding.claimType !== prior.claimType)
+        throw new Error("重分析结果 claimType 违反目标精确约束");
       if (
-        stageForPriorFinding({
-          ...prior,
-          category: finding.category,
-          claimType: finding.claimType,
-        }) !== stageForPriorFinding(prior)
+        (finding.category === "atomic_requirement"
+          ? "atomic"
+          : "non_atomic") !== prior.atomicKind
       )
-        throw new Error("重分析结果类别超出目标授权阶段");
+        throw new Error("重分析结果原子类型违反目标精确约束");
       if (
         finding.sourceAnchors.length === 0 ||
         finding.sourceAnchors.some(
@@ -1987,6 +2207,15 @@ const validateResume = async (
     : null;
   const expectedReanalysisTargetFindingIds =
     normalizedResumeDirective?.targetFindingIds ?? [];
+  const expectedReanalysisTargetBindings =
+    normalizedResumeDirective?.priorFindings.map(
+      ({ findingId, category, claimType, atomicKind }) => ({
+        findingId,
+        category,
+        claimType,
+        atomicKind,
+      }),
+    ) ?? [];
   if (
     checkpoint.inputFingerprint !== inputFingerprint ||
     checkpoint.model !== input.model.trim() ||
@@ -2026,7 +2255,9 @@ const validateResume = async (
       !idsMatch(
         run.reanalysisTargetFindingIds,
         expectedReanalysisTargetFindingIds,
-      )
+      ) ||
+      canonicalJson(run.reanalysisTargetBindings) !==
+        canonicalJson(expectedReanalysisTargetBindings)
     ) {
       throw new Error(
         "重启节点的输入来源已变化，或模型、提示词版本、重分析授权已变化",
@@ -2387,6 +2618,15 @@ export async function runAnalysis(
           reanalysisDirectiveHash,
           reanalysisTargetFindingIds:
             reanalysisDirective?.targetFindingIds ?? [],
+          reanalysisTargetBindings:
+            reanalysisDirective?.priorFindings.map(
+              ({ findingId, category, claimType, atomicKind }) => ({
+                findingId,
+                category,
+                claimType,
+                atomicKind,
+              }),
+            ) ?? [],
         },
       ],
       lastSuccessfulNode: node.nodeId,

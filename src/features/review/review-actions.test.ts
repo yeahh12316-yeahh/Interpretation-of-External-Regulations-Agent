@@ -112,6 +112,7 @@ const state = (): ReviewWorkflowState => ({
   parsedUnits: [parsedUnit],
   atomicRequirements: [atomic],
   reviewAudits: [],
+  reviewActions: [],
   ruleReviewAttestations: [],
   analysisVersions: [
     createAnalysisVersion({
@@ -122,6 +123,19 @@ const state = (): ReviewWorkflowState => ({
       reason: "首次分析",
       findings: structuredClone(project.findings),
       atomicRequirements: [atomic],
+      inferenceRelationships: [
+        {
+          relationshipId: "REL-F2",
+          fromFindingIds: ["F1"],
+          toFindingId: "F2",
+          relationshipType: "potential",
+          sourceAnchors: [anchor],
+          rationale: "由监管要求推导潜在流程影响",
+          confidence: 0.7,
+          manualVerificationRequired: true,
+        },
+      ],
+      conflicts: [],
       replacedFindingIds: project.findings.map(({ findingId }) => findingId),
       sourceIds: ["REG-A"],
       scope: [
@@ -151,6 +165,9 @@ describe("immutable review actions", () => {
       reviewStatus: "confirmed",
     });
     expect(updated.reviewAudits).toHaveLength(1);
+    expect(updated.reviewActions).toEqual([
+      expect.objectContaining({ action: "confirm", findingId: "F1" }),
+    ]);
     expect(updated.reviewAudits[0].beforeSnapshot.statement).toBe(
       "商业银行应建立管理机制",
     );
@@ -194,6 +211,9 @@ describe("immutable review actions", () => {
     expect(updated.reviewAudits[0].beforeSnapshot.reviewStatus).toBe(
       "unreviewed",
     );
+    expect(updated.reviewActions).toEqual([
+      expect.objectContaining({ action: "soft_delete", findingId: "F1" }),
+    ]);
   });
 
   it("adds a human judgment only with real authorized evidence", () => {
@@ -212,6 +232,9 @@ describe("immutable review actions", () => {
       reviewStatus: "confirmed",
       sourceAnchors: [anchor],
     });
+    expect(updated.reviewActions).toEqual([
+      expect.objectContaining({ action: "add_human", findingId: "H1" }),
+    ]);
     expect(() =>
       addHumanJudgment(state(), {
         findingId: "H2",
@@ -227,6 +250,108 @@ describe("immutable review actions", () => {
 });
 
 describe("rule attestations and reanalysis", () => {
+  it("rejects direct reanalysis category, claim-type, and atomic-kind drift", () => {
+    const base = state();
+    const keyFinding = {
+      ...base.project.findings[0],
+      findingId: "KEY-1",
+      category: "key_matter:effective_date",
+    };
+    const keyVersion = createAnalysisVersion({
+      versionId: "V1",
+      projectId: "P1",
+      parentVersionHash: null,
+      createdAt: "2026-08-15T00:00:00.000Z",
+      reason: "首次分析",
+      findings: [keyFinding],
+      atomicRequirements: [],
+      inferenceRelationships: [],
+      conflicts: [],
+      replacedFindingIds: ["KEY-1"],
+      sourceIds: ["REG-A"],
+      scope: ["key_matters"],
+    });
+    const keyState: ReviewWorkflowState = {
+      ...base,
+      project: { ...base.project, findings: [keyFinding] },
+      atomicRequirements: [],
+      analysisVersions: [keyVersion],
+    };
+    const requested = returnForReanalysis(keyState, {
+      reason: "核对生效事项",
+      targetFindingIds: ["KEY-1"],
+      sourceIds: ["REG-A"],
+      scope: ["key_matters"],
+      requestedBy: "复核人",
+      requestedAt: "2026-08-15T03:00:00.000Z",
+    });
+    expect(() =>
+      completeReanalysis(
+        requested,
+        {
+          findings: [{ ...keyFinding, category: "key_matter:prohibition" }],
+          atomicRequirements: [],
+          inferenceRelationships: [],
+          conflicts: [],
+        },
+        "2026-08-15T04:00:00.000Z",
+      ),
+    ).toThrow(/category|类别|约束/);
+    expect(() =>
+      completeReanalysis(
+        requested,
+        {
+          findings: [
+            {
+              ...keyFinding,
+              claimType: "pending_confirmation",
+              requiredReview: true,
+            },
+          ],
+          atomicRequirements: [],
+          inferenceRelationships: [],
+          conflicts: [],
+        },
+        "2026-08-15T04:00:00.000Z",
+      ),
+    ).toThrow(/claimType|主张|约束/);
+  });
+
+  it("rejects incomplete historical analysis artifacts before hashing", () => {
+    expect(() =>
+      createAnalysisVersion({
+        versionId: "V1",
+        projectId: "P1",
+        parentVersionHash: null,
+        createdAt: "2026-08-15T00:00:00.000Z",
+        reason: "缺失原子工件",
+        findings: [structuredClone(project.findings[0])],
+        atomicRequirements: [],
+        inferenceRelationships: [],
+        conflicts: [],
+        replacedFindingIds: ["F1"],
+        sourceIds: ["REG-A"],
+        scope: ["atomic_clauses"],
+      }),
+    ).toThrow(/AtomicRequirement|原子|工件/);
+    expect(() =>
+      createAnalysisVersion({
+        versionId: "V1",
+        projectId: "P1",
+        parentVersionHash: null,
+        createdAt: "2026-08-15T00:00:00.000Z",
+        reason: "缺失推导关系",
+        findings: structuredClone(project.findings),
+        atomicRequirements: [atomic],
+        inferenceRelationships: [],
+        conflicts: [],
+        replacedFindingIds: ["F1", "F2"],
+        sourceIds: ["REG-A"],
+        scope: ["atomic_clauses", "institution_impact"],
+      }),
+    ).toThrow(/推导|关系/);
+  });
+
   it("appends current-bound confirmation/rejection and old attestations become stale after edits", () => {
     const initial = state();
     const validations = validateFinding(
@@ -325,6 +450,8 @@ describe("rule attestations and reanalysis", () => {
           },
         ],
         atomicRequirements: [{ ...atomic, object: "健全管理机制" }],
+        inferenceRelationships: [],
+        conflicts: [],
       },
       "2026-08-15T04:00:00.000Z",
     );
