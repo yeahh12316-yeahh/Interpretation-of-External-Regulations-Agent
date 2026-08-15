@@ -1327,4 +1327,37 @@ describe("calculateQuality", () => {
       canFinalize(project([fact, pending]), pageUnits, [completeOutcome]),
     ).toBe(false);
   });
+
+  test("does not finalize a human judgment whose cited basis has a fabricated locator or quote", () => {
+    const fakeHuman: Finding = {
+      ...fact,
+      findingId: "H-FAKE-EVIDENCE",
+      category: "human_review",
+      statement: "经人工判断，本项目仍需进一步核验。",
+      claimType: "human_judgment",
+      sourceAnchors: [
+        {
+          ...fact.sourceAnchors[0],
+          paragraphIndex: 99,
+          quote: "并不存在的人工判断依据",
+        },
+      ],
+      inferenceParents: [],
+      reviewStatus: "confirmed",
+      requiredReview: true,
+      revisionRecords: [
+        {
+          revisedBy: "reviewer-1",
+          revisedAt: "2026-08-15T08:00:00.000Z",
+          changeSummary: "人工判断",
+        },
+      ],
+    };
+    const session = {
+      project: project([fakeHuman]),
+      parseResults: [completeParseResult],
+    };
+    expect(calculateSessionQuality(session).unsupportedFindingCount).toBe(1);
+    expect(canFinalizeSession(session)).toBe(false);
+  });
 });

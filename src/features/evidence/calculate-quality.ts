@@ -246,7 +246,8 @@ const isReviewed = (
 const isEvidenceFinding = (finding: Finding): boolean =>
   finding.claimType === "regulatory_fact" ||
   finding.claimType === "official_explanation" ||
-  finding.claimType === "ai_inference";
+  finding.claimType === "ai_inference" ||
+  finding.claimType === "human_judgment";
 
 const hasCitation = (finding: Finding, project: Project): boolean => {
   if (finding.sourceAnchors.length === 0) return false;

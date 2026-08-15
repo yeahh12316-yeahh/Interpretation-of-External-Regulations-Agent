@@ -646,7 +646,9 @@ export function validateFinding(
   const protectedClaimText =
     finding.claimType === "official_explanation"
       ? finding.sourceAnchors.map(({ quote }) => quote).join("\n")
-      : finding.statement;
+      : finding.claimType === "human_judgment"
+        ? ""
+        : finding.statement;
   const statementDates = extractDates(protectedClaimText);
   const statementNumbers = extractNumbers(protectedClaimText);
   const protectedAssociationPassed =

@@ -136,6 +136,7 @@ const session = (): ReviewWorkflowState => ({
       replacedFindingIds: project.findings.map(({ findingId }) => findingId),
       sourceIds: ["REG-A"],
       scope: ["atomic_clauses"],
+      reanalysisProvenance: null,
     }),
   ],
   pendingReanalysis: null,

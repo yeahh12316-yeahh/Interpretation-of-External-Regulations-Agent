@@ -144,6 +144,7 @@ const state = (): ReviewWorkflowState => ({
         "atomic_clauses",
         "institution_impact",
       ],
+      reanalysisProvenance: null,
     }),
   ],
   pendingReanalysis: null,
@@ -270,6 +271,7 @@ describe("rule attestations and reanalysis", () => {
       replacedFindingIds: ["KEY-1"],
       sourceIds: ["REG-A"],
       scope: ["key_matters"],
+      reanalysisProvenance: null,
     });
     const keyState: ReviewWorkflowState = {
       ...base,
@@ -332,6 +334,7 @@ describe("rule attestations and reanalysis", () => {
         replacedFindingIds: ["F1"],
         sourceIds: ["REG-A"],
         scope: ["atomic_clauses"],
+        reanalysisProvenance: null,
       }),
     ).toThrow(/AtomicRequirement|原子|工件/);
     expect(() =>
@@ -348,8 +351,55 @@ describe("rule attestations and reanalysis", () => {
         replacedFindingIds: ["F1", "F2"],
         sourceIds: ["REG-A"],
         scope: ["atomic_clauses", "institution_impact"],
+        reanalysisProvenance: null,
       }),
     ).toThrow(/推导|关系/);
+
+    const regulatory = {
+      ...project.findings[0],
+      findingId: "REG-F",
+      category: "key_matter:core_requirement",
+    };
+    const officialAnchor = {
+      ...anchor,
+      sourceId: "OFF-A",
+      sourceType: "official_interpretation" as const,
+      quote: "官方解释材料",
+    };
+    const official = {
+      ...project.findings[0],
+      findingId: "OFF-F",
+      category: "official_context:implementation_guidance",
+      claimType: "official_explanation" as const,
+      sourceAnchors: [officialAnchor],
+      inferenceParents: ["REG-F"],
+    };
+    const pendingConflict = {
+      ...project.findings[0],
+      findingId: "CONFLICT-1",
+      category: "pending_confirmation:source_conflict",
+      statement: "待确认：来源冲突",
+      claimType: "pending_confirmation" as const,
+      sourceAnchors: [anchor, officialAnchor],
+      inferenceParents: ["REG-F", "OFF-F"],
+    };
+    expect(() =>
+      createAnalysisVersion({
+        versionId: "V1",
+        projectId: "P1",
+        parentVersionHash: null,
+        createdAt: "2026-08-15T00:00:00.000Z",
+        reason: "遗漏冲突记录",
+        findings: [regulatory, official, pendingConflict],
+        atomicRequirements: [],
+        inferenceRelationships: [],
+        conflicts: [],
+        replacedFindingIds: ["REG-F", "OFF-F", "CONFLICT-1"],
+        sourceIds: ["REG-A", "OFF-A"],
+        scope: ["document_identity", "key_matters"],
+        reanalysisProvenance: null,
+      }),
+    ).toThrow(/冲突|conflict/i);
   });
 
   it("appends current-bound confirmation/rejection and old attestations become stale after edits", () => {
@@ -457,6 +507,15 @@ describe("rule attestations and reanalysis", () => {
     );
     expect(completed.pendingReanalysis).toBeNull();
     expect(completed.analysisVersions).toHaveLength(2);
+    expect(completed.analysisVersions[1].reanalysisProvenance).toEqual(
+      expect.objectContaining({
+        requestId: requested.pendingReanalysis?.requestHash,
+        targetFindingIds: ["F1"],
+        replacedDescendantIds: ["F2"],
+        allowedSourceIds: ["REG-A"],
+        allowedStages: ["atomic_clauses"],
+      }),
+    );
     expect(
       completed.project.findings.find(({ findingId }) => findingId === "F1")
         ?.statement,
@@ -474,6 +533,51 @@ describe("rule attestations and reanalysis", () => {
     ]);
     expect(completed.reviewAudits).toHaveLength(0);
     expect(completed.ruleReviewAttestations).toHaveLength(0);
+  });
+
+  it("makes a pending request stale after confirm or soft-delete before completion", () => {
+    const requested = returnForReanalysis(state(), {
+      reason: "重新核对要求强度",
+      targetFindingIds: ["F1"],
+      sourceIds: ["REG-A"],
+      scope: ["atomic_clauses"],
+      requestedBy: "合规复核人",
+      requestedAt: "2026-08-15T03:00:00.000Z",
+    });
+    const replacement = {
+      findings: [
+        {
+          ...project.findings[0],
+          statement: "商业银行应建立健全管理机制",
+        },
+      ],
+      atomicRequirements: [{ ...atomic, object: "健全管理机制" }],
+      inferenceRelationships: [],
+      conflicts: [],
+    };
+    const confirmedAfterRequest = confirmFinding(requested, "F1", {
+      ...meta,
+      reviewedAt: "2026-08-15T03:10:00.000Z",
+    });
+    expect(() =>
+      completeReanalysis(
+        confirmedAfterRequest,
+        replacement,
+        "2026-08-15T04:00:00.000Z",
+      ),
+    ).toThrow(/过期|快照|stale/i);
+
+    const deletedAfterRequest = deleteFinding(requested, "F1", {
+      ...meta,
+      reviewedAt: "2026-08-15T03:20:00.000Z",
+    });
+    expect(() =>
+      completeReanalysis(
+        deletedAfterRequest,
+        replacement,
+        "2026-08-15T04:00:00.000Z",
+      ),
+    ).toThrow(/过期|快照|stale/i);
   });
 
   it("rejects incomplete or over-broad reanalysis scope", () => {

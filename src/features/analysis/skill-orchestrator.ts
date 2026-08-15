@@ -745,6 +745,20 @@ export const AnalysisArtifactsSchema = z
         });
       }
     }
+    for (const [index, finding] of artifacts.findings.entries()) {
+      if (
+        finding.category === "pending_confirmation:source_conflict" &&
+        artifacts.conflicts.filter(
+          ({ conflictId }) => conflictId === finding.findingId,
+        ).length !== 1
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index],
+          message: "每个来源冲突待确认 Finding 必须唯一对应一条冲突记录",
+        });
+      }
+    }
   });
 
 export type AnalysisArtifacts = z.infer<typeof AnalysisArtifactsSchema>;

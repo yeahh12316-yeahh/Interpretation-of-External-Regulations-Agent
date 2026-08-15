@@ -280,6 +280,7 @@ it("passes a trusted targeted directive and cancellation clears the request and 
         replacedFindingIds: ["F1"],
         sourceIds: ["REG-A"],
         scope: ["key_matters"],
+        reanalysisProvenance: null,
       }),
     ],
   });

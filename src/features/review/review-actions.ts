@@ -27,6 +27,7 @@ import {
   createSourceIndex,
   findParsedUnitForAnchor,
   validateFinding,
+  type SourceIndex,
   type ValidationRule,
 } from "../evidence/validate-finding";
 import type { ParsedSourceUnit } from "../parsing/build-anchors";
@@ -45,7 +46,115 @@ export interface AnalysisVersion {
   readonly replacedFindingIds: readonly string[];
   readonly sourceIds: readonly string[];
   readonly scope: readonly AnalysisStage[];
+  readonly reanalysisProvenance: ReanalysisProvenance | null;
 }
+
+export interface ReanalysisTargetBinding {
+  readonly findingId: string;
+  readonly category: string;
+  readonly claimType: Finding["claimType"];
+  readonly atomicKind: "atomic" | "non_atomic";
+}
+
+export interface ReanalysisProvenance {
+  readonly requestId: string;
+  readonly directiveHash: string;
+  readonly reason: string;
+  readonly targetFindingIds: readonly string[];
+  readonly priorTargets: readonly ReanalysisTargetBinding[];
+  readonly allowedSourceIds: readonly string[];
+  readonly allowedStages: readonly AnalysisStage[];
+  readonly replacedDescendantIds: readonly string[];
+  readonly replacementArtifactsHash: string;
+  readonly parentVersionHash: string;
+}
+
+export interface AnalysisArtifactsInput {
+  readonly findings: readonly Finding[];
+  readonly atomicRequirements: readonly AtomicRequirement[];
+  readonly inferenceRelationships: readonly InferenceRelationship[];
+  readonly conflicts: readonly SourceConflict[];
+}
+
+export interface AuthoritativeAnalysisEvidence {
+  readonly sources: ReviewWorkflowState["project"]["sourceUnits"];
+  readonly parsedUnits: readonly ParsedSourceUnit[];
+  readonly officialPrimarySourceIds?: Readonly<
+    Record<string, readonly string[]>
+  >;
+}
+
+/** Full structural and ParseResult-derived evidence validation. */
+export const validateAnalysisArtifacts = (
+  artifacts: AnalysisArtifactsInput,
+  evidence: AuthoritativeAnalysisEvidence,
+): void => {
+  AnalysisArtifactsSchema.parse({
+    findings: artifacts.findings,
+    atomicRequirements: artifacts.atomicRequirements,
+    inferenceRelationships: artifacts.inferenceRelationships,
+    conflicts: artifacts.conflicts,
+  });
+  const index = createSourceIndex({
+    sources: evidence.sources,
+    parsedUnits: evidence.parsedUnits,
+    findings: artifacts.findings,
+    atomicRequirements: artifacts.atomicRequirements,
+    officialPrimarySourceIds: evidence.officialPrimarySourceIds,
+  });
+  const anchors = [
+    ...artifacts.findings.flatMap(({ sourceAnchors }) => sourceAnchors),
+    ...artifacts.atomicRequirements.flatMap(
+      ({ sourceAnchors }) => sourceAnchors,
+    ),
+    ...artifacts.inferenceRelationships.flatMap(
+      ({ sourceAnchors }) => sourceAnchors,
+    ),
+    ...artifacts.conflicts.flatMap(({ sourceAnchors }) => sourceAnchors),
+  ];
+  if (anchors.some((anchor) => !findParsedUnitForAnchor(anchor, index)))
+    throw new Error("分析工件锚点、定位或引文与权威 ParseResult 不一致");
+};
+
+const reanalysisDirectiveContent = (provenance: ReanalysisProvenance) => ({
+  reason: provenance.reason,
+  targetFindingIds: provenance.targetFindingIds,
+  priorTargets: provenance.priorTargets,
+  allowedSourceIds: provenance.allowedSourceIds,
+  allowedStages: provenance.allowedStages,
+});
+
+export const reanalysisDirectiveHash = (
+  provenance: ReanalysisProvenance,
+): string => evidenceDigest(reanalysisDirectiveContent(provenance));
+
+export const createReanalysisProvenance = (input: {
+  readonly requestId: string;
+  readonly reason: string;
+  readonly targetFindingIds: readonly string[];
+  readonly priorTargets: readonly ReanalysisTargetBinding[];
+  readonly allowedSourceIds: readonly string[];
+  readonly allowedStages: readonly AnalysisStage[];
+  readonly replacedDescendantIds: readonly string[];
+  readonly replacement: AnalysisArtifactsInput;
+  readonly parentVersionHash: string;
+}): ReanalysisProvenance => {
+  const directiveContent = {
+    reason: input.reason,
+    targetFindingIds: input.targetFindingIds,
+    priorTargets: input.priorTargets,
+    allowedSourceIds: input.allowedSourceIds,
+    allowedStages: input.allowedStages,
+  };
+  return {
+    requestId: input.requestId,
+    directiveHash: evidenceDigest(directiveContent),
+    ...directiveContent,
+    replacedDescendantIds: input.replacedDescendantIds,
+    replacementArtifactsHash: evidenceDigest(input.replacement),
+    parentVersionHash: input.parentVersionHash,
+  };
+};
 
 export type UnhashedAnalysisVersion = Omit<AnalysisVersion, "versionHash">;
 
@@ -83,6 +192,13 @@ export const createAnalysisVersion = (
         !version.findings.some(({ findingId: id }) => id === findingId),
     ) ||
     artifactAnchors.some(({ sourceId }) => !sourceIds.has(sourceId)) ||
+    (version.parentVersionHash === null) !==
+      (version.reanalysisProvenance === null) ||
+    (version.reanalysisProvenance !== null &&
+      (version.reanalysisProvenance.parentVersionHash !==
+        version.parentVersionHash ||
+        version.reanalysisProvenance.directiveHash !==
+          reanalysisDirectiveHash(version.reanalysisProvenance))) ||
     version.findings.some(
       ({ claimType, reviewStatus, revisionRecords }) =>
         claimType === "human_judgment" ||
@@ -102,6 +218,8 @@ export interface PriorFindingSummary {
   readonly statement: string;
   readonly sourceIds: readonly string[];
   readonly findingHash: string;
+  readonly currentFindingHash: string;
+  readonly atomicRequirementHash: string | null;
 }
 
 export interface ReanalysisRequest {
@@ -114,6 +232,8 @@ export interface ReanalysisRequest {
   readonly requestedAt: string;
   readonly returnStep: WorkflowStep;
   readonly priorFindings: readonly PriorFindingSummary[];
+  readonly baselineSessionRevision: number;
+  readonly baselineSubstantiveHash: string;
   readonly requestHash: string;
 }
 
@@ -163,6 +283,30 @@ export interface ReviewMeta {
   readonly reason: string;
   readonly reviewedAt?: string;
 }
+
+const stateParseResults = (state: ReviewWorkflowState): unknown =>
+  (state as ReviewWorkflowState & { readonly parseResults?: unknown })
+    .parseResults ?? null;
+
+const stateRevision = (state: ReviewWorkflowState): number =>
+  (state as ReviewWorkflowState & { readonly revision?: number }).revision ?? 0;
+
+/** Substantive client-state consistency only; this is not authentication. */
+export const reviewStateSubstantiveHash = (
+  state: ReviewWorkflowState,
+  workflowStep: WorkflowStep = state.project.workflowStep,
+): string =>
+  evidenceDigest({
+    project: { ...state.project, workflowStep },
+    parseResults: stateParseResults(state),
+    parsedUnits: state.parsedUnits,
+    atomicRequirements: state.atomicRequirements,
+    reviewAudits: state.reviewAudits,
+    reviewActions: state.reviewActions,
+    ruleReviewAttestations: state.ruleReviewAttestations,
+    analysisVersions: state.analysisVersions,
+    officialPrimarySourceIds: state.officialPrimarySourceIds ?? {},
+  });
 
 const required = (value: string, label: string): string => {
   const normalized = value.trim();
@@ -428,6 +572,7 @@ export const replayReviewedFindings = (
   latestVersion: AnalysisVersion | undefined,
   reviewAudits: readonly ReviewAudit[],
   reviewActions: readonly ReviewAction[],
+  evidenceIndex: SourceIndex,
 ): Finding[] => {
   if (!latestVersion) {
     if (reviewAudits.length || reviewActions.length)
@@ -460,6 +605,10 @@ export const replayReviewedFindings = (
         action.afterSnapshot.claimType !== "human_judgment" ||
         action.afterSnapshot.reviewStatus !== "confirmed" ||
         action.afterSnapshot.sourceAnchors.length === 0 ||
+        action.afterSnapshot.sourceAnchors.some(
+          (anchor) =>
+            findParsedUnitForAnchor(anchor, evidenceIndex) === undefined,
+        ) ||
         action.afterSnapshot.revisionRecords.length !== 1 ||
         stableValue(action.afterSnapshot.revisionRecords[0]) !==
           stableValue({
@@ -746,8 +895,19 @@ export const returnForReanalysis = (
         statement: finding.statement,
         sourceIds,
       };
-      return { ...summary, findingHash: evidenceDigest(summary) };
+      const requirements = state.atomicRequirements.filter(
+        ({ findingId }) => findingId === finding.findingId,
+      );
+      return {
+        ...summary,
+        findingHash: evidenceDigest(summary),
+        currentFindingHash: evidenceDigest(finding),
+        atomicRequirementHash:
+          requirements.length === 1 ? evidenceDigest(requirements[0]) : null,
+      };
     }),
+    baselineSessionRevision: stateRevision(state),
+    baselineSubstantiveHash: reviewStateSubstantiveHash(state),
   };
   for (const prior of requestContent.priorFindings) {
     const atomicCount = state.atomicRequirements.filter(
@@ -800,16 +960,35 @@ export const completeReanalysis = (
   const request = state.pendingReanalysis;
   if (!request) throw new Error("没有待完成的重分析请求");
   const { requestHash: _requestHash, ...requestContent } = request;
-  if (request.requestHash !== evidenceDigest(requestContent))
-    throw new Error("重分析请求哈希无效");
+  if (
+    request.requestHash !== evidenceDigest(requestContent) ||
+    stateRevision(state) < request.baselineSessionRevision ||
+    reviewStateSubstantiveHash(state, request.returnStep) !==
+      request.baselineSubstantiveHash
+  )
+    throw new Error("重分析请求哈希或基线会话已过期");
   for (const prior of request.priorFindings) {
     const current = state.project.findings.find(
       ({ findingId }) => findingId === prior.findingId,
     );
-    const { findingHash: _findingHash, ...summary } = prior;
+    const summary = {
+      findingId: prior.findingId,
+      category: prior.category,
+      claimType: prior.claimType,
+      atomicKind: prior.atomicKind,
+      statement: prior.statement,
+      sourceIds: prior.sourceIds,
+    };
+    const requirements = state.atomicRequirements.filter(
+      ({ findingId }) => findingId === prior.findingId,
+    );
+    const currentAtomicHash =
+      requirements.length === 1 ? evidenceDigest(requirements[0]) : null;
     if (
       !current ||
       prior.findingHash !== evidenceDigest(summary) ||
+      prior.currentFindingHash !== evidenceDigest(current) ||
+      prior.atomicRequirementHash !== currentAtomicHash ||
       current.category !== prior.category ||
       current.claimType !== prior.claimType ||
       current.statement !== prior.statement ||
@@ -920,6 +1099,27 @@ export const completeReanalysis = (
     ),
     ...replacement.conflicts,
   ];
+  const priorTargets: ReanalysisTargetBinding[] = request.priorFindings.map(
+    ({ findingId, category, claimType, atomicKind }) => ({
+      findingId,
+      category,
+      claimType,
+      atomicKind,
+    }),
+  );
+  const reanalysisProvenance = createReanalysisProvenance({
+    requestId: request.requestHash,
+    reason: request.reason,
+    targetFindingIds: [...request.targetFindingIds],
+    priorTargets,
+    allowedSourceIds: [...request.sourceIds],
+    allowedStages: [...request.scope],
+    replacedDescendantIds: request.invalidatedFindingIds.filter(
+      (findingId) => !request.targetFindingIds.includes(findingId),
+    ),
+    replacement,
+    parentVersionHash: priorVersion.versionHash,
+  });
   const version = createAnalysisVersion({
     versionId: `V${state.analysisVersions.length + 1}`,
     projectId: state.project.projectId,
@@ -933,6 +1133,12 @@ export const completeReanalysis = (
     replacedFindingIds: request.targetFindingIds,
     sourceIds: [...new Set([...priorVersion.sourceIds, ...request.sourceIds])],
     scope: [...new Set([...priorVersion.scope, ...request.scope])],
+    reanalysisProvenance,
+  });
+  validateAnalysisArtifacts(version, {
+    sources: state.project.sourceUnits,
+    parsedUnits: state.parsedUnits,
+    officialPrimarySourceIds: state.officialPrimarySourceIds,
   });
   const invalidatedIds = new Set(request.invalidatedFindingIds);
   const reviewAudits = state.reviewAudits.filter(
@@ -945,6 +1151,13 @@ export const completeReanalysis = (
     version,
     reviewAudits,
     reviewActions,
+    createSourceIndex({
+      sources: state.project.sourceUnits,
+      parsedUnits: state.parsedUnits,
+      findings: version.findings,
+      officialPrimarySourceIds: state.officialPrimarySourceIds,
+      atomicRequirements,
+    }),
   );
   return {
     ...state,

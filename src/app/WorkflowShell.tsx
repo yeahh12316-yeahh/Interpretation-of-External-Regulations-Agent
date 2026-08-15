@@ -415,8 +415,13 @@ export function WorkflowShell({
                 allowedStages: [...request.scope],
                 allowedSourceIds: [...request.sourceIds],
                 priorFindings: request.priorFindings.map((prior) => ({
-                  ...prior,
+                  findingId: prior.findingId,
+                  category: prior.category,
+                  claimType: prior.claimType,
+                  atomicKind: prior.atomicKind,
+                  statement: prior.statement,
                   sourceIds: [...prior.sourceIds],
+                  findingHash: prior.findingHash,
                 })),
               }
             : undefined,
@@ -503,6 +508,7 @@ export function WorkflowShell({
             "atomic_clauses",
             "institution_impact",
           ],
+          reanalysisProvenance: null,
         }),
       ],
     });

@@ -2,11 +2,14 @@ import "fake-indexeddb/auto";
 import { beforeEach, expect, it } from "vitest";
 
 import { projectDatabase } from "../features/projects/db";
+import { evidenceDigest } from "../features/evidence/evidence-hash";
+import { reviewSnapshotHash } from "../features/evidence/calculate-quality";
 import {
   analysisVersionHash,
   attestValidationRule,
   confirmFinding,
   createAnalysisVersion,
+  createReanalysisProvenance,
   modifyFinding,
   returnForReanalysis,
 } from "../features/review/review-actions";
@@ -185,6 +188,7 @@ it("restores current findings with append-only audit and attestation records and
         replacedFindingIds: ["F1"],
         sourceIds: ["REG-A"],
         scope: ["atomic_clauses"],
+        reanalysisProvenance: null,
       }),
     ],
   };
@@ -255,6 +259,39 @@ it("restores current findings with append-only audit and attestation records and
         object: "健全制度",
       },
     ],
+    reanalysisProvenance: createReanalysisProvenance({
+      requestId: evidenceDigest("rollback-test-request"),
+      reason: "重分析",
+      targetFindingIds: ["F1"],
+      priorTargets: [
+        {
+          findingId: "F1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "atomic",
+        },
+      ],
+      allowedSourceIds: ["REG-A"],
+      allowedStages: ["atomic_clauses"],
+      replacedDescendantIds: [],
+      replacement: {
+        findings: [
+          {
+            ...originalVersion.findings[0],
+            statement: "机构应建立健全制度",
+          },
+        ],
+        atomicRequirements: [
+          {
+            ...originalVersion.atomicRequirements[0],
+            object: "健全制度",
+          },
+        ],
+        inferenceRelationships: [],
+        conflicts: [],
+      },
+      parentVersionHash: originalVersion.versionHash,
+    }),
   });
   await expect(
     workflowSessionRepository.save(
@@ -303,6 +340,246 @@ it("restores current findings with append-only audit and attestation records and
       saved.revision,
     ),
   ).rejects.toThrow(/ReviewAction|派生|复核动作/);
+
+  const fakeHumanWithAction = {
+    ...fakeHuman,
+    findingId: "H-FAKE-ACTION",
+    sourceAnchors: [
+      { ...anchor, paragraphIndex: 99, quote: "伪造且无法定位的人工依据" },
+    ],
+    revisionRecords: [
+      {
+        revisedBy: "伪造人",
+        revisedAt: "2026-08-15T03:30:00.000Z",
+        changeSummary: "仅伪造 action 与 session hash",
+      },
+    ],
+  };
+  const fakeHumanHash = reviewSnapshotHash(fakeHumanWithAction);
+  const fakeActionContent = {
+    action: "add_human" as const,
+    findingId: fakeHumanWithAction.findingId,
+    afterHash: fakeHumanHash,
+    reviewer: "伪造人",
+    reason: "仅伪造 action 与 session hash",
+    actedAt: "2026-08-15T03:30:00.000Z",
+  };
+  const fakeAction = {
+    ...fakeActionContent,
+    actionId: evidenceDigest(fakeActionContent),
+    beforeHash: null,
+    afterSnapshot: fakeHumanWithAction,
+  };
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          findings: [...saved.project.findings, fakeHumanWithAction],
+        },
+        reviewActions: [...saved.reviewActions, fakeAction],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/人工|依据|定位|证据/);
+
+  const fabricatedAnchor = {
+    ...anchor,
+    paragraphIndex: 77,
+    quote: "伪造的历史版本引文",
+  };
+  const fabricatedFinding = {
+    ...originalVersion.findings[0],
+    sourceAnchors: [fabricatedAnchor],
+  };
+  const fabricatedAtomic = {
+    ...originalVersion.atomicRequirements[0],
+    sourceAnchors: [fabricatedAnchor],
+  };
+  const fabricatedVersion = createAnalysisVersion({
+    ...originalVersionContent,
+    findings: [fabricatedFinding],
+    atomicRequirements: [fabricatedAtomic],
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          findings: [fabricatedFinding],
+        },
+        atomicRequirements: [fabricatedAtomic],
+        reviewAudits: [],
+        reviewActions: [],
+        ruleReviewAttestations: [],
+        analysisVersions: [fabricatedVersion],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/历史|定位|引文|锚点|ParseResult/);
+
+  const recategorizedFinding = {
+    ...originalVersion.findings[0],
+    category: "key_matter:core_requirement",
+  };
+  const recategorizedV2 = createAnalysisVersion({
+    ...originalVersionContent,
+    versionId: "V2",
+    parentVersionHash: originalVersion.versionHash,
+    createdAt: "2026-08-15T03:45:00.000Z",
+    reason: "未声明的重新分类",
+    findings: [recategorizedFinding],
+    atomicRequirements: [],
+    reanalysisProvenance: createReanalysisProvenance({
+      requestId: evidenceDigest("category-drift-request"),
+      reason: "未声明的重新分类",
+      targetFindingIds: ["F1"],
+      priorTargets: [
+        {
+          findingId: "F1",
+          category: "atomic_requirement",
+          claimType: "regulatory_fact",
+          atomicKind: "atomic",
+        },
+      ],
+      allowedSourceIds: ["REG-A"],
+      allowedStages: ["atomic_clauses"],
+      replacedDescendantIds: [],
+      replacement: {
+        findings: [recategorizedFinding],
+        atomicRequirements: [],
+        inferenceRelationships: [],
+        conflicts: [],
+      },
+      parentVersionHash: originalVersion.versionHash,
+    }),
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: { ...saved.project, findings: [recategorizedFinding] },
+        atomicRequirements: [],
+        reviewAudits: [],
+        reviewActions: [],
+        ruleReviewAttestations: [],
+        analysisVersions: [originalVersion, recategorizedV2],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/provenance|指令|类别|category|重分析/);
+
+  const officialSource = {
+    sourceId: "OFF-A",
+    sourceType: "official_interpretation" as const,
+    title: "官方说明",
+    content: "第一条 官方解释材料",
+  };
+  const officialUnit = {
+    unitId: "OFF-U1",
+    sourceId: "OFF-A",
+    sourceType: "official_interpretation" as const,
+    page: null,
+    article: "第一条",
+    paragraphIndex: 0,
+    text: officialSource.content,
+    extractionMethod: "plain_text" as const,
+    confidence: 1,
+  };
+  const officialAnchor = {
+    sourceId: "OFF-A",
+    sourceType: "official_interpretation" as const,
+    page: null,
+    article: "第一条",
+    paragraphIndex: 0,
+    quote: "官方解释材料",
+  };
+  const regulatoryFinding = {
+    ...originalVersion.findings[0],
+    findingId: "REG-F",
+    category: "key_matter:core_requirement",
+  };
+  const officialFinding = {
+    ...originalVersion.findings[0],
+    findingId: "OFF-F",
+    category: "official_context:implementation_guidance",
+    statement: "官方解释材料",
+    claimType: "official_explanation" as const,
+    sourceAnchors: [officialAnchor],
+    inferenceParents: ["REG-F"],
+  };
+  const missingConflictFinding = {
+    ...originalVersion.findings[0],
+    findingId: "CONFLICT-MISSING",
+    category: "pending_confirmation:source_conflict",
+    statement: "待确认：来源冲突",
+    claimType: "pending_confirmation" as const,
+    sourceAnchors: [anchor, officialAnchor],
+    inferenceParents: ["REG-F", "OFF-F"],
+  };
+  const missingConflictContent = {
+    versionId: "V1",
+    projectId: saved.project.projectId,
+    parentVersionHash: null,
+    createdAt: "2026-08-15T03:50:00.000Z",
+    reason: "伪造缺失冲突记录的历史版本",
+    findings: [regulatoryFinding, officialFinding, missingConflictFinding],
+    atomicRequirements: [],
+    inferenceRelationships: [],
+    conflicts: [],
+    replacedFindingIds: ["REG-F", "OFF-F", "CONFLICT-MISSING"],
+    sourceIds: ["REG-A", "OFF-A"],
+    scope: ["document_identity", "key_matters"] as const,
+    reanalysisProvenance: null,
+  };
+  const missingConflictVersion = {
+    ...missingConflictContent,
+    versionHash: analysisVersionHash(missingConflictContent),
+  };
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          sourceUnits: [source, officialSource],
+          findings: missingConflictContent.findings,
+        },
+        parseResults: [
+          saved.parseResults[0],
+          {
+            fileHash: "b".repeat(64),
+            source: officialSource,
+            pageCount: null,
+            successfulPages: [],
+            failedPages: [],
+            units: [officialUnit],
+            ocrReviews: [],
+            anchors: buildAnchors([officialUnit]),
+            quality: {
+              totalCharacters: officialSource.content.length,
+              parsedUnitCount: 1,
+              failedPageCount: 0,
+              lowTextPages: [],
+              extractionCoverage: 1,
+              ocrFailedPages: [],
+              finalizationBlocked: false,
+            },
+          },
+        ],
+        parsedUnits: [unit, officialUnit],
+        atomicRequirements: [],
+        reviewAudits: [],
+        reviewActions: [],
+        ruleReviewAttestations: [],
+        analysisVersions: [missingConflictVersion],
+        officialPrimarySourceIds: { "OFF-A": ["REG-A"] },
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/历史|冲突|工件/);
 
   const pending = returnForReanalysis(
     { ...saved, ...reviewed },
