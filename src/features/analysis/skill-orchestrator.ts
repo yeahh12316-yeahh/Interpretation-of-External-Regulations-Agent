@@ -261,18 +261,21 @@ const KeyMattersResponseSchema = z
   })
   .strict();
 
+export const INSTITUTION_IMPACT_DIMENSIONS = [
+  "governance",
+  "institution",
+  "process",
+  "system",
+  "data",
+  "people",
+  "reporting",
+] as const;
+
 const InstitutionImpactItemSchema = z
   .object({
     findingId: z.string().min(1),
     relationshipId: z.string().min(1),
-    category: z.enum([
-      "governance",
-      "process",
-      "system",
-      "data",
-      "people",
-      "reporting",
-    ]),
+    category: z.enum(INSTITUTION_IMPACT_DIMENSIONS),
     possibility: z.enum(["potential", "not_established"]),
     inferenceParents: z.array(z.string().min(1)).min(1),
     sourceAnchors: z.array(SourceAnchorSchema).min(1),
@@ -614,6 +617,19 @@ export const AnalysisArtifactsSchema = z
       }
     }
     for (const [index, finding] of artifacts.findings.entries()) {
+      if (
+        finding.claimType === "ai_inference" &&
+        finding.category !== "institution_impact" &&
+        !INSTITUTION_IMPACT_DIMENSIONS.some(
+          (dimension) => finding.category === `institution_impact:${dimension}`,
+        )
+      ) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "category"],
+          message: "历史机构影响 Finding 必须使用闭合七维 taxonomy",
+        });
+      }
       const linked = artifacts.atomicRequirements.filter(
         ({ findingId }) => findingId === finding.findingId,
       );
@@ -1707,8 +1723,12 @@ const validateAtomicResponse = (
   }
 };
 
-const IMPACT_LABELS = {
+const IMPACT_LABELS: Record<
+  (typeof INSTITUTION_IMPACT_DIMENSIONS)[number],
+  string
+> = {
   governance: "治理",
+  institution: "制度",
   process: "流程",
   system: "系统",
   data: "数据",

@@ -2,6 +2,7 @@ import type { Finding } from "../../domain/finding";
 import type { WorkflowSession } from "../../app/workflow-store";
 import {
   createReportContext,
+  IMPACT_DIMENSIONS,
   itemsMatching,
   type ReportBuildOptions,
   type ReportModel,
@@ -62,7 +63,11 @@ export const buildQuickCommentary = (
       items: itemsMatching(
         context,
         (finding) =>
-          has(finding, "effective_date") || has(finding, "transition"),
+          finding.category === "key_matter:effective_date" ||
+          finding.category === "key_matter:implementation_arrangement" ||
+          finding.category === "key_matter:transition_period" ||
+          finding.category === "document_identity:effective_date" ||
+          finding.category === "document_identity:deadline",
         3,
       ),
     },
@@ -72,7 +77,11 @@ export const buildQuickCommentary = (
       items: itemsMatching(
         context,
         (finding) =>
-          has(finding, "applicability") || has(finding, "institution_impact"),
+          has(finding, "applicability") ||
+          IMPACT_DIMENSIONS.some(
+            ({ dimension }) =>
+              finding.category === `institution_impact:${dimension}`,
+          ),
         3,
       ),
     },

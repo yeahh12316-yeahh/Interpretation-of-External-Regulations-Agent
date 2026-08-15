@@ -1,6 +1,7 @@
 import {
   AlignmentType,
   BorderStyle,
+  createStringElement,
   Document,
   Footer,
   FootnoteReferenceRun,
@@ -11,15 +12,24 @@ import {
   PageNumber,
   Paragraph,
   ShadingType,
+  SectionProperties,
+  SectionType,
   Table,
   TableCell,
   TableLayoutType,
   TableRow,
   TextRun,
   WidthType,
+  XmlComponent,
 } from "docx";
 
-import type { ReportEvidence, ReportItem, ReportModel } from "./report-model";
+import {
+  impactDimensionTitle,
+  reportExportBlockReason,
+  type ReportEvidence,
+  type ReportItem,
+  type ReportModel,
+} from "./report-model";
 
 const BLACK = "111111";
 const GREEN = "86BC25";
@@ -35,9 +45,45 @@ const cjkRunFont = {
   hAnsi: CJK_FONT,
 };
 
+class SectionFootnoteProperties extends XmlComponent {
+  constructor(position: "beneathText" | "sectEnd") {
+    super("w:footnotePr");
+    this.addChildElement(createStringElement("w:pos", position));
+  }
+}
+
+const setNativeFootnotePosition = (
+  document: Document,
+  position: "beneathText" | "sectEnd",
+): void => {
+  const body = document.Document.View.Body as unknown as {
+    sections?: SectionProperties[];
+    root?: unknown[];
+  };
+  const sectionProperties = new Set<SectionProperties>();
+  const visited = new Set<object>();
+  const collect = (node: unknown): void => {
+    if (!node || typeof node !== "object" || visited.has(node)) return;
+    visited.add(node);
+    if (node instanceof SectionProperties) {
+      sectionProperties.add(node);
+      return;
+    }
+    const root = (node as { root?: unknown[] }).root;
+    if (Array.isArray(root)) for (const child of root) collect(child);
+  };
+  collect(body);
+  if (Array.isArray(body.sections))
+    for (const section of body.sections) collect(section);
+  if (sectionProperties.size === 0)
+    throw new Error("DOCX 节结构不可用，无法安全设置原生脚注位置");
+  for (const section of sectionProperties)
+    section.addChildElement(new SectionFootnoteProperties(position));
+};
+
 const assertExportable = (report: ReportModel): void => {
-  if (!report.authoritativeParsing)
-    throw new Error("权威解析未通过，不能导出报告");
+  const blocked = reportExportBlockReason(report);
+  if (blocked) throw new Error(blocked);
   const serialized = JSON.stringify(report);
   if (
     /"(?:apiKey|authorization|endpoint|credential|sessionSecret)"\s*:/iu.test(
@@ -70,6 +116,14 @@ const itemParagraph = (
     numbering: { reference: "report-bullets", level: 0 },
     children: [
       new TextRun({ text: `[${item.claimLabel}] `, bold: true, color: GREEN }),
+      ...(item.dimension
+        ? [
+            new TextRun({
+              text: `【${impactDimensionTitle(item.dimension)}维度】`,
+              bold: true,
+            }),
+          ]
+        : []),
       new TextRun(item.text),
       ...footnoteIds.map((id) => new FootnoteReferenceRun(id)),
     ],
@@ -129,7 +183,7 @@ export const exportDocx = async (report: ReportModel): Promise<Blob> => {
   assertExportable(report);
   let nextFootnoteId = 1;
   const footnotes: Record<string, { children: Paragraph[] }> = {};
-  const body: Array<Paragraph | Table> = [
+  const mainBody: Array<Paragraph | Table> = [
     new Paragraph({
       style: "standard_business_brief",
       spacing: { before: 320, after: 80 },
@@ -172,14 +226,57 @@ export const exportDocx = async (report: ReportModel): Promise<Blob> => {
       spacing: { after: 240 },
     }),
   ];
+  const appendixBody: Array<Paragraph | Table> = [];
 
   for (const section of report.sections) {
+    const body =
+      section.key === "evidence_appendix" ? appendixBody : mainBody;
     body.push(
       new Paragraph({
         heading: HeadingLevel.HEADING_1,
         children: [new TextRun(section.title)],
       }),
     );
+    if (section.groups) {
+      for (const group of section.groups) {
+        body.push(
+          new Paragraph({
+            heading: HeadingLevel.HEADING_2,
+            children: [new TextRun(`${group.title}维度`)],
+          }),
+        );
+        if (!group.items.length) {
+          body.push(
+            new Paragraph({
+              style: "standard_business_brief",
+              children: [
+                new TextRun({
+                  text: "该维度无可纳入的已验证结论。",
+                  italics: true,
+                  color: MUTED,
+                }),
+              ],
+            }),
+          );
+        }
+        for (const item of group.items) {
+          const ids = item.evidence.map((evidence) => {
+            const id = nextFootnoteId++;
+            footnotes[String(id)] = {
+              children: [
+                new Paragraph({
+                  style: "ReportFootnote",
+                  children: [new TextRun(evidenceText(evidence))],
+                }),
+              ],
+            };
+            return id;
+          });
+          body.push(itemParagraph(item, ids));
+        }
+      }
+      continue;
+    }
     if (section.items.length === 0) {
       body.push(
         new Paragraph({
@@ -235,7 +332,7 @@ export const exportDocx = async (report: ReportModel): Promise<Blob> => {
         footnotes[String(id)] = {
           children: [
             new Paragraph({
-              style: "standard_business_brief",
+              style: "ReportFootnote",
               children: [new TextRun(evidenceText(evidence))],
             }),
           ],
@@ -270,6 +367,35 @@ export const exportDocx = async (report: ReportModel): Promise<Blob> => {
       }),
     );
   }
+  const makePageProperties = () => ({
+    page: {
+      size: { width: 12240, height: 15840 },
+      margin: {
+        top: 1440,
+        right: 1440,
+        bottom: 1440,
+        left: 1440,
+        header: 708,
+        footer: 708,
+      },
+    },
+  });
+  const makeHeader = () => new Header({ children: headerChildren });
+  const makeFooter = () =>
+    new Footer({
+      children: [
+        new Paragraph({
+          alignment: AlignmentType.RIGHT,
+          children: [
+            new TextRun({
+              text: `${report.projectName}  |  `,
+              color: MUTED,
+            }),
+            new TextRun({ children: [PageNumber.CURRENT], color: MUTED }),
+          ],
+        }),
+      ],
+    });
   const document = new Document({
     title: report.title,
     subject: `${report.projectName} ${report.reviewStatusLabel}`,
@@ -292,6 +418,16 @@ export const exportDocx = async (report: ReportModel): Promise<Blob> => {
           },
         },
         {
+          id: "ReportFootnote",
+          name: "Report Footnote",
+          basedOn: "Normal",
+          next: "ReportFootnote",
+          run: { font: cjkRunFont, size: 16, color: MUTED },
+          paragraph: {
+            spacing: { before: 0, after: 0, line: 200, lineRule: "auto" },
+          },
+        },
+        {
           id: "Title",
           name: "Title",
           basedOn: "Normal",
@@ -308,6 +444,15 @@ export const exportDocx = async (report: ReportModel): Promise<Blob> => {
           quickFormat: true,
           run: { font: cjkRunFont, size: 32, bold: true, color: GREEN },
           paragraph: { spacing: { before: 320, after: 160 }, keepNext: true },
+        },
+        {
+          id: "Heading2",
+          name: "Heading 2",
+          basedOn: "Normal",
+          next: "standard_business_brief",
+          quickFormat: true,
+          run: { font: cjkRunFont, size: 25, bold: true, color: BLACK },
+          paragraph: { spacing: { before: 180, after: 100 }, keepNext: true },
         },
       ],
     },
@@ -335,39 +480,26 @@ export const exportDocx = async (report: ReportModel): Promise<Blob> => {
     footnotes,
     sections: [
       {
-        properties: {
-          page: {
-            size: { width: 12240, height: 15840 },
-            margin: {
-              top: 1440,
-              right: 1440,
-              bottom: 1440,
-              left: 1440,
-              header: 708,
-              footer: 708,
-            },
-          },
-        },
-        headers: { default: new Header({ children: headerChildren }) },
-        footers: {
-          default: new Footer({
-            children: [
-              new Paragraph({
-                alignment: AlignmentType.RIGHT,
-                children: [
-                  new TextRun({
-                    text: `${report.projectName}  |  `,
-                    color: MUTED,
-                  }),
-                  new TextRun({ children: [PageNumber.CURRENT], color: MUTED }),
-                ],
-              }),
-            ],
-          }),
-        },
-        children: body,
+        properties: makePageProperties(),
+        headers: { default: makeHeader() },
+        footers: { default: makeFooter() },
+        children: mainBody,
       },
+      ...(appendixBody.length
+        ? [
+            {
+              properties: {
+                ...makePageProperties(),
+                type: SectionType.NEXT_PAGE,
+              },
+              headers: { default: makeHeader() },
+              footers: { default: makeFooter() },
+              children: appendixBody,
+            },
+          ]
+        : []),
     ],
   });
+  setNativeFootnotePosition(document, "beneathText");
   return Packer.toBlob(document);
 };

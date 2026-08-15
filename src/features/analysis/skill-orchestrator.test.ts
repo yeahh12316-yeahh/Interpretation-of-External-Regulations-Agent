@@ -12,6 +12,7 @@ import {
 import {
   AnalysisCheckpointSchema,
   AnalysisDraftSchema,
+  AnalysisArtifactsSchema,
   AtomicRequirementSchema,
   runAnalysis,
   type AnalysisProgress,
@@ -158,6 +159,81 @@ const emptyResponse = (request: StructuredModelRequest<unknown>): unknown => {
 };
 
 describe("runAnalysis", () => {
+  it("accepts the closed institution impact dimension and emits its exact category", async () => {
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName === "analysis_institution_impact_v1") {
+        return {
+          impacts: [
+            {
+              findingId: "IMP-INSTITUTION",
+              relationshipId: "REL-INSTITUTION",
+              category: "institution",
+              possibility: "potential",
+              sourceAnchors: [anchor()],
+              inferenceParents: ["REQ-1"],
+              confidence: 0.8,
+            },
+          ],
+        };
+      }
+      return successfulResponse(request);
+    });
+    const draft = await runAnalysis({
+      sourceUnits: [regulatorySource],
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+    });
+    expect(draft.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          findingId: "IMP-INSTITUTION",
+          category: "institution_impact:institution",
+        }),
+      ]),
+    );
+  });
+
+  it("rejects a resealed historical impact outside the closed seven dimensions", () => {
+    const parent = FindingSchema.parse({
+      ...baseFinding,
+      findingId: "PARENT",
+      category: "key_matter:core_requirement",
+      statement: regulatorySource.content,
+      claimType: "regulatory_fact",
+      sourceAnchors: [anchor()],
+    });
+    const impact = FindingSchema.parse({
+      ...baseFinding,
+      findingId: "IMPACT-FAKE",
+      category: "institution_impact:other",
+      statement: "虚构维度影响",
+      claimType: "ai_inference",
+      sourceAnchors: [anchor()],
+      inferenceParents: ["PARENT"],
+      requiredReview: true,
+    });
+    expect(
+      AnalysisArtifactsSchema.safeParse({
+        findings: [parent, impact],
+        atomicRequirements: [],
+        inferenceRelationships: [
+          {
+            relationshipId: "REL-FAKE",
+            fromFindingIds: ["PARENT"],
+            toFindingId: "IMPACT-FAKE",
+            relationshipType: "potential",
+            sourceAnchors: [anchor()],
+            rationale: "结构化关系",
+            confidence: 0.8,
+            manualVerificationRequired: true,
+          },
+        ],
+        conflicts: [],
+      }).success,
+    ).toBe(false);
+  });
+
   it("executes a trusted reanalysis directive and returns exactly its authorized target", async () => {
     const gateway = new RecordingGateway(successfulResponse);
     const priorFinding = {

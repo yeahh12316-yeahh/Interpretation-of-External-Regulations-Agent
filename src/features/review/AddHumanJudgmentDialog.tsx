@@ -1,13 +1,18 @@
 import { useEffect, useState, type FormEvent, type JSX } from "react";
 
 import type { Finding } from "../../domain/finding";
+import type { HumanJudgmentPurpose } from "./review-actions";
 import { useAccessibleDialog } from "./use-accessible-dialog";
 
 export interface AddHumanJudgmentDialogProps {
   open: boolean;
   basisFinding: Finding | null;
   onClose: () => void;
-  onSave: (statement: string, reason: string) => void;
+  onSave: (
+    statement: string,
+    reason: string,
+    purpose: HumanJudgmentPurpose,
+  ) => void;
 }
 
 export function AddHumanJudgmentDialog({
@@ -18,10 +23,12 @@ export function AddHumanJudgmentDialog({
 }: AddHumanJudgmentDialogProps): JSX.Element | null {
   const [statement, setStatement] = useState("");
   const [reason, setReason] = useState("");
+  const [purpose, setPurpose] = useState<HumanJudgmentPurpose>("generic");
   useEffect(() => {
     if (open) {
       setStatement("");
       setReason("");
+      setPurpose("generic");
     }
   }, [open]);
   const { dialogRef, initialFocusRef, onKeyDown } =
@@ -31,7 +38,7 @@ export function AddHumanJudgmentDialog({
   const submit = (event: FormEvent) => {
     event.preventDefault();
     if (!valid) return;
-    onSave(statement.trim(), reason.trim());
+    onSave(statement.trim(), reason.trim(), purpose);
   };
   return (
     <div
@@ -45,6 +52,18 @@ export function AddHumanJudgmentDialog({
       <form onSubmit={submit}>
         <h2 id="human-judgment-title">新增人工判断</h2>
         <p>依据：{basisFinding.sourceAnchors[0].quote}</p>
+        <label>
+          报告用途
+          <select
+            value={purpose}
+            onChange={(event) =>
+              setPurpose(event.target.value as HumanJudgmentPurpose)
+            }
+          >
+            <option value="generic">一般人工判断（仅进入证据附录）</option>
+            <option value="recommended_action">建议行动（优先级）</option>
+          </select>
+        </label>
         <label>
           人工判断陈述
           <textarea

@@ -1,4 +1,4 @@
-import type { ReportModel } from "./report-model";
+import { impactDimensionTitle, type ReportModel } from "./report-model";
 
 export const ReportPreview = ({ report }: { report: ReportModel }) => (
   <article className="report-preview" aria-labelledby="report-preview-title">
@@ -41,12 +41,56 @@ export const ReportPreview = ({ report }: { report: ReportModel }) => (
         <h3>
           {index + 1}. {section.title}
         </h3>
-        {section.items.length ? (
+        {section.groups ? (
+          <div className="report-dimension-groups">
+            {section.groups.map((group) => (
+              <section key={group.dimension} aria-label={`${group.title}维度`}>
+                <h4>{group.title}</h4>
+                {group.items.length ? (
+                  <ul>
+                    {group.items.map((item) => (
+                      <li key={item.itemId}>
+                        <p>
+                          <span className="report-claim-label">
+                            {item.claimLabel}
+                          </span>
+                          {item.text}
+                        </p>
+                        <details>
+                          <summary>查看证据与修订留痕</summary>
+                          {item.evidence.map((evidence, evidenceIndex) => (
+                            <blockquote
+                              key={`${item.itemId}:evidence:${evidenceIndex}`}
+                            >
+                              <strong>{evidence.sourceLabel}</strong>｜
+                              {evidence.sourceTitle}｜
+                              {evidence.page === null
+                                ? "无页码"
+                                : `第${evidence.page}页`}
+                              ｜{evidence.article ?? "无条款"}｜第
+                              {evidence.paragraphIndex + 1}段：
+                              {evidence.quote}
+                            </blockquote>
+                          ))}
+                        </details>
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="report-empty">该维度无可纳入的已验证结论。</p>
+                )}
+              </section>
+            ))}
+          </div>
+        ) : section.items.length ? (
           <ul>
             {section.items.map((item) => (
               <li key={item.itemId}>
                 <p>
                   <span className="report-claim-label">{item.claimLabel}</span>
+                  {item.dimension ? (
+                    <span>【{impactDimensionTitle(item.dimension)}维度】</span>
+                  ) : null}
                   {item.text}
                 </p>
                 <details>

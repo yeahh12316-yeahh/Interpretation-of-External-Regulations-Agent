@@ -1,6 +1,7 @@
 import type { Finding } from "../../domain/finding";
 import {
   createReportContext,
+  IMPACT_DIMENSIONS,
   itemsMatching,
   type ReportBuildOptions,
   type ReportModel,
@@ -16,6 +17,11 @@ export const buildFullReport = (
   options: ReportBuildOptions = {},
 ): ReportModel => {
   const context = createReportContext(session, options);
+  const impactItems = itemsMatching(context, (finding) =>
+    IMPACT_DIMENSIONS.some(
+      ({ dimension }) => finding.category === `institution_impact:${dimension}`,
+    ),
+  );
   const sections: ReportSection[] = [
     {
       key: "executive_summary",
@@ -72,17 +78,22 @@ export const buildFullReport = (
       items: itemsMatching(
         context,
         (finding) =>
-          has(finding, "effective_date") ||
-          has(finding, "transition") ||
-          has(finding, "deadline"),
+          finding.category === "key_matter:effective_date" ||
+          finding.category === "key_matter:implementation_arrangement" ||
+          finding.category === "key_matter:transition_period" ||
+          finding.category === "document_identity:effective_date" ||
+          finding.category === "document_identity:deadline",
       ),
     },
     {
       key: "institution_impact",
       title: "对金融机构的主要影响",
-      items: itemsMatching(context, (finding) =>
-        has(finding, "institution_impact"),
-      ),
+      items: impactItems,
+      groups: IMPACT_DIMENSIONS.map(({ dimension, title }) => ({
+        dimension,
+        title,
+        items: impactItems.filter((item) => item.dimension === dimension),
+      })),
     },
     {
       key: "recommended_actions",

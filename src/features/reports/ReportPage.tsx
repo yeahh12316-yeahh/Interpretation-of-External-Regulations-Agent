@@ -1,9 +1,13 @@
-import { useMemo, useRef, useState } from "react";
+import { useMemo, useRef, useState, type KeyboardEvent } from "react";
 
 import type { WorkflowSession } from "../../app/workflow-store";
 import { buildFullReport } from "./build-full-report";
 import { buildQuickCommentary } from "./build-quick-commentary";
-import type { ReportModel, ReportType } from "./report-model";
+import {
+  reportExportBlockReason,
+  type ReportModel,
+  type ReportType,
+} from "./report-model";
 import { ReportPreview } from "./ReportPreview";
 
 type ExportFormat = "docx" | "pdf";
@@ -20,13 +24,13 @@ const defaultExporters: ReportExporters = {
   pdf: async (report) => (await import("./export-pdf")).exportPdf(report),
 };
 
-const browserDownload: ReportDownload = (blob, fileName) => {
+export const browserDownload: ReportDownload = (blob, fileName) => {
   const url = URL.createObjectURL(blob);
   const link = document.createElement("a");
   link.href = url;
   link.download = fileName;
   link.click();
-  window.setTimeout(() => URL.revokeObjectURL(url), 0);
+  window.setTimeout(() => URL.revokeObjectURL(url), 60_000);
 };
 
 const safeFileStem = (value: string): string =>
@@ -50,6 +54,8 @@ export const ReportPage = ({
   const stableGeneratedAt = useRef(
     generatedAt ?? new Date().toISOString(),
   ).current;
+  const fullTabRef = useRef<HTMLButtonElement>(null);
+  const quickTabRef = useRef<HTMLButtonElement>(null);
   const reports = useMemo(
     () => ({
       full_report: buildFullReport(session, { generatedAt: stableGeneratedAt }),
@@ -60,9 +66,8 @@ export const ReportPage = ({
     [session, stableGeneratedAt],
   );
   const report = reports[reportType];
-  const canExport =
-    report.authoritativeParsing &&
-    report.sections.some(({ items }) => items.length);
+  const exportBlockReason = reportExportBlockReason(report);
+  const canExport = exportBlockReason === null;
 
   const selectType = (next: ReportType): void => {
     if (exporting) return;
@@ -92,12 +97,13 @@ export const ReportPage = ({
     }
   };
 
-  const moveTab = (key: string): void => {
-    if (key === "ArrowRight" || key === "ArrowLeft") {
-      selectType(
-        reportType === "full_report" ? "quick_commentary" : "full_report",
-      );
-    }
+  const moveTab = (event: KeyboardEvent<HTMLButtonElement>): void => {
+    if (event.key !== "ArrowRight" && event.key !== "ArrowLeft") return;
+    event.preventDefault();
+    const next =
+      reportType === "full_report" ? "quick_commentary" : "full_report";
+    selectType(next);
+    (next === "full_report" ? fullTabRef : quickTabRef).current?.focus();
   };
 
   return (
@@ -111,22 +117,24 @@ export const ReportPage = ({
       <div className="report-toolbar">
         <div role="tablist" aria-label="成果类型">
           <button
+            ref={fullTabRef}
             type="button"
             role="tab"
             aria-selected={reportType === "full_report"}
             tabIndex={reportType === "full_report" ? 0 : -1}
             onClick={() => selectType("full_report")}
-            onKeyDown={({ key }) => moveTab(key)}
+            onKeyDown={moveTab}
           >
             外规解读报告
           </button>
           <button
+            ref={quickTabRef}
             type="button"
             role="tab"
             aria-selected={reportType === "quick_commentary"}
             tabIndex={reportType === "quick_commentary" ? 0 : -1}
             onClick={() => selectType("quick_commentary")}
-            onKeyDown={({ key }) => moveTab(key)}
+            onKeyDown={moveTab}
           >
             新规快评
           </button>
@@ -150,6 +158,9 @@ export const ReportPage = ({
       </div>
       {!report.authoritativeParsing ? (
         <p role="alert">权威解析或 OCR 质量未通过，导出已禁用。</p>
+      ) : null}
+      {report.authoritativeParsing && exportBlockReason ? (
+        <p role="status">{exportBlockReason}</p>
       ) : null}
       {error ? <p role="alert">{error}</p> : null}
       <ReportPreview report={report} />

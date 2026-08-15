@@ -9,7 +9,7 @@ Base HEAD: `d6884fa`
 Implemented the production report step with two materially different report structures that share one allow-listed `ReportModel` source:
 
 - Full `外规解读报告`: exactly 11 ordered sections, including evidence and review-history appendix.
-- `新规快评`: exactly the required 8 keys, with a 3–5 item top-changes list when the authoritative finding set supplies enough changes (the representative fixture supplies 5).
+- `新规快评`: exactly the required 8 keys, with a 3–5 item top-changes list when the authoritative finding set supplies enough changes (the representative fixture supplies 3).
 - Browser-local editable DOCX and searchable PDF exports.
 - Production `WorkflowShell` integration, two report tabs, four download combinations, loading/error/retry/disabled states, keyboard tab switching, and 1024 px responsive verification.
 - Draft export remains allowed only with authoritative parsing evidence and eligible verified content, and is visibly watermarked `AI草稿，未经人工复核`. Human-final status remains controlled solely by Task 8 `canFinalizeSession`.
@@ -81,7 +81,7 @@ The PDF.js extraction test emits CFF parser warnings for this old CFF OTF, but i
 - The same built `ReportModel` instance drives preview and export.
 - No report builder or exporter invokes the model gateway.
 - DOCX/PDF modules are dynamic imports. The 16.5 MB font and 1.35 MB minified PDF renderer chunk are not in the initial application chunk.
-- Object URLs are revoked on a zero-delay task after the anchor click, avoiding a browser download race while still releasing the Blob URL.
+- Object URLs are revoked after a 60-second download grace period, avoiding a cross-browser download race while still releasing the Blob URL.
 - `generatedAt` is injectable and held in a stable component ref; deterministic tests use `2026-08-16T03:00:00.000Z`.
 
 ## DOCX structure and extraction QA
@@ -135,7 +135,7 @@ Full DOCX: 4 / 4 pages
 Quick DOCX: 2 / 2 pages
 ```
 
-Final result: PASS. Chinese glyphs, headings, bullets, headers, repeated draft watermark, footnotes, fixed-width evidence table across its page break, and footer page numbers are visible. No clipping, overlap, or blank page was observed.
+Final result: PASS. Chinese glyphs, headings, bullets, headers, repeated draft watermark, footnotes, the fixed-width evidence table in its independent final section, and footer page numbers are visible. No clipping, overlap, or blank page was observed.
 
 ## PDF structure, extraction, and visual QA
 
@@ -157,14 +157,14 @@ Representative browser downloads:
 Poppler results:
 
 ```text
-Full PDF: 3 pages, US Letter 612 x 792 pt, 105296 bytes
-Quick PDF: 2 pages, US Letter 612 x 792 pt, 101898 bytes
+Full PDF: 4 pages, US Letter 612 x 792 pt, 108731 bytes
+Quick PDF: 2 pages, US Letter 612 x 792 pt, 102499 bytes
 Font: ZQCUPH+SourceHanSans-Normal, CID Type 0C, embedded=yes, subset=yes, Unicode=yes
 ```
 
 `pdftotext` extracted searchable Chinese text for both files, including titles, all section headings, watermark, source list, labels, dates, anchors, and revision trail.
 
-All 5 PDF pages were rendered with Poppler `pdftoppm` and inspected individually. Result: PASS. The restrained white/black/`#86BC25` system is consistent, text is legible, page breaks are sound, repeated watermark/header/footer is visible, and there is no clipping or unauthorized logo.
+All 6 PDF pages were rendered with Poppler `pdftoppm` and inspected individually. Result: PASS. The restrained white/black/`#86BC25` system is consistent, text is legible, page breaks are sound, repeated watermark/header/footer is visible, and there is no clipping or unauthorized logo.
 
 ## Font provenance and license evidence
 
@@ -213,7 +213,7 @@ The production `WorkflowShell` E2E now reaches the real `ReportPage` after uploa
 ```text
 node_modules/.bin/vitest run
 Test Files  28 passed (28)
-Tests       244 passed (244)
+Tests       262 passed (262)
 
 node_modules/.bin/tsc --noEmit
 exit 0
@@ -226,8 +226,8 @@ build completed successfully
 Build output confirms on-demand chunks:
 
 ```text
-dist/assets/export-docx-*.js     357.40 kB (103.59 kB gzip)
-dist/assets/export-pdf-*.js    1353.76 kB (483.88 kB gzip)
+dist/assets/export-docx-*.js     359.07 kB (104.09 kB gzip)
+dist/assets/export-pdf-*.js    1354.26 kB (483.97 kB gzip)
 dist/assets/SourceHanSans-*.otf 16504.82 kB
 ```
 
@@ -268,3 +268,198 @@ OOXML contains no report media/logo entries. Exported models and files contain n
 - Report data flow preserves official pairing, audit chains, and current attestations rather than flattening or bypassing them.
 - The DOCX references Source Han Sans but does not embed the 16.5 MB font, keeping it editable and compact; Word/LibreOffice environments need that font or an available CJK fallback. Required QA explicitly loaded the repository copy through Fontconfig and passed. PDF embeds a Unicode subset and is self-contained.
 - PDF.js prints non-fatal CFF diagnostics in the unit test for this v1.000 font. Independent Poppler text extraction, font inspection, and all-page rendering pass; no PDF defect was observed.
+
+---
+
+## Fix round 1/5 — reviewer findings
+
+Fix base: `5f2f94ce63672a12ad95dfe3f88ac1e0061d8b14`
+
+### RED evidence
+
+The first focused reviewer-reproduction run covered the production workflow,
+builders, report page, exporters, review actions, and Task 7 taxonomy:
+
+```text
+Test Files: focused reviewer batch
+Tests: 84 total
+Passed: 69
+Failed: 15
+```
+
+Failures reproduced all six blocking findings: no production draft entry,
+quick reports with fewer than three changes remained exportable,
+`key_matter:implementation_arrangement` was absent from both date sections,
+human recommended actions were trapped in the appendix, institutional impact
+was not seven-dimensional, and keyboard tab movement did not move DOM focus.
+
+The first visual-regression test for the reported DOCX clipping failed before
+implementation:
+
+```text
+src/features/reports/export-docx.test.ts
+1 failed, 2 passed
+expected styles.xml to contain ReportFootnote
+```
+
+The structural section/position test also failed RED:
+
+```text
+src/features/reports/export-docx.test.ts
+1 failed, 2 passed
+expected 2 <w:sectPr> nodes but received 1
+```
+
+### Implemented fixes
+
+1. Production draft path
+   - `WorkflowShell` exposes `预览/导出 AI 草稿` from the review step only when
+     Task 8 authoritative parse/OCR validation succeeds and at least one
+     report-eligible verified finding exists.
+   - Opening the draft does not mutate the persisted workflow step and does
+     not weaken `canFinalizeSession`; final report navigation remains gated by
+     the Task 8 human-finalization rules.
+   - Both formats retain the conspicuous `AI草稿，未经人工复核` watermark.
+
+2. Quick-report 3–5 gate
+   - Preview retains the real 0/1/2 items and shows the exact insufficiency
+     reason.
+   - Quick DOCX/PDF export rejects fewer than 3 or more than 5 top changes at
+     both UI and exporter boundaries. No filler facts are created.
+   - Full-report exportability is independent of this quick-only cardinality.
+
+3. Closed date routing
+   - Both builders now route the exact category
+     `key_matter:implementation_arrangement` into their date/implementation
+     sections alongside the other explicit closed categories.
+   - No free-text/substring classification was introduced.
+
+4. Closed human-judgment purpose
+   - The accessible add-human dialog requires a closed report purpose:
+     `generic` or `recommended_action`.
+   - Controlled action creation derives the audited Finding category:
+     generic → `human_review`; action → `recommended_action:priority`.
+   - Task 9 snapshot hashing/replay therefore persists and revalidates the
+     purpose through the existing immutable action chain. Real actions reach
+     full/quick action sections; generic judgments remain in the appendix.
+
+5. Seven-dimensional institutional impact
+   - Report items preserve closed category and dimension metadata.
+   - Full reports always render governance, institution, process, system,
+     data, people, and reporting groups, using explicit empty states instead
+     of invented content.
+   - Quick affected scope retains concise dimension labels.
+   - Task 7's closed live-response taxonomy and prompt now include
+     `institution`; historical validation keeps the exact old
+     `institution_impact` compatibility value but rejects unknown dimensions.
+
+6. Keyboard and download lifecycle
+   - ArrowLeft/ArrowRight call `preventDefault`, switch the selected report,
+     update roving `tabindex`, and focus the active tab.
+   - Browser Blob URLs are revoked after a 60-second grace period; the test
+     verifies that they are not revoked synchronously and are eventually
+     released.
+
+### Native DOCX footnote compatibility — failed attempts and structural fix
+
+Two visual attempts were deliberately recorded rather than hidden:
+
+```text
+Attempt 1: compact native ReportFootnote style
+Result: quick 2/2 pages passed; full final footnote still clipped.
+
+Attempt 2: page-break-before evidence appendix
+Result: appendix table moved, but the preceding page's last footnote still
+clipped. Work stopped under the same-root-cause-twice rule.
+```
+
+The authorized structural fix retained Word-native footnotes and clickable
+references. The evidence appendix is now a true independent final DOCX section.
+Both section-property nodes explicitly contain:
+
+```xml
+<w:footnotePr><w:pos w:val="beneathText"/></w:footnotePr>
+```
+
+The table remains fixed-width DXA and rows keep natural height/page flow. One
+actual-app export/regeneration was then performed. Final LibreOffice render:
+
+```text
+Full DOCX: 4 / 4 pages inspected — PASS
+Quick DOCX: 2 / 2 pages inspected — PASS
+```
+
+All Chinese text, native footnotes 1–13, headers, watermark, footers, the full
+evidence table, and revision trail are visible with no clipping, overlap,
+missing glyphs, or blank page. `unzip -t` passed for both files. OOXML checks
+confirm two full-report `sectPr` nodes, two `footnotePr` nodes, native
+`word/footnotes.xml`, `FootnoteReference` runs, `ReportFootnote` styling, and
+the independent final section.
+
+### Final representative files and extraction
+
+All four files came from the actual `ReportPage` browser download handlers in
+`work/task10-fix1-qa-structural`:
+
+```text
+Full DOCX   14934 bytes  SHA-256 ab7ee4ad5a81e116895bc734d0b231913e8c25fc24f65c304db1a4112b9527dc
+Quick DOCX  12355 bytes  SHA-256 76ee87cccfb36ec4f5a9706cb3d0182e532f27e9ade8133fa2fb12b16ec663a3
+Full PDF   108731 bytes  SHA-256 9e4004f60f35518094f78d3f60553def0aef43a7138d890b1b52806e01260f72
+Quick PDF  102499 bytes  SHA-256 2fb60b20a210e50507893aea83dc41509947799ef2000950dbdd091428321e25
+```
+
+Poppler reported full PDF 4 pages and quick PDF 2 pages, both US Letter. Both
+contain an embedded/subsetted Unicode `SourceHanSans-Normal` CID font.
+`pdftotext -layout` recovered titles, watermark, report sections, closed
+dimension labels, implementation arrangements, evidence locators, and human
+revision text. All six browser-PDF pages were rendered with `pdftoppm` and
+inspected: PASS, with no clipping, overlap, unauthorized logo, or missing
+Chinese glyph.
+
+### Fresh GREEN gates
+
+Focused Vitest:
+
+```text
+Test Files  8 passed (8)
+Tests       92 passed (92)
+```
+
+Full Vitest:
+
+```text
+Test Files  28 passed (28)
+Tests       262 passed (262)
+```
+
+Full Playwright, including production App draft path, production analysis and
+review flow, report focus behavior, four downloads, OCR, and 1024 px layout:
+
+```text
+8 passed (11.5s)
+```
+
+Type/build:
+
+```text
+tsc --noEmit: exit 0
+vite build: 748 modules transformed; completed successfully
+```
+
+The advisory >500 kB warning remains for existing parser/main and PDF chunks.
+The DOCX exporter (359.07 kB), PDF exporter (1354.26 kB), and 16.5 MB CJK font
+remain separate on-demand assets rather than entering the initial bundle.
+
+Final hygiene:
+
+```text
+git diff --check: exit 0
+unzip -t full/quick DOCX: No errors detected
+exact-value credential scan over dist/ and all four exports: no matches
+generated-file scan for apiKey, authorization, endpoint, or session-secret
+values: no matches
+```
+
+No report/media/logo assets were added. Builders still do not call the model,
+and no API key, endpoint, credential, session secret, unsafe HTML, or model log
+was introduced into report models, exports, or the production build.

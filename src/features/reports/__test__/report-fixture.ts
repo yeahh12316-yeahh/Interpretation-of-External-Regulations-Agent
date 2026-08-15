@@ -236,7 +236,7 @@ export const reviewedReportSession = (): WorkflowSession => {
   return sealWorkflowSession(
     addHumanJudgment(session, {
       findingId: "H-ACTION",
-      category: "recommended_action:priority",
+      purpose: "recommended_action",
       statement: "人工判断：优先完善管理制度",
       anchor: initialFindings.find(({ findingId }) => findingId === "F-CORE")!
         .sourceAnchors[0],

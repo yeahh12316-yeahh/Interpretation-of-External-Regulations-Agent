@@ -206,13 +206,18 @@ it("wires confirm, modify, soft-delete, human judgment, rule review and return a
     screen.getByLabelText("人工判断陈述"),
     "适用范围由合规人员进一步确认",
   );
+  await user.selectOptions(
+    screen.getByLabelText("报告用途"),
+    "recommended_action",
+  );
+  expect(screen.getByLabelText("报告用途")).toHaveValue("recommended_action");
   await user.type(screen.getByLabelText("判断理由"), "涉及机构实际情况");
   await user.click(screen.getByRole("button", { name: "保存人工判断" }));
-  expect(
-    current.project.findings.some(
-      ({ claimType }) => claimType === "human_judgment",
-    ),
-  ).toBe(true);
+  expect(screen.queryByRole("alert")).not.toBeInTheDocument();
+  expect(current.project.findings.at(-1)).toMatchObject({
+    claimType: "human_judgment",
+    category: "recommended_action:priority",
+  });
 
   const manualRule = screen.getAllByTestId("manual-rule")[0];
   await user.type(

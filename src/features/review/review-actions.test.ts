@@ -221,7 +221,7 @@ describe("immutable review actions", () => {
     const updated = addHumanJudgment(state(), {
       findingId: "H1",
       statement: "本项目应由法律合规部门进一步确认适用范围",
-      category: "human_review",
+      purpose: "generic",
       anchor,
       reviewer: meta.reviewer,
       reason: "适用范围涉及机构事实",
@@ -229,6 +229,7 @@ describe("immutable review actions", () => {
     });
     expect(updated.project.findings.at(-1)).toMatchObject({
       findingId: "H1",
+      category: "human_review",
       claimType: "human_judgment",
       reviewStatus: "confirmed",
       sourceAnchors: [anchor],
@@ -236,11 +237,23 @@ describe("immutable review actions", () => {
     expect(updated.reviewActions).toEqual([
       expect.objectContaining({ action: "add_human", findingId: "H1" }),
     ]);
+    const action = addHumanJudgment(state(), {
+      findingId: "H-ACTION",
+      statement: "优先完成制度修订",
+      purpose: "recommended_action",
+      anchor,
+      reviewer: meta.reviewer,
+      reason: "依据监管要求安排优先级",
+      reviewedAt: meta.reviewedAt,
+    });
+    expect(action.project.findings.at(-1)?.category).toBe(
+      "recommended_action:priority",
+    );
     expect(() =>
       addHumanJudgment(state(), {
         findingId: "H2",
         statement: "没有依据的判断",
-        category: "human_review",
+        purpose: "generic",
         anchor: { ...anchor, quote: "并不存在的原文" },
         reviewer: meta.reviewer,
         reason: meta.reason,

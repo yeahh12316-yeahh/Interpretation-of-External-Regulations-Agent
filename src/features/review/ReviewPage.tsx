@@ -330,8 +330,8 @@ export function ReviewPage({
         open={editOpen}
         finding={selected}
         onClose={() => setEditOpen(false)}
-        onSave={(statement, reason) =>
-          selected &&
+        onSave={(statement, reason) => {
+          if (!selected) return;
           apply(() => {
             setEditOpen(false);
             return modifyFinding(
@@ -340,27 +340,27 @@ export function ReviewPage({
               statement,
               meta(reason),
             );
-          })
-        }
+          });
+        }}
       />
       <AddHumanJudgmentDialog
         open={humanOpen}
         basisFinding={selected}
         onClose={() => setHumanOpen(false)}
-        onSave={(statement, reason) =>
-          selected?.sourceAnchors[0] &&
+        onSave={(statement, reason, purpose) => {
+          if (!selected?.sourceAnchors[0]) return;
           apply(() => {
             setHumanOpen(false);
             return addHumanJudgment(state, {
               findingId: `H-${state.project.findings.length + 1}`,
-              category: "human_review",
+              purpose,
               statement,
               reason,
               reviewer,
               anchor: selected.sourceAnchors[0],
             });
-          })
-        }
+          });
+        }}
       />
       <ReturnToAnalysisDialog
         open={returnOpen}

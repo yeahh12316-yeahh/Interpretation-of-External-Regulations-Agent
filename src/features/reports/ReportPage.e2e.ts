@@ -59,6 +59,12 @@ test("previews two real structures and downloads four browser-generated files at
   await page.getByRole("tab", { name: "外规解读报告" }).focus();
   await page.keyboard.press("ArrowRight");
   await expect(quickTab).toHaveAttribute("aria-selected", "true");
+  await expect(quickTab).toBeFocused();
+  await expect(quickTab).toHaveAttribute("tabindex", "0");
+  await expect(page.getByRole("tab", { name: "外规解读报告" })).toHaveAttribute(
+    "tabindex",
+    "-1",
+  );
   await expect(
     page.getByRole("heading", { name: /一句话结论/u }),
   ).toBeVisible();

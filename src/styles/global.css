@@ -243,9 +243,28 @@ button:disabled {
   padding: 0.65rem;
   background: #f6f6f4;
 }
+.report-dimension-groups {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 0.75rem;
+}
+.report-dimension-groups > section {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid #d5d5d5;
+}
+.report-dimension-groups h4 {
+  margin: 0 0 0.55rem;
+  color: #355109;
+}
 .report-empty {
   color: #666;
   font-style: italic;
+}
+@media (max-width: 720px) {
+  .report-dimension-groups {
+    grid-template-columns: 1fr;
+  }
 }
 .review-layout {
   display: grid;

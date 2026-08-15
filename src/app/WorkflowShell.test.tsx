@@ -16,6 +16,7 @@ import {
   type WorkflowSession,
 } from "./workflow-store";
 import { WorkflowErrorBoundary, WorkflowShell } from "./WorkflowShell";
+import { draftReportSession } from "../features/reports/__test__/report-fixture";
 
 const emptySession = (): WorkflowSession =>
   createEmptyWorkflowSession("P1", "外规解读项目");
@@ -94,6 +95,23 @@ it("renders the production five-step shell and fails closed navigation", async (
   expect(screen.getByRole("heading", { name: "材料上传" })).toBeVisible();
   expect(screen.getByRole("button", { name: "上一步" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+});
+
+it("opens a production draft report with watermark before required review completion while final remains gated", async () => {
+  const user = userEvent.setup();
+  const draft = draftReportSession();
+  draft.project.workflowStep = "review";
+  render(
+    <WorkflowShell
+      initialSession={draft}
+      repository={{ load: vi.fn(), save: vi.fn() }}
+    />,
+  );
+  expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+  await user.click(screen.getByRole("button", { name: "预览/导出 AI 草稿" }));
+  expect(screen.getByRole("heading", { name: "报告导出" })).toBeVisible();
+  expect(screen.getAllByText("AI草稿，未经人工复核").length).toBeGreaterThan(0);
+  expect(screen.getByRole("button", { name: "返回人工复核" })).toBeVisible();
 });
 
 it("blocks failed parse outcomes and never calls analysis without model config/consent", async () => {

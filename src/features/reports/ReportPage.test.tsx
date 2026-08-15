@@ -1,9 +1,9 @@
 import "@testing-library/jest-dom/vitest";
-import { render, screen } from "@testing-library/react";
+import { fireEvent, render, screen } from "@testing-library/react";
 import userEvent from "@testing-library/user-event";
 import { expect, it, vi } from "vitest";
 
-import { ReportPage } from "./ReportPage";
+import { browserDownload, ReportPage } from "./ReportPage";
 import {
   draftReportSession,
   reviewedReportSession,
@@ -87,4 +87,59 @@ it("disables export when authoritative parsing is unavailable", () => {
   expect(screen.getByRole("button", { name: "下载 DOCX" })).toBeDisabled();
   expect(screen.getByRole("button", { name: "下载 PDF" })).toBeDisabled();
   expect(screen.getByRole("alert")).toHaveTextContent("权威解析");
+});
+
+it("keeps insufficient quick content visible but fails quick export closed", async () => {
+  const user = userEvent.setup();
+  const session = reviewedReportSession();
+  session.project.findings = session.project.findings.filter(
+    ({ category }) =>
+      !category.startsWith("key_matter:") && category !== "atomic_requirement",
+  );
+  render(<ReportPage session={session} />);
+  expect(screen.getByRole("button", { name: "下载 DOCX" })).toBeEnabled();
+  await user.click(screen.getByRole("tab", { name: "新规快评" }));
+  expect(screen.getByText(/至少需要 3 项已验证变化/)).toBeVisible();
+  expect(screen.getByRole("button", { name: "下载 DOCX" })).toBeDisabled();
+  expect(screen.getByRole("button", { name: "下载 PDF" })).toBeDisabled();
+});
+
+it("moves DOM focus with roving tabs and prevents browser arrow defaults", () => {
+  render(<ReportPage session={reviewedReportSession()} />);
+  const full = screen.getByRole("tab", { name: "外规解读报告" });
+  const quick = screen.getByRole("tab", { name: "新规快评" });
+  full.focus();
+  const prevented = !fireEvent.keyDown(full, { key: "ArrowRight" });
+  expect(prevented).toBe(true);
+  expect(quick).toHaveFocus();
+  expect(quick).toHaveAttribute("tabindex", "0");
+  expect(full).toHaveAttribute("tabindex", "-1");
+  expect(!fireEvent.keyDown(quick, { key: "ArrowLeft" })).toBe(true);
+  expect(full).toHaveFocus();
+});
+
+it("keeps the Blob URL alive through download startup and revokes it after a safe delay", () => {
+  vi.useFakeTimers();
+  const create = vi.fn(() => "blob:report");
+  const revoke = vi.fn();
+  Object.defineProperty(URL, "createObjectURL", {
+    configurable: true,
+    value: create,
+  });
+  Object.defineProperty(URL, "revokeObjectURL", {
+    configurable: true,
+    value: revoke,
+  });
+  const click = vi
+    .spyOn(HTMLAnchorElement.prototype, "click")
+    .mockImplementation(() => undefined);
+  browserDownload(new Blob(["report"]), "report.docx");
+  expect(create).toHaveBeenCalled();
+  expect(click).toHaveBeenCalled();
+  expect(revoke).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(59_999);
+  expect(revoke).not.toHaveBeenCalled();
+  vi.advanceTimersByTime(1);
+  expect(revoke).toHaveBeenCalledWith("blob:report");
+  vi.useRealTimers();
 });

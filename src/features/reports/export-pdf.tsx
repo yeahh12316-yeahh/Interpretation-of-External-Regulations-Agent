@@ -9,7 +9,12 @@ import {
 } from "@react-pdf/renderer";
 
 import sourceHanSansUrl from "../../assets/SourceHanSans-Normal.otf?url";
-import type { ReportEvidence, ReportModel } from "./report-model";
+import {
+  impactDimensionTitle,
+  reportExportBlockReason,
+  type ReportEvidence,
+  type ReportModel,
+} from "./report-model";
 
 const FONT_FAMILY = "SourceHanSansLocal";
 const testWorkingDirectory = (
@@ -31,8 +36,8 @@ const registerFont = (): void => {
 };
 
 const assertExportable = (report: ReportModel): void => {
-  if (!report.authoritativeParsing)
-    throw new Error("权威解析未通过，不能导出报告");
+  const blocked = reportExportBlockReason(report);
+  if (blocked) throw new Error(blocked);
   const serialized = JSON.stringify(report);
   if (
     /"(?:apiKey|authorization|endpoint|credential|sessionSecret)"\s*:/iu.test(
@@ -92,6 +97,12 @@ const styles = StyleSheet.create({
   metadataLine: { marginBottom: 2 },
   section: { marginTop: 12 },
   sectionTitle: { marginBottom: 6, fontSize: 15, color: "#111111" },
+  groupTitle: {
+    marginTop: 5,
+    marginBottom: 3,
+    fontSize: 11.5,
+    color: "#111111",
+  },
   empty: { color: "#666666" },
   item: {
     marginBottom: 7,
@@ -160,11 +171,34 @@ export const ReportPdfDocument = ({ report }: { report: ReportModel }) => (
       {report.sections.map((section) => (
         <View key={section.key} style={styles.section}>
           <Text style={styles.sectionTitle}>{section.title}</Text>
-          {section.items.length ? (
+          {section.groups ? (
+            section.groups.map((group) => (
+              <View key={group.dimension}>
+                <Text style={styles.groupTitle}>{group.title}维度</Text>
+                {group.items.length ? (
+                  group.items.map((item) => (
+                    <View key={item.itemId} style={styles.item}>
+                      <Text style={styles.itemLabel}>
+                        {item.claimLabel} ｜ {group.title}维度 ｜{" "}
+                        {item.findingId}
+                      </Text>
+                      <Text>{item.text}</Text>
+                    </View>
+                  ))
+                ) : (
+                  <Text style={styles.empty}>该维度无可纳入的已验证结论。</Text>
+                )}
+              </View>
+            ))
+          ) : section.items.length ? (
             section.items.map((item) => (
               <View key={item.itemId} style={styles.item}>
                 <Text style={styles.itemLabel}>
-                  {item.claimLabel} ｜ {item.findingId}
+                  {item.claimLabel} ｜{" "}
+                  {item.dimension
+                    ? `${impactDimensionTitle(item.dimension)}维度 ｜ `
+                    : ""}
+                  {item.findingId}
                 </Text>
                 <Text>{item.text}</Text>
                 {item.evidence.map((evidence, index) => (

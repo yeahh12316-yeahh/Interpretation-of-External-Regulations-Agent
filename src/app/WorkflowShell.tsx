@@ -43,6 +43,7 @@ import { sessionCredentials } from "../features/model/session-credentials";
 import type { ParseResult } from "../features/parsing/parse-document";
 import { ReviewPage } from "../features/review/ReviewPage";
 import { ReportPage } from "../features/reports/ReportPage";
+import { canPreviewReportDraft } from "../features/reports/report-model";
 import {
   cancelReanalysis,
   completeReanalysis,
@@ -155,6 +156,7 @@ export function WorkflowShell({
   } | null>(null);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [consentOpen, setConsentOpen] = useState(false);
+  const [draftReportOpen, setDraftReportOpen] = useState(false);
   const controller = useRef<AbortController | null>(null);
   const persistenceQueue = useRef<Promise<void>>(Promise.resolve());
   const persistedRevision = useRef(session.revision);
@@ -171,6 +173,10 @@ export function WorkflowShell({
   const evidenceReady = useMemo(
     () => session.project.findings.length > 0 && canFinalizeSession(session),
     [session],
+  );
+  const draftReportAvailable = useMemo(
+    () => canPreviewReportDraft(session) && !evidenceReady,
+    [session, evidenceReady],
   );
   const transitionContext = {
     parsingReady: ready,
@@ -216,6 +222,7 @@ export function WorkflowShell({
       setMessage({ kind: "error", text: "分析运行中，不能切换步骤或复核" });
       return;
     }
+    setDraftReportOpen(false);
     const gate = canTransition(session.project, nextStep, transitionContext);
     if (!gate.allowed) {
       setMessage({ kind: "error", text: gate.reason });
@@ -544,7 +551,14 @@ export function WorkflowShell({
     const current = sessionRef.current;
     persist({ ...current, selectedFindingId: id });
   };
-  const page = recovering ? (
+  const page = draftReportOpen ? (
+    <>
+      <ReportPage session={session} />
+      <button type="button" onClick={() => setDraftReportOpen(false)}>
+        返回人工复核
+      </button>
+    </>
+  ) : recovering ? (
     <section aria-live="polite">
       <h1>正在恢复最近保存</h1>
       <p>正在校验本地工作流版本、解析证据与复核链。</p>
@@ -672,6 +686,17 @@ export function WorkflowShell({
             ) : null}
             {page}
             <footer className="page-controls">
+              {session.project.workflowStep === "review" &&
+              draftReportAvailable &&
+              !draftReportOpen ? (
+                <button
+                  type="button"
+                  disabled={running || recovering}
+                  onClick={() => setDraftReportOpen(true)}
+                >
+                  预览/导出 AI 草稿
+                </button>
+              ) : null}
               <button
                 disabled={!prior || running || recovering}
                 type="button"

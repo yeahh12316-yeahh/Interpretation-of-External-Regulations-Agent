@@ -2,6 +2,7 @@ import { inflateRawSync } from "node:zlib";
 import { expect, it } from "vitest";
 
 import { buildFullReport } from "./build-full-report";
+import { buildQuickCommentary } from "./build-quick-commentary";
 import { exportDocx } from "./export-docx";
 import {
   draftReportSession,
@@ -45,11 +46,29 @@ it("exports editable standard_business_brief OOXML with memo masthead, fixed tab
   expect(documentXml).toContain("外规解读报告");
   expect(documentXml).toContain('w:tblLayout w:type="fixed"');
   expect(documentXml).toContain('w:tblW w:type="dxa" w:w="9360"');
+  expect(documentXml.match(/<w:sectPr/gu)).toHaveLength(2);
+  expect(documentXml.match(/<w:footnotePr>/gu)).toHaveLength(2);
+  expect(documentXml).toContain('<w:pos w:val="beneathText"/>');
   expect(documentXml).toContain("w:footnoteReference");
   expect(stylesXml).toContain("standard_business_brief");
+  expect(stylesXml).toContain("ReportFootnote");
+  expect(footnotesXml).toContain('w:pStyle w:val="ReportFootnote"');
   expect(stylesXml).toContain('w:eastAsia="Source Han Sans"');
   expect(footnotesXml).toContain("REG-A");
   expect(JSON.stringify(report)).not.toContain("apiKey");
+});
+
+it("fails quick DOCX export closed when fewer than three verified changes exist", async () => {
+  const report = buildQuickCommentary(reviewedReportSession());
+  const invalid = {
+    ...report,
+    sections: report.sections.map((section) =>
+      section.key === "top_changes"
+        ? { ...section, items: section.items.slice(0, 2) }
+        : section,
+    ),
+  };
+  await expect(exportDocx(invalid)).rejects.toThrow(/至少需要 3 项/);
 });
 
 it("embeds the required draft watermark without including credentials", async () => {

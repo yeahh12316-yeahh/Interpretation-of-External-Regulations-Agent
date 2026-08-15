@@ -1,4 +1,23 @@
 import { expect, test } from "@playwright/test";
+import { inflateRawSync } from "node:zlib";
+
+const unzipText = (bytes: Buffer, fileName: string): string => {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let offset = 0; offset < bytes.length - 30; offset += 1) {
+    if (view.getUint32(offset, true) !== 0x04034b50) continue;
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const name = bytes.subarray(nameStart, nameStart + nameLength).toString();
+    if (name !== fileName) continue;
+    const dataStart = nameStart + nameLength + extraLength;
+    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+    return (method === 0 ? compressed : inflateRawSync(compressed)).toString();
+  }
+  throw new Error(`ZIP entry missing: ${fileName}`);
+};
 
 test("production App preserves upload and enforces the five-step browser gate", async ({
   page,
@@ -94,7 +113,45 @@ test("production flow analyzes, reviews, restores and reaches the report gate wi
           ],
         };
       } else if (schemaName === "analysis_key_matters_v1") {
-        output = { findings: [] };
+        const payload = body.messages.at(-1)?.content ?? "";
+        const sourceId = payload.match(
+          /"sourceId":"(SRC-regulatory_text-[^"]+)"/,
+        )?.[1];
+        if (!sourceId) throw new Error("key matter source ID missing");
+        const anchor = {
+          sourceId,
+          sourceType: "regulatory_text",
+          page: null,
+          article: "第一条",
+          paragraphIndex: 0,
+          quote: "第一条 商业银行应当建立管理机制。",
+        };
+        output = {
+          findings: [
+            {
+              findingId: "K1",
+              category: "key_matter:core_requirement",
+              statement: anchor.quote,
+              claimType: "regulatory_fact",
+              sourceAnchors: [anchor],
+              inferenceParents: [],
+              reviewStatus: "unreviewed",
+              requiredReview: false,
+              revisionRecords: [],
+            },
+            {
+              findingId: "K2",
+              category: "key_matter:implementation_arrangement",
+              statement: anchor.quote,
+              claimType: "regulatory_fact",
+              sourceAnchors: [anchor],
+              inferenceParents: [],
+              reviewStatus: "unreviewed",
+              requiredReview: false,
+              revisionRecords: [],
+            },
+          ],
+        };
       } else if (schemaName === "analysis_institution_impact_v1") {
         output = { impacts: [] };
       } else {
@@ -152,6 +209,25 @@ test("production flow analyzes, reviews, restores and reaches the report gate wi
     page.getByRole("heading", { name: "人工复核与修正" }),
   ).toBeVisible();
 
+  await expect(page.getByRole("button", { name: "下一步" })).toBeDisabled();
+  await page.getByRole("button", { name: "预览/导出 AI 草稿" }).click();
+  await expect(page.getByRole("heading", { name: "报告导出" })).toBeVisible();
+  await expect(page.getByText("AI草稿，未经人工复核").first()).toBeVisible();
+  const [draftDownload] = await Promise.all([
+    page.waitForEvent("download"),
+    page.getByRole("button", { name: "下载 DOCX" }).click(),
+  ]);
+  const draftStream = await draftDownload.createReadStream();
+  const draftChunks: Buffer[] = [];
+  for await (const chunk of draftStream) draftChunks.push(Buffer.from(chunk));
+  expect(unzipText(Buffer.concat(draftChunks), "word/header1.xml")).toContain(
+    "AI草稿，未经人工复核",
+  );
+  await page.getByRole("button", { name: "返回人工复核" }).click();
+  await expect(
+    page.getByRole("heading", { name: "人工复核与修正" }),
+  ).toBeVisible();
+
   await page.getByRole("button", { name: "退回重新分析" }).click();
   const returnDialog = page.getByRole("dialog", { name: "退回重新分析" });
   await returnDialog.getByLabel("退回原因").fill("E2E 核验定向范围");
@@ -171,6 +247,11 @@ test("production flow analyzes, reviews, restores and reaches the report gate wi
   ).toBeVisible();
 
   await page.getByRole("button", { name: "确认 F1" }).click();
+  await page
+    .getByTestId("review-item")
+    .filter({ hasText: "F1" })
+    .getByRole("button", { name: "查看依据" })
+    .click();
   await page
     .getByRole("button", { name: /删除 SYS-PENDING-FILE-PROFILE/ })
     .click();

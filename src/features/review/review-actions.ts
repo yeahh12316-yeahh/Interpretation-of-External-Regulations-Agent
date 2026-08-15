@@ -461,10 +461,12 @@ export const deleteFinding = (
     "soft_delete",
   );
 
+export type HumanJudgmentPurpose = "generic" | "recommended_action";
+
 export interface HumanJudgmentInput extends ReviewMeta {
   readonly findingId: string;
   readonly statement: string;
-  readonly category: string;
+  readonly purpose: HumanJudgmentPurpose;
   readonly anchor: SourceAnchor;
 }
 
@@ -472,6 +474,14 @@ export const addHumanJudgment = (
   state: ReviewWorkflowState,
   input: HumanJudgmentInput,
 ): ReviewWorkflowState => {
+  const category =
+    input.purpose === "recommended_action"
+      ? "recommended_action:priority"
+      : input.purpose === "generic"
+        ? "human_review"
+        : (() => {
+            throw new Error("人工判断用途不在允许范围内");
+          })();
   const reviewer = required(input.reviewer, "复核人");
   const reason = required(input.reason, "判断理由");
   const reviewedAt = utc(input.reviewedAt);
@@ -505,7 +515,7 @@ export const addHumanJudgment = (
   }
   const finding = FindingSchema.parse({
     findingId: required(input.findingId, "结论 ID"),
-    category: required(input.category, "判断类别"),
+    category,
     statement: required(input.statement, "人工判断陈述"),
     claimType: "human_judgment",
     sourceAnchors: [input.anchor],

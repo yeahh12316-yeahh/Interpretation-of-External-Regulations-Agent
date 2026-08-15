@@ -15,6 +15,14 @@ import {
 
 export type ReportType = "full_report" | "quick_commentary";
 export type ReportReviewStatus = "human_finalized" | "ai_draft";
+export type ImpactDimension =
+  | "governance"
+  | "institution"
+  | "process"
+  | "system"
+  | "data"
+  | "people"
+  | "reporting";
 
 export interface ReportEvidence {
   readonly sourceId: string;
@@ -37,6 +45,8 @@ export interface ReportItem {
   readonly itemId: string;
   readonly findingId: string;
   readonly text: string;
+  readonly category: string;
+  readonly dimension: ImpactDimension | null;
   readonly claimType: ClaimType;
   readonly claimLabel: "监管原文" | "官方解读" | "AI推导" | "人工判断";
   readonly reviewStatus: ReviewStatus;
@@ -44,11 +54,46 @@ export interface ReportItem {
   readonly revisions: readonly ReportRevision[];
 }
 
+export interface ReportDimensionGroup {
+  readonly dimension: ImpactDimension;
+  readonly title: string;
+  readonly items: readonly ReportItem[];
+}
+
 export interface ReportSection {
   readonly key: string;
   readonly title: string;
   readonly items: readonly ReportItem[];
+  readonly groups?: readonly ReportDimensionGroup[];
 }
+
+export const IMPACT_DIMENSIONS: readonly {
+  readonly dimension: ImpactDimension;
+  readonly title: string;
+}[] = [
+  { dimension: "governance", title: "治理" },
+  { dimension: "institution", title: "制度" },
+  { dimension: "process", title: "流程" },
+  { dimension: "system", title: "系统" },
+  { dimension: "data", title: "数据" },
+  { dimension: "people", title: "人员" },
+  { dimension: "reporting", title: "报告" },
+] as const;
+
+const impactDimension = (category: string): ImpactDimension | null => {
+  const match = IMPACT_DIMENSIONS.find(
+    ({ dimension }) => category === `institution_impact:${dimension}`,
+  );
+  return match?.dimension ?? null;
+};
+
+export const impactDimensionTitle = (
+  dimension: ImpactDimension | null,
+): string | null =>
+  dimension === null
+    ? null
+    : (IMPACT_DIMENSIONS.find((item) => item.dimension === dimension)?.title ??
+      null);
 
 export interface ReportSource {
   readonly sourceId: string;
@@ -180,6 +225,8 @@ export const createReportContext = (
         itemId: `finding:${finding.findingId}`,
         findingId: finding.findingId,
         text: finding.statement,
+        category: finding.category,
+        dimension: impactDimension(finding.category),
         claimType: finding.claimType,
         claimLabel: claimLabel(finding.claimType),
         reviewStatus: finding.reviewStatus,
@@ -222,6 +269,28 @@ export const createReportContext = (
       })),
     },
   };
+};
+
+export const canPreviewReportDraft = (session: WorkflowSession): boolean => {
+  if (!hasAuthoritativeParsingEvidence(session)) return false;
+  return createReportContext(session).eligibleFindings.length > 0;
+};
+
+export const reportExportBlockReason = (report: ReportModel): string | null => {
+  if (!report.authoritativeParsing)
+    return "权威解析或 OCR 质量未通过，导出已禁用。";
+  if (!report.sections.some(({ items }) => items.length > 0))
+    return "没有可纳入的已验证结论，导出已禁用。";
+  if (report.reportType === "quick_commentary") {
+    const count =
+      report.sections.find(({ key }) => key === "top_changes")?.items.length ??
+      0;
+    if (count < 3)
+      return `新规快评至少需要 3 项已验证变化，当前仅 ${count} 项；预览保留但导出已禁用。`;
+    if (count > 5)
+      return `新规快评最多允许 5 项已验证变化，当前为 ${count} 项；导出已禁用。`;
+  }
+  return null;
 };
 
 export const itemsMatching = (
