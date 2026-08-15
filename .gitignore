@@ -6,6 +6,7 @@ test-results/
 .worktrees/
 .superpowers/
 outputs/
+work/
 .DS_Store
 *.log
 .env

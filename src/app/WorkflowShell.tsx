@@ -42,6 +42,7 @@ import {
 import { sessionCredentials } from "../features/model/session-credentials";
 import type { ParseResult } from "../features/parsing/parse-document";
 import { ReviewPage } from "../features/review/ReviewPage";
+import { ReportPage } from "../features/reports/ReportPage";
 import {
   cancelReanalysis,
   completeReanalysis,
@@ -606,39 +607,7 @@ export function WorkflowShell({
       onSelectedFindingIdChange={selectFinding}
     />
   ) : (
-    <section>
-      <h1>报告导出</h1>
-      <p>
-        证据质量门禁已通过。报告包含复核历史与来源锚点，不包含模型 API Key。
-      </p>
-      <button
-        type="button"
-        onClick={() => {
-          const blob = new Blob(
-            [
-              JSON.stringify(
-                {
-                  project: session.project,
-                  reviewAudits: session.reviewAudits,
-                  ruleReviewAttestations: session.ruleReviewAttestations,
-                },
-                null,
-                2,
-              ),
-            ],
-            { type: "application/json" },
-          );
-          const url = URL.createObjectURL(blob);
-          const link = document.createElement("a");
-          link.href = url;
-          link.download = `${session.project.projectName}-报告.json`;
-          link.click();
-          URL.revokeObjectURL(url);
-        }}
-      >
-        导出报告
-      </button>
-    </section>
+    <ReportPage session={session} />
   );
   return (
     <WorkflowErrorBoundary onBack={() => prior && move(prior.key)}>

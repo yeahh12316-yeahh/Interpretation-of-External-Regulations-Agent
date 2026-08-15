@@ -193,6 +193,13 @@ test("production flow analyzes, reviews, restores and reaches the report gate wi
   await expect(page.getByRole("button", { name: "下一步" })).toBeEnabled();
   await page.getByRole("button", { name: "下一步" }).click();
   await expect(page.getByRole("heading", { name: "报告导出" })).toBeVisible();
+  await expect(page.getByRole("tab", { name: "外规解读报告" })).toBeVisible();
+  await expect(page.getByRole("button", { name: "下载 DOCX" })).toBeEnabled();
+  await page.getByRole("tab", { name: "新规快评" }).click();
+  await expect(
+    page.getByRole("heading", { name: /一句话结论/u }),
+  ).toBeVisible();
+  await expect(page.getByRole("button", { name: "下载 PDF" })).toBeEnabled();
   const persistedSurface = await page.evaluate(async () => {
     const records: unknown[] = [];
     for (const database of await indexedDB.databases()) {
