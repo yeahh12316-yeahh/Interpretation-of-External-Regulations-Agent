@@ -1,10 +1,23 @@
-import { mkdtemp, readFile, writeFile, cp } from "node:fs/promises";
+import { createHash } from "node:crypto";
+import {
+  copyFile,
+  cp,
+  mkdtemp,
+  readFile,
+  symlink,
+  unlink,
+  writeFile,
+} from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
 
 import { describe, expect, it } from "vitest";
 
-import { buildMachineReportJson, loadBenchmarkBundle } from "./benchmark-input";
+import {
+  buildMachineReportJson,
+  evaluateValidatedBenchmark,
+  loadBenchmarkBundle,
+} from "./benchmark-input";
 import { evaluateFindings } from "./evaluate-findings";
 
 const fixtureRoot = path.resolve("tests/fixtures/benchmark");
@@ -14,6 +27,41 @@ const temporaryBundle = async (): Promise<string> => {
   const root = await mkdtemp(path.join(tmpdir(), "benchmark-boundary-"));
   await cp(fixtureRoot, root, { recursive: true });
   return root;
+};
+
+const digest = (bytes: Uint8Array): string =>
+  createHash("sha256").update(bytes).digest("hex");
+
+const blankPdf = (): Buffer => {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [3 0 R] /Count 1 >>",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Contents 4 0 R >>",
+    "<< /Length 0 >>\nstream\n\nendstream",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 ${objects.length + 1}\n0000000000 65535 f\r\n`;
+  pdf += offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n\r\n`)
+    .join("");
+  pdf += `trailer\n<< /Size 5 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "binary");
+};
+
+const rewriteJson = async (
+  filePath: string,
+  mutate: (value: any) => void,
+): Promise<void> => {
+  const value = JSON.parse(await readFile(filePath, "utf8")) as any;
+  mutate(value);
+  await writeFile(filePath, `${JSON.stringify(value, null, 2)}\n`, "utf8");
 };
 
 describe("benchmark input boundary", () => {
@@ -28,6 +76,133 @@ describe("benchmark input boundary", () => {
       "SYNTH-REG-TXT",
     ]);
     expect(bundle.samples.every(({ verified }) => verified)).toBe(true);
+    expect(bundle.validatedAnchorCount).toBeGreaterThan(0);
+    expect(bundle.manifest.samples.find(({ sourceId }) => sourceId === "SYNTH-REG-SCAN")?.groundTruth).toEqual(
+      expect.objectContaining({
+        reviewer: "合成基准复核人",
+        reviewedAt: "2026-08-14T00:00:00.000Z",
+      }),
+    );
+  });
+
+  it("rejects symlinks and duplicate canonical source or attachment files", async () => {
+    const symlinkRoot = await temporaryBundle();
+    const sourcePath = path.join(
+      symlinkRoot,
+      "sources/regulatory-text.pdf",
+    );
+    const outside = path.join(
+      await mkdtemp(path.join(tmpdir(), "benchmark-outside-")),
+      "outside.pdf",
+    );
+    await copyFile(sourcePath, outside);
+    await unlink(sourcePath);
+    await symlink(outside, sourcePath);
+    await expect(
+      loadBenchmarkBundle(path.join(symlinkRoot, "manifest.json")),
+    ).rejects.toThrow(/symlink/u);
+
+    const duplicateRoot = await temporaryBundle();
+    const manifestPath = path.join(duplicateRoot, "manifest.json");
+    await rewriteJson(manifestPath, (manifest) => {
+      const long = manifest.samples.find(
+        ({ sourceId }: any) => sourceId === "SYNTH-REG-TXT",
+      );
+      const official = manifest.samples.find(
+        ({ sourceId }: any) => sourceId === "SYNTH-OFFICIAL",
+      );
+      official.path = long.path;
+      official.sha256 = long.sha256;
+      official.size = long.size;
+    });
+    await expect(loadBenchmarkBundle(manifestPath)).rejects.toThrow(
+      /duplicate canonical/u,
+    );
+  });
+
+  it("rejects fabricated quotes and wrong page, paragraph, or article locators", async () => {
+    const mutations = [
+      (corpus: any) => {
+        corpus.findings[0].sourceAnchors[0].quote = "第一条 捏造的监管要求。";
+      },
+      (corpus: any) => {
+        corpus.findings.find(
+          ({ findingId }: any) => findingId === "EXP-DATE",
+        ).sourceAnchors[0].page = 1;
+      },
+      (corpus: any) => {
+        corpus.findings.find(
+          ({ findingId }: any) => findingId === "EXP-BAN",
+        ).sourceAnchors[0].paragraphIndex = 0;
+      },
+      (corpus: any) => {
+        corpus.findings.find(
+          ({ findingId }: any) => findingId === "EXP-TRANSITION",
+        ).sourceAnchors[0].article = "第十二条";
+      },
+    ];
+    for (const mutate of mutations) {
+      const root = await temporaryBundle();
+      await rewriteJson(path.join(root, "expected-findings.json"), mutate);
+      await expect(
+        loadBenchmarkBundle(path.join(root, "manifest.json")),
+      ).rejects.toThrow(/anchor|quote|locator|article/u);
+    }
+  });
+
+  it("rejects wrong official pairing and tampered scan ground truth", async () => {
+    const pairingRoot = await temporaryBundle();
+    await rewriteJson(
+      path.join(pairingRoot, "expected-findings.json"),
+      (corpus) => {
+        corpus.officialPrimarySourceIds = {
+          "SYNTH-OFFICIAL": "SYNTH-REG-PDF",
+        };
+      },
+    );
+    await expect(
+      loadBenchmarkBundle(path.join(pairingRoot, "manifest.json")),
+    ).rejects.toThrow(/official|primary|pair/u);
+
+    const truthRoot = await temporaryBundle();
+    const truthPath = path.join(
+      truthRoot,
+      "sources/regulatory-scan.ground-truth.json",
+    );
+    await writeFile(truthPath, "{}", "utf8");
+    await expect(
+      loadBenchmarkBundle(path.join(truthRoot, "manifest.json")),
+    ).rejects.toThrow(/ground-truth|sha256|size/u);
+  });
+
+  it("rejects a blank scan PDF even when its declared hash and size match", async () => {
+    const root = await temporaryBundle();
+    const manifestPath = path.join(root, "manifest.json");
+    const bytes = blankPdf();
+    const blankPath = path.join(root, "sources/blank-scan.pdf");
+    await writeFile(blankPath, bytes);
+    await rewriteJson(manifestPath, (manifest) => {
+      const sample = manifest.samples.find(
+        ({ sourceId }: any) => sourceId === "SYNTH-REG-SCAN",
+      );
+      sample.path = "sources/blank-scan.pdf";
+      sample.sha256 = digest(bytes);
+      sample.size = bytes.length;
+    });
+
+    await expect(loadBenchmarkBundle(manifestPath)).rejects.toThrow(/image/u);
+  });
+
+  it("blocks raw-corpus release metrics and only unlocks fixture-validated bundles", async () => {
+    const bundle = await loadBenchmarkBundle(fixtureManifest);
+
+    expect(evaluateFindings(bundle.expected, bundle.actual).releaseGate.failures).toContain(
+      "fixture_evidence_not_validated",
+    );
+    expect(evaluateValidatedBenchmark(bundle).releaseGate).toEqual({
+      passed: true,
+      failures: [],
+    });
   });
 
   it("rejects a tampered source, path escape, and corpus anchor outside the manifest", async () => {
@@ -66,7 +241,7 @@ describe("benchmark input boundary", () => {
 
   it("emits byte-identical machine JSON with manifest-bound generatedAt", async () => {
     const bundle = await loadBenchmarkBundle(fixtureManifest);
-    const metrics = evaluateFindings(bundle.expected, bundle.actual);
+    const metrics = evaluateValidatedBenchmark(bundle);
 
     const first = buildMachineReportJson(bundle, metrics);
     const second = buildMachineReportJson(bundle, metrics);

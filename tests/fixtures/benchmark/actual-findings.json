@@ -176,5 +176,8 @@
       "page": 3,
       "text": "第三条示例机构必须每年报送合成报告"
     }
-  ]
+  ],
+  "officialPrimarySourceIds": {
+    "SYNTH-OFFICIAL": "SYNTH-REG-TXT"
+  }
 }

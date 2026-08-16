@@ -1,9 +1,9 @@
 import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
-import { evaluateFindings } from "../src/evaluation/evaluate-findings";
 import {
   buildMachineReportJson,
+  evaluateValidatedBenchmark,
   loadBenchmarkBundle,
 } from "../src/evaluation/benchmark-input";
 import { renderEvaluationSummary } from "../src/evaluation/evaluation-report";
@@ -37,7 +37,7 @@ const main = async (): Promise<void> => {
     manifestPath,
     valueAfter("--actual"),
   );
-  const metrics = evaluateFindings(bundle.expected, bundle.actual);
+  const metrics = evaluateValidatedBenchmark(bundle);
   const outputDirectory = path.resolve(
     root,
     valueAfter("--output-dir") ?? "artifacts/benchmark",

@@ -21,6 +21,10 @@ const ArtifactSchema = z
     size: z.number().int().positive(),
   })
   .strict();
+const GroundTruthSchema = ArtifactSchema.extend({
+  reviewer: z.string().trim().min(1),
+  reviewedAt: z.string().datetime(),
+}).strict();
 
 const exactCoverage = (
   actual: readonly string[],
@@ -64,6 +68,7 @@ export const BenchmarkManifestSchema = z
             officialInterpretation: z.enum(["with", "without"]),
             primarySourceId: z.string().min(1).optional(),
             attachments: z.array(ArtifactSchema).default([]),
+            groundTruth: GroundTruthSchema.optional(),
             synthetic: z.literal(true),
           })
           .strict(),
@@ -139,6 +144,12 @@ export const BenchmarkManifestSchema = z
           message: "监管原文不得声明 primarySourceId",
         });
       }
+      if ((sample.fileType === "pdf_scan") !== Boolean(sample.groundTruth))
+        context.addIssue({
+          code: "custom",
+          path: ["samples", index, "groundTruth"],
+          message: "扫描 PDF 必须且仅能绑定专家 ground-truth",
+        });
     });
   });
 

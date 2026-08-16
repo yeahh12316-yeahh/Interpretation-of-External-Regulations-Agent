@@ -182,6 +182,7 @@ export const uploadAndAnalyze = async (
   page: Page,
   apiKey = "synthetic-session-key",
   baseUrl = "https://model.example/v1",
+  rememberEndpointAndModel = false,
 ): Promise<void> => {
   await page.goto("/");
   await page.getByLabel("选择监管文件").setInputFiles({
@@ -205,6 +206,8 @@ export const uploadAndAnalyze = async (
   await settings.getByLabel("Base URL").fill(baseUrl);
   await settings.getByLabel("API Key").fill(apiKey);
   await settings.getByLabel("模型", { exact: true }).fill("synthetic-model");
+  if (rememberEndpointAndModel)
+    await settings.getByRole("checkbox", { name: "记住接口地址和模型" }).check();
   await settings.getByRole("button", { name: "保存设置" }).click();
   await page.getByRole("button", { name: "下一步" }).click();
   await page.getByRole("button", { name: "下一步" }).click();
@@ -325,7 +328,11 @@ const pdfText = async (bytes: Buffer): Promise<string> => {
       const pdfPage = await document.getPage(pageNumber);
       const content = await pdfPage.getTextContent();
       pages.push(
-        content.items.map((item) => ("str" in item ? item.str : "")).join(""),
+        content.items
+          .map((item) =>
+            "str" in item ? `${item.str}${item.hasEOL ? "\n" : ""}` : "",
+          )
+          .join(""),
       );
     }
     return pages.join("\n");
@@ -374,6 +381,37 @@ const headingOneText = (documentXml: string): string[] =>
     )
     .map(([paragraph]) => xmlText(paragraph).trim());
 
+const docxTopChangesCount = (documentXml: string): number => {
+  const paragraphs = [
+    ...documentXml.matchAll(/<w:p(?:\s[^>]*)?>[\s\S]*?<\/w:p>/gu),
+  ].map(([paragraph]) => paragraph);
+  const start = paragraphs.findIndex(
+    (paragraph) =>
+      /<w:pStyle\s+w:val="Heading1"\s*\/>/u.test(paragraph) &&
+      xmlText(paragraph).trim() === "最值得关注的三至五项变化",
+  );
+  if (start < 0) return 0;
+  const endOffset = paragraphs
+    .slice(start + 1)
+    .findIndex((paragraph) =>
+      /<w:pStyle\s+w:val="Heading1"\s*\/>/u.test(paragraph),
+    );
+  const end = endOffset < 0 ? paragraphs.length : start + 1 + endOffset;
+  return paragraphs
+    .slice(start + 1, end)
+    .filter((paragraph) => /<w:numPr(?:\s[^>]*)?>/u.test(paragraph)).length;
+};
+
+const pdfTopChangesCount = (text: string): number => {
+  const start = text.indexOf("最值得关注的三至五项变化");
+  const end = text.indexOf("禁止事项和不可触碰红线", start);
+  if (start < 0 || end <= start) return 0;
+  return text
+    .slice(start, end)
+    .split(/\r?\n/u)
+    .filter((line) => /^\s*•\s*\S.+｜/u.test(line)).length;
+};
+
 const assertHeadingsInOrder = (
   text: string,
   headings: readonly string[],
@@ -405,15 +443,11 @@ export const assertReportStructure = (
     return;
   }
   expect(report.text).not.toContain("原文证据索引与人工修订留痕");
-  const start = report.text.indexOf("最值得关注的三至五项变化");
-  const end = report.text.indexOf("禁止事项和不可触碰红线", start);
-  const section = report.text.slice(start, end);
-  const topChanges = [
-    "第一条 示例银行应当建立管理机制。",
-    "第二条 示例银行不得虚构合规记录。",
-    "第三条 本办法自2026年1月1日起施行。",
-    "示例银行应当建立管理机制。",
-  ].filter((statement) => section.includes(statement));
-  expect(topChanges.length).toBeGreaterThanOrEqual(3);
-  expect(topChanges.length).toBeLessThanOrEqual(5);
+  const topChanges = report.archiveEntries
+    ? docxTopChangesCount(
+        report.archiveEntries.get("word/document.xml")!.toString("utf8"),
+      )
+    : pdfTopChangesCount(report.text);
+  expect(topChanges, "top_changes must contain 3–5 structural list items").toBeGreaterThanOrEqual(3);
+  expect(topChanges, "top_changes must contain 3–5 structural list items").toBeLessThanOrEqual(5);
 };

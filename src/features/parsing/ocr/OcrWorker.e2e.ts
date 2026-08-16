@@ -2,16 +2,29 @@ import { expect, test as baseTest } from "../../../../playwright-fixtures";
 
 // Tesseract chi_sim ships legacy config keys that the current engine reports as
 // ignored warnings; recognition still completes and is asserted below.
-const test = baseTest.extend({
-  allowedConsoleErrors: async ({}, use) =>
-    use([
-      /^Warning: Parameter not found: (?:language_model_ngram_on|segsearch_max_char_wh_ratio|language_model_ngram_space_delimited_language|language_model_use_sigmoidal_certainty|language_model_ngram_nonmatch_score|classify_integer_matcher_multiplier|assume_fixed_pitch_char_segment|allow_blob_division)$/u,
-    ]),
+const ocrTest = baseTest.extend({
+  expectedConsoleErrors: async ({}, use) =>
+    use({
+      specs: [
+        "language_model_ngram_on",
+        "segsearch_max_char_wh_ratio",
+        "language_model_ngram_space_delimited_language",
+        "language_model_use_sigmoidal_certainty",
+        "language_model_ngram_nonmatch_score",
+        "classify_integer_matcher_multiplier",
+        "assume_fixed_pitch_char_segment",
+        "allow_blob_division",
+      ].map((parameter) => ({
+        text: new RegExp(`^Warning: Parameter not found: ${parameter}$`, "u"),
+        url: /^http:\/\/127\.0\.0\.1:4173\/ocr\/tesseract-7\.0\.0-data-1\.0\.0\/tesseract-core\/tesseract-core-relaxedsimd-lstm\.wasm\.js$/u,
+        count: 1,
+      })),
+    }),
 });
 
 import type { ParseResult } from "../parse-document";
 
-test("serves every OCR runtime class from the application origin", async ({
+baseTest("serves every OCR runtime class from the application origin", async ({
   page,
 }) => {
   await page.goto("/");
@@ -67,10 +80,10 @@ test("serves every OCR runtime class from the application origin", async ({
   });
 });
 
-test("loads the real local worker and recognizes a synthetic canvas", async ({
+ocrTest("loads the real local worker and recognizes a synthetic canvas", async ({
   page,
 }) => {
-  test.setTimeout(180_000);
+  ocrTest.setTimeout(180_000);
   const externalRequests: string[] = [];
   page.on("request", (request) => {
     if (new URL(request.url()).origin !== "http://127.0.0.1:4173")
@@ -116,10 +129,10 @@ test("loads the real local worker and recognizes a synthetic canvas", async ({
   expect(externalRequests).toEqual([]);
 });
 
-test("parses the real no-text-layer PDF through PDF.js and local OCR", async ({
+ocrTest("parses the real no-text-layer PDF through PDF.js and local OCR", async ({
   page,
 }) => {
-  test.setTimeout(180_000);
+  ocrTest.setTimeout(180_000);
   const externalRequests: string[] = [];
   page.on("request", (request) => {
     if (new URL(request.url()).origin !== "http://127.0.0.1:4173")

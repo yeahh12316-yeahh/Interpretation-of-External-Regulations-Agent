@@ -1,0 +1,16 @@
+{
+  "sourceId": "SYNTH-REG-SCAN",
+  "scanFileSha256": "52ed5acffe93ceb81467a4b75494a66edba3471d107bb69bbd37dfe21d5c1d57",
+  "pages": [
+    {
+      "page": 3,
+      "paragraphs": [
+        {
+          "paragraphIndex": 0,
+          "article": "第三条",
+          "text": "第三条 示例机构必须每年报送合成报告。"
+        }
+      ]
+    }
+  ]
+}

@@ -72,6 +72,7 @@ const corpus = (
   atomicRequirements,
   ocrPages,
   ocrPageReviews,
+  officialPrimarySourceIds: {},
 });
 
 describe("evaluateFindings", () => {
@@ -264,7 +265,7 @@ describe("evaluateFindings", () => {
     );
   });
 
-  it("passes all bound thresholds only with complete categories, citations, AI labels, and OCR", () => {
+  it("meets metric thresholds but fails release without fixture-validated evidence", () => {
     const critical = [
       finding("CORE-1", "key_matter:core_requirement"),
       finding("BAN-1", "key_matter:prohibition", "示例机构不得虚构记录"),
@@ -314,7 +315,10 @@ describe("evaluateFindings", () => {
 
     const metrics = evaluateFindings(expected, actual);
 
-    expect(metrics.releaseGate).toEqual({ passed: true, failures: [] });
+    expect(metrics.releaseGate).toEqual({
+      passed: false,
+      failures: ["fixture_evidence_not_validated"],
+    });
     expect(metrics.critical.precision).toBe(1);
     expect(metrics.critical.recall).toBe(1);
     expect(metrics.atomic.precision).toBe(1);

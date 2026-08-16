@@ -1,5 +1,5 @@
 %PDF-1.7
-% synthetic fixture
+% synthetic benchmark fixture
 1 0 obj
 << /Type /Catalog /Pages 2 0 R >>
 endobj
@@ -7,12 +7,12 @@ endobj
 << /Type /Pages /Kids [4 0 R 6 0 R] /Count 2 >>
 endobj
 3 0 obj
-<< /Length 135 >>
+<< /Length 67 >>
 stream
 BT
 /F1 12 Tf
 72 720 Td
-<000100020003000400050006000700080009000A000B000C000D000E000F00100006001100120013001400150016001700180019> Tj
+<000100020003000400050006000700080009> Tj
 ET
 endstream
 endobj
@@ -20,12 +20,14 @@ endobj
 << /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] /Resources << /Font << /F1 7 0 R >> >> /Contents 3 0 R >>
 endobj
 5 0 obj
-<< /Length 107 >>
+<< /Length 214 >>
 stream
 BT
 /F1 12 Tf
 72 720 Td
-<0001001A0003000400050006000700080009000A001B001C001D001E00130014001F00200019> Tj
+<000A000B000C000D000E000F001000110012001300120014001500160017001600180019001A001B0009> Tj
+0 -30 Td
+<000A000B0016000C000D001C001D001E001F002000120013001200140015001400170021000B00180009> Tj
 ET
 endstream
 endobj
@@ -39,7 +41,7 @@ endobj
 << /Type /Font /Subtype /CIDFontType2 /BaseFont /SyntheticRegulation /CIDSystemInfo << /Registry (Adobe) /Ordering (Identity) /Supplement 0 >> /FontDescriptor 10 0 R /DW 1000 /CIDToGIDMap /Identity >>
 endobj
 9 0 obj
-<< /Length 774 >>
+<< /Length 788 >>
 stream
 /CIDInit /ProcSet findresource begin
 12 dict begin
@@ -50,39 +52,40 @@ begincmap
 1 begincodespacerange
 <0000> <FFFF>
 endcodespacerange
-32 beginbfchar
-<0001> <7B2C>
-<0002> <4E00>
-<0003> <6761>
-<0004> <0020>
-<0005> <5546>
-<0006> <4E1A>
-<0007> <94F6>
-<0008> <884C>
-<0009> <5E94>
-<000A> <5F53>
-<000B> <5EFA>
-<000C> <7ACB>
-<000D> <8986>
-<000E> <76D6>
-<000F> <5168>
-<0010> <90E8>
-<0011> <52A1>
-<0012> <7684>
-<0013> <98CE>
-<0014> <9669>
-<0015> <7BA1>
-<0016> <7406>
-<0017> <5236>
-<0018> <5EA6>
-<0019> <3002>
-<001A> <4E8C>
-<001B> <5B9A>
-<001C> <671F>
-<001D> <5F00>
-<001E> <5C55>
-<001F> <8BC4>
-<0020> <4F30>
+33 beginbfchar
+<0001> <5408>
+<0002> <6210>
+<0003> <76D1>
+<0004> <7BA1>
+<0005> <6587>
+<0006> <4EF6>
+<0007> <76EE>
+<0008> <5F55>
+<0009> <3002>
+<000A> <7B2C>
+<000B> <5341>
+<000C> <6761>
+<000D> <0020>
+<000E> <672C>
+<000F> <529E>
+<0010> <6CD5>
+<0011> <81EA>
+<0012> <4E8C>
+<0013> <3007>
+<0014> <516D>
+<0015> <5E74>
+<0016> <4E00>
+<0017> <6708>
+<0018> <65E5>
+<0019> <8D77>
+<001A> <65BD>
+<001B> <884C>
+<001C> <8FC7>
+<001D> <6E21>
+<001E> <671F>
+<001F> <622A>
+<0020> <81F3>
+<0021> <4E09>
 endbfchar
 endcmap
 CMapName currentdict /CMap defineresource pop
@@ -96,18 +99,18 @@ endobj
 xref
 0 11
 0000000000 65535 f
-0000000029 00000 n
-0000000078 00000 n
-0000000141 00000 n
-0000000327 00000 n
-0000000453 00000 n
-0000000611 00000 n
-0000000737 00000 n
-0000000881 00000 n
-0000001097 00000 n
-0000001922 00000 n
+0000000039 00000 n
+0000000088 00000 n
+0000000151 00000 n
+0000000268 00000 n
+0000000394 00000 n
+0000000659 00000 n
+0000000785 00000 n
+0000000929 00000 n
+0000001145 00000 n
+0000001984 00000 n
 trailer
 << /Size 11 /Root 1 0 R >>
 startxref
-2100
+2162
 %%EOF

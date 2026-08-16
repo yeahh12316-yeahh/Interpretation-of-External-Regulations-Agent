@@ -17,7 +17,7 @@ test("BYOK survives only in the permitted session credential boundary", async ({
   page.on("console", (message) => logs.push(message.text()));
   page.on("pageerror", (error) => errors.push(error.message));
   await installSuccessfulModelRoute(page, endpoint);
-  await uploadAndAnalyze(page, apiKey, endpoint);
+  await uploadAndAnalyze(page, apiKey, endpoint, true);
 
   const beforeReload = await page.evaluate(
     ([secret, endpoint]) => ({
@@ -99,6 +99,9 @@ test("BYOK survives only in the permitted session credential boundary", async ({
   );
   expect(persisted.keyInSession).toBe(true);
   expect(persisted.endpointInSession).toBe(true);
+  expect(persisted.indexedDb).toContain(endpoint);
+  expect(persisted.indexedDb).toContain("synthetic-model");
+  expect(persisted.indexedDb).not.toContain(apiKey);
 
   await page.getByRole("button", { name: "确认 F1" }).click();
   await reviewAllFindings(page);
@@ -124,7 +127,6 @@ test("BYOK survives only in the permitted session credential boundary", async ({
   ]);
   for (const secret of [apiKey, endpoint]) {
     for (const surface of [
-      persisted.indexedDb,
       persisted.local,
       persisted.backup,
       persisted.url,
@@ -137,5 +139,6 @@ test("BYOK survives only in the permitted session credential boundary", async ({
       expect(surface).not.toContain(secret);
     }
   }
+  expect(persisted.indexedDb).not.toContain(apiKey);
   expect(errors).toEqual([]);
 });

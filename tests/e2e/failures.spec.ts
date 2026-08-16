@@ -1,22 +1,12 @@
 import path from "node:path";
 
-import { expect, test as baseTest, type Page } from "../../playwright-fixtures";
+import { expect, test, type Page } from "../../playwright-fixtures";
 
 import {
   installSuccessfulModelRoute,
   reviewAllFindings,
   uploadAndAnalyze,
 } from "./support/production-flow";
-
-// These resource errors are the browser's expected diagnostics for the routes
-// deliberately aborted or fulfilled with failures in this failure-only suite.
-const test = baseTest.extend({
-  allowedConsoleErrors: async ({}, use) =>
-    use([
-      /^Failed to load resource: net::ERR_(?:BLOCKED_BY_CLIENT\.Inspector|CONNECTION_REFUSED|FAILED)$/u,
-      /^Failed to load resource: the server responded with a status of (?:401 \(Unauthorized\)|404 \(Not Found\)|429 \(Too Many Requests\))$/u,
-    ]),
-});
 
 type FailureMode = "cors" | "network" | 401 | 404 | 429 | "invalid" | "success";
 
@@ -29,9 +19,35 @@ const openSettings = async (page: Page) => {
   return dialog;
 };
 
-test("model failures are visible, retryable, and never fake success", async ({
-  page,
-}) => {
+test.describe("model failure diagnostics", () => {
+  test.use({
+    expectedConsoleErrors: { specs: [
+      {
+        text: /^Failed to load resource: net::ERR_BLOCKED_BY_CLIENT\.Inspector$/u,
+        url: /^https:\/\/failure\.example\/v1\/chat\/completions$/u,
+        count: 1,
+      },
+      {
+        text: /^Failed to load resource: net::ERR_CONNECTION_REFUSED$/u,
+        url: /^https:\/\/failure\.example\/v1\/chat\/completions$/u,
+        count: 1,
+      },
+      ...["401 \\(Unauthorized\\)", "404 \\(Not Found\\)", "429 \\(Too Many Requests\\)"].map(
+        (status) => ({
+          text: new RegExp(
+            `^Failed to load resource: the server responded with a status of ${status}$`,
+            "u",
+          ),
+          url: /^https:\/\/failure\.example\/v1\/chat\/completions$/u,
+          count: 1,
+        }),
+      ),
+    ] },
+  });
+
+  test("model failures are visible, retryable, and never fake success", async ({
+    page,
+  }) => {
   let mode: FailureMode = "network";
   let invalidCalls = 0;
   await page.route(
@@ -83,6 +99,7 @@ test("model failures are visible, retryable, and never fake success", async ({
   mode = "success";
   await dialog.getByRole("button", { name: "测试连接" }).click();
   await expect(dialog.getByRole("status")).toContainText("连接成功");
+  });
 });
 
 test("a real model timeout returns to an operable settings form", async ({
@@ -102,9 +119,10 @@ test("a real model timeout returns to an operable settings form", async ({
   await expect(dialog.getByRole("button", { name: "测试连接" })).toBeEnabled();
 });
 
-test("OCR asset failure blocks the real scanned-PDF upload without a white screen", async ({
-  page,
-}) => {
+test.describe("OCR injected failure diagnostics", () => {
+  test("OCR asset failure blocks the real scanned-PDF upload without a white screen", async ({
+    page,
+  }) => {
   await page.route("**/ocr/**/tesseract/worker.min.js", (route) =>
     route.abort("failed"),
   );
@@ -124,11 +142,23 @@ test("OCR asset failure blocks the real scanned-PDF upload without a white scree
   await expect(
     page.getByRole("heading", { name: "外规解读agent" }),
   ).toBeVisible();
+  });
 });
 
-test("export module failure preserves preview and offers a real retry", async ({
-  page,
-}) => {
+test.describe("export injected failure diagnostics", () => {
+  test.use({
+    expectedConsoleErrors: { specs: [
+      {
+        text: /^Failed to load resource: net::ERR_FAILED$/u,
+        url: /\/src\/features\/reports\/export-docx\.ts/u,
+        count: 1,
+      },
+    ] },
+  });
+
+  test("export module failure preserves preview and offers a real retry", async ({
+    page,
+  }) => {
   await installSuccessfulModelRoute(page);
   await uploadAndAnalyze(page);
   await page.getByRole("button", { name: "确认 F1" }).click();
@@ -145,4 +175,5 @@ test("export module failure preserves preview and offers a real retry", async ({
   await expect(
     page.getByRole("heading", { name: "外规解读报告" }),
   ).toBeVisible();
+  });
 });

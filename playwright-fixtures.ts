@@ -2,32 +2,65 @@ import {
   expect,
   test as base,
   type ConsoleMessage,
-  type Page,
 } from "@playwright/test";
 
-interface ErrorCaptureOptions {
-  readonly allowedConsoleErrors: readonly RegExp[];
+export interface ExpectedConsoleError {
+  readonly text: RegExp;
+  readonly url: RegExp;
+  readonly count: number;
 }
 
-const capturedMessage = (message: ConsoleMessage): string =>
-  `console.error: ${message.text()}`;
+interface ErrorCaptureOptions {
+  readonly expectedConsoleErrors: {
+    readonly specs: readonly ExpectedConsoleError[];
+  };
+}
+
+export interface CapturedConsoleError {
+  readonly text: string;
+  readonly url: string;
+}
+
+export const reconcileConsoleErrors = (
+  expected: readonly ExpectedConsoleError[],
+  actual: readonly CapturedConsoleError[],
+): string[] => {
+  const remaining = expected.map((spec) => ({ spec, count: spec.count }));
+  const failures: string[] = [];
+  for (const message of actual) {
+    const match = remaining.find(
+      ({ spec, count }) =>
+        count > 0 && spec.text.test(message.text) && spec.url.test(message.url),
+    );
+    if (!match) {
+      failures.push(`unexpected console.error: ${message.url} :: ${message.text}`);
+      continue;
+    }
+    match.count -= 1;
+  }
+  for (const { spec, count } of remaining) {
+    if (count !== 0)
+      failures.push(
+        `unconsumed console.error expectation (${count}/${spec.count}): ${String(spec.url)} :: ${String(spec.text)}`,
+      );
+  }
+  return failures;
+};
 
 export const test = base.extend<ErrorCaptureOptions>({
-  allowedConsoleErrors: [[], { option: true }],
-  page: async ({ page, allowedConsoleErrors }, use) => {
-    const errors: string[] = [];
-    const whitelist = Array.isArray(allowedConsoleErrors)
-      ? allowedConsoleErrors
-      : [allowedConsoleErrors];
+  expectedConsoleErrors: [{ specs: [] }, { option: true }],
+  page: async ({ page, expectedConsoleErrors }, use) => {
+    const consoleErrors: CapturedConsoleError[] = [];
+    const pageErrors: string[] = [];
     const consoleListener = (message: ConsoleMessage) => {
-      if (
-        message.type() === "error" &&
-        !whitelist.some((allowed) => allowed.test(message.text()))
-      )
-        errors.push(capturedMessage(message));
+      if (message.type() !== "error") return;
+      consoleErrors.push({
+        text: message.text(),
+        url: message.location().url,
+      });
     };
     const pageErrorListener = (error: Error) => {
-      errors.push(`pageerror: ${error.message}`);
+      pageErrors.push(`pageerror: ${error.message}`);
     };
     page.on("console", consoleListener);
     page.on("pageerror", pageErrorListener);
@@ -36,9 +69,15 @@ export const test = base.extend<ErrorCaptureOptions>({
     } finally {
       page.off("console", consoleListener);
       page.off("pageerror", pageErrorListener);
-      expect(errors, "unexpected browser console/page errors").toEqual([]);
+      expect(
+        [
+          ...pageErrors,
+          ...reconcileConsoleErrors(expectedConsoleErrors.specs, consoleErrors),
+        ],
+        "unexpected, missing, or duplicate browser console/page errors",
+      ).toEqual([]);
     }
   },
 });
 
-export { expect, type Page };
+export { expect, type Page } from "@playwright/test";

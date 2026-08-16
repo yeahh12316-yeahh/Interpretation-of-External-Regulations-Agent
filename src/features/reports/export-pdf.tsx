@@ -194,7 +194,7 @@ export const ReportPdfDocument = ({ report }: { report: ReportModel }) => (
             section.items.map((item) => (
               <View key={item.itemId} style={styles.item}>
                 <Text style={styles.itemLabel}>
-                  {item.claimLabel} ｜{" "}
+                  • {item.claimLabel} ｜{" "}
                   {item.dimension
                     ? `${impactDimensionTitle(item.dimension)}维度 ｜ `
                     : ""}

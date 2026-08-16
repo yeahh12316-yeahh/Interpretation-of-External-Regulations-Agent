@@ -1,6 +1,9 @@
 import { readdir, readFile, stat } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
+import { inflateRawSync } from "node:zlib";
+
+import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 const SKIP_DIRECTORIES = new Set([
   ".git",
@@ -16,7 +19,7 @@ const CREDENTIAL_PATTERNS = [
 
 const filesUnder = async (root: string): Promise<string[]> => {
   const info = await stat(root).catch(() => null);
-  if (!info) return [];
+  if (!info) throw new Error(`required scan root is missing: ${root}`);
   if (info.isFile()) return [root];
   const files: string[] = [];
   for (const entry of await readdir(root, { withFileTypes: true })) {
@@ -27,6 +30,65 @@ const filesUnder = async (root: string): Promise<string[]> => {
     else if (entry.isFile()) files.push(child);
   }
   return files;
+};
+
+const zipReadableEntries = (bytes: Buffer): string[] => {
+  const entries: string[] = [];
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  for (let offset = 0; offset <= bytes.length - 30; offset += 1) {
+    if (view.getUint32(offset, true) !== 0x04034b50) continue;
+    const flags = view.getUint16(offset + 6, true);
+    if ((flags & 0x08) !== 0)
+      throw new Error("DOCX data descriptor prevents complete secret scan");
+    const method = view.getUint16(offset + 8, true);
+    const compressedSize = view.getUint32(offset + 18, true);
+    const nameLength = view.getUint16(offset + 26, true);
+    const extraLength = view.getUint16(offset + 28, true);
+    const nameStart = offset + 30;
+    const name = bytes.subarray(nameStart, nameStart + nameLength).toString();
+    const dataStart = nameStart + nameLength + extraLength;
+    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
+    if (!name.endsWith("/")) {
+      const expanded =
+        method === 0
+          ? compressed
+          : method === 8
+            ? inflateRawSync(compressed)
+            : null;
+      if (!expanded)
+        throw new Error(`unsupported DOCX compression method: ${method}`);
+      entries.push(expanded.toString("latin1"), expanded.toString("utf8"));
+    }
+    offset = dataStart + compressedSize - 1;
+  }
+  return entries;
+};
+
+const pdfExtractedText = async (bytes: Buffer): Promise<string> => {
+  const loadingTask = getDocument({ data: new Uint8Array(bytes) });
+  try {
+    const document = await loadingTask.promise;
+    const pages: string[] = [];
+    for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
+      const page = await document.getPage(pageNumber);
+      const content = await page.getTextContent();
+      pages.push(
+        content.items.map((item) => ("str" in item ? item.str : "")).join(""),
+      );
+    }
+    return pages.join("\n");
+  } finally {
+    await loadingTask.destroy();
+  }
+};
+
+const scanSurfaces = async (file: string, bytes: Buffer): Promise<string[]> => {
+  const surfaces = [bytes.toString("latin1"), bytes.toString("utf8")];
+  if (file.toLowerCase().endsWith(".docx"))
+    surfaces.push(...zipReadableEntries(bytes));
+  if (file.toLowerCase().endsWith(".pdf"))
+    surfaces.push(await pdfExtractedText(bytes));
+  return surfaces;
 };
 
 export const scanPaths = async (
@@ -47,12 +109,15 @@ export const scanPaths = async (
     )
       continue;
     const bytes = await readFile(file);
-    if (bytes.includes(0)) continue;
-    const text = bytes.toString("utf8");
-    if (CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text)))
+    const surfaces = await scanSurfaces(file, bytes);
+    if (
+      surfaces.some((text) =>
+        CREDENTIAL_PATTERNS.some((pattern) => pattern.test(text)),
+      )
+    )
       findings.push(`${file}:credential_pattern`);
     for (const needle of forbiddenNeedles) {
-      if (needle && text.includes(needle))
+      if (needle && surfaces.some((text) => text.includes(needle)))
         findings.push(`${file}:forbidden_needle`);
     }
   }

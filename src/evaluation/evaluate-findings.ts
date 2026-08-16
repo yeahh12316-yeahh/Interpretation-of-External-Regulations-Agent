@@ -35,6 +35,7 @@ export interface EvaluationCorpus {
   readonly atomicRequirements: readonly AtomicRequirement[];
   readonly ocrPages: readonly EvaluationOcrPage[];
   readonly ocrPageReviews: readonly EvaluationOcrPageReview[];
+  readonly officialPrimarySourceIds: Readonly<Record<string, string>>;
 }
 
 const EvaluationOcrPageSchema = z
@@ -72,6 +73,7 @@ export const EvaluationCorpusSchema = z
     atomicRequirements: z.array(AtomicRequirementSchema),
     ocrPages: z.array(EvaluationOcrPageSchema),
     ocrPageReviews: z.array(EvaluationOcrPageReviewSchema).default([]),
+    officialPrimarySourceIds: z.record(z.string().min(1), z.string().min(1)),
   })
   .strict()
   .superRefine((corpus, context) => {
@@ -154,6 +156,25 @@ export const EvaluationCorpusSchema = z
           message: "correctedText 必须等于当前 OCR 页文本",
         });
     });
+    const officialSourceIds = new Set(
+      corpus.findings.flatMap(({ sourceAnchors }) =>
+        sourceAnchors
+          .filter(
+            ({ sourceType }) => sourceType === "official_interpretation",
+          )
+          .map(({ sourceId }) => sourceId),
+      ),
+    );
+    const pairingSourceIds = Object.keys(corpus.officialPrimarySourceIds);
+    if (
+      [...officialSourceIds].sort().join("\u0000") !==
+      pairingSourceIds.sort().join("\u0000")
+    )
+      context.addIssue({
+        code: "custom",
+        path: ["officialPrimarySourceIds"],
+        message: "官方解读来源必须逐一声明唯一监管原文配对",
+      });
   });
 
 export interface CountMetrics {
@@ -440,9 +461,10 @@ const ocrMetrics = (
 const below = (value: number | null, threshold: number): boolean =>
   value === null || value < threshold;
 
-export const evaluateFindings = (
+const evaluate = (
   expected: EvaluationCorpus,
   actual: EvaluationCorpus,
+  fixtureEvidenceValidated: boolean,
 ): EvaluationMetrics => {
   const matches = deterministicMatches(expected, actual);
   const criticalExpectedIds = idsWhere(
@@ -551,6 +573,8 @@ export const evaluateFindings = (
   if (!coverageMatches) failures.push("ocr_page_coverage_mismatch");
   if (ocr.pendingManualReviewPages.length > 0)
     failures.push("ocr_manual_review_pending");
+  if (!fixtureEvidenceValidated)
+    failures.push("fixture_evidence_not_validated");
 
   return {
     critical,
@@ -564,3 +588,14 @@ export const evaluateFindings = (
     releaseGate: { passed: failures.length === 0, failures },
   };
 };
+
+export const evaluateFindings = (
+  expected: EvaluationCorpus,
+  actual: EvaluationCorpus,
+): EvaluationMetrics => evaluate(expected, actual, false);
+
+/** @internal Only benchmark-input may call this after fixture validation. */
+export const evaluateFixtureValidatedFindings = (
+  expected: EvaluationCorpus,
+  actual: EvaluationCorpus,
+): EvaluationMetrics => evaluate(expected, actual, true);

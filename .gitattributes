@@ -1,2 +1,4 @@
 tests/fixtures/*.docx binary
 tests/fixtures/*.pdf binary
+tests/fixtures/**/*.docx binary
+tests/fixtures/**/*.pdf binary

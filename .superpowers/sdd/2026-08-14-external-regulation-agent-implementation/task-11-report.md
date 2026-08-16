@@ -420,3 +420,133 @@ exit_code: 0
 2. SHA-256、size 和有序 fixture 内容校验用于检测测试输入漂移，不是发布者身份认证或数字签名。
 3. Playwright whitelist 仅限已验证的 Tesseract 旧参数 warning 和 failure-only 测试主动制造的浏览器网络资源错误；不存在通配 pageerror 白名单。
 4. `dist/` 为 build 输出且未纳入 commit；构建后的 secret scan 已实际执行。
+
+---
+
+# Task 11 fix round 2/5（2026-08-16）
+
+Base：`1cdd9bb2c0b29f6781b4f79b16473a9514a43b20`
+
+## 结构性修复
+
+- benchmark loader 现在对 manifest、source、attachment、scan ground-truth 做 `lstat` symlink 拒绝、逐段路径检查、`realpath` containment 和 canonical path 唯一性校验。
+- TXT、DOCX、text PDF 均从真实 fixture 建立页/段/条解析单元，并逐个反查 expected/actual Finding 与 AtomicRequirement anchor；扫描 PDF 必须零 text layer、至少一个真实 image paint op，并绑定含 SHA-256、复核人、复核时间的专家 ground-truth。
+- corpus 新增闭合 `officialPrimarySourceIds`，loader 同时核验 manifest 配对、官方解读 finding parent 及其监管原文 anchor。raw `evaluateFindings` 永远包含 `fixture_evidence_not_validated`，只有 loader 返回的 bundle 能进入 fixture-validated evaluator。
+- 合成 fixture 已重建为真实两页 text PDF、三页含 Image XObject 的 scan PDF、含段落和 OOXML table 的 DOCX、超过 24k 字符的 long TXT、official TXT 与附件；无真实监管、客户、个人或密钥数据。
+- quick report E2E verifier 改为 DOCX Heading1 边界内的 `w:numPr` 条目计数，以及 PDF Heading 边界内独立 `•` marker 行计数；两项/无 marker 必须失败，四项通过。
+- secret scanner 不再跳过 NUL 文件；DOCX 扫描 raw bytes 及全部可解压 ZIP entry（包含 XML/rels/coreProps），PDF 扫描 raw bytes 和 PDF.js 提取文本且 finally destroy，缺少任何 required root 立即失败。
+- Playwright console contract 改为每个测试显式 message + URL + count，所有期望必须恰好消费；额外同类错误和未消费期望均失败，pageerror 永不允许。Tesseract 仅允许已知 8 个旧参数 warning，各 1 次且绑定 exact same-origin wasm.js URL。
+- privacy E2E 走真实“记住接口地址和模型”路径：endpoint/model 可进入 IndexedDB；API key 不可进入 IndexedDB。API key/endpoint 均不得进入 localStorage、backup、URL、DOM、console/error、四个导出文件或 dist。
+- `.gitattributes` 增加递归 synthetic PDF/DOCX binary 标记。
+
+## RED evidence
+
+Anchor/fixture boundary 首轮：
+
+```text
+Command: vitest --run src/evaluation/benchmark-input.test.ts src/evaluation/evaluate-findings.test.ts
+benchmark-input.test.ts: 8 tests | 6 failed, 2 passed
+Observed failures: validatedAnchorCount missing; symlink followed; fabricated quote/wrong locator not rejected; blank scan accepted; raw evaluator lacked fixture_evidence_not_validated.
+evaluate-findings.test.ts: 11 passed
+exit_code: 1
+```
+
+Format-aware secret scan RED：
+
+```text
+Command: vitest --run scripts/scan-secrets.test.ts
+Test Files 1 failed (1)
+Tests 2 failed | 1 passed (3)
+Failures: NUL PDF and compressed DOCX returned []; missing required root resolved [] instead of rejecting.
+exit_code: 1
+```
+
+Console exact-source 首轮 full browser evidence：
+
+```text
+Command: playwright test
+Running 18 tests using 1 worker
+16 passed, 2 failed
+Both failures were exact OCR warning source mismatches: actual URL was the same-origin
+/ocr/tesseract-7.0.0-data-1.0.0/tesseract-core/tesseract-core-relaxedsimd-lstm.wasm.js,
+not an empty URL. No business assertion failed.
+exit_code: 1
+```
+
+## GREEN evidence
+
+Focused Vitest：
+
+```text
+Command: vitest --run src/evaluation/benchmark-input.test.ts src/evaluation/evaluate-findings.test.ts scripts/scan-secrets.test.ts playwright-fixtures.test.ts src/features/reports/export-pdf.test.tsx src/features/reports/report-builders.test.ts
+Test Files 6 passed (6)
+Tests 43 passed (43)
+exit_code: 0
+```
+
+Full Vitest：
+
+```text
+Command: vitest --run
+Test Files 32 passed (32)
+Tests 305 passed (305)
+Duration 10.93s
+exit_code: 0
+```
+
+Fresh full Playwright after exact OCR URL correction：
+
+```text
+Command: playwright test --reporter=line
+Running 18 tests using 1 worker
+18 passed (27.7s)
+exit_code: 0
+```
+
+该 full run 覆盖 production full-flow、真实四文件导出、privacy、CORS/network/401/404/429/timeout/schema/OCR/export failure、1440/1024/768 responsive，以及 quick structural adversarial verifier。
+
+Benchmark pass：
+
+```text
+Command: node --import tsx scripts/run-benchmark.ts --output-dir /private/tmp/task11-benchmark-pass
+RELEASE GATE: PASS
+重大事项 precision=100.00%, recall=100.00%, TP=4, FP=0, FN=0
+原子要求 precision=100.00%, recall=100.00%, TP=1, FP=0, FN=0
+事实引用 5/5 (100.00%)
+OCR accuracy=100.00%
+exit_code: 0
+```
+
+Deliberate failing fixture：
+
+```text
+Command: node --import tsx scripts/run-benchmark.ts --actual actual-findings-failing.json
+RELEASE GATE: FAIL
+重大事项 recall=75.00%; 原子要求 precision=0.00%, recall=0.00%
+事实引用 4/5 (80.00%); OCR accuracy=94.12%
+重大遗漏 EXP-TRANSITION; 未标记推导 BAD-UNMARKED-IMPACT
+exit_code: 1
+```
+
+Final static/build/privacy gates：
+
+```text
+Command: tsc --noEmit
+exit_code: 0
+
+Command: vite build
+✓ 749 modules transformed.
+✓ built in 4.72s
+exit_code: 0
+
+Command: node --import tsx scripts/scan-secrets.ts
+SECRET SCAN PASS
+exit_code: 0
+
+Command: git diff --check
+exit_code: 0
+```
+
+## Benchmark 声明与自查
+
+本结果仍是 **fixture-bound static regression corpus**：actual 是与版本化合成 fixture 强绑定的静态回归结果，只证明本测试语料和本版本行为，不代表未知文件达到 95% 产品精度。fixture SHA-256/size/locator 绑定用于发现测试语料漂移，不是来源身份认证。PDF.js 在 benchmark/scanner/E2E 的 document loading task 均通过 `finally destroy()` 释放。代码与 fixture 自查未发现真实客户、个人、监管项目数据或真实凭据。
