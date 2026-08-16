@@ -213,6 +213,26 @@ describe("build secret scanner", () => {
     }
   });
 
+  it("fails closed when gzip expands to a skippable frame before Zstd data", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-nested-skip-"));
+    const response = Buffer.from(
+      JSON.stringify({
+        choices: [{ message: { content: "nested hidden model response" } }],
+      }),
+    );
+    const header = Buffer.alloc(8);
+    header.writeUInt32LE(0x184d2a50, 0);
+    header.writeUInt32LE(0, 4);
+    await writeFile(
+      path.join(root, "renamed.bin"),
+      gzipSync(Buffer.concat([header, zstdCompressSync(response)])),
+    );
+
+    await expect(scanDirectory(root)).rejects.toThrow(
+      /uninspectable compressed artifact/u,
+    );
+  });
+
   it.each([
     ["zstd", Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0, 0])],
     ["lz4", Buffer.from([0x04, 0x22, 0x4d, 0x18, 0, 0, 0, 0])],

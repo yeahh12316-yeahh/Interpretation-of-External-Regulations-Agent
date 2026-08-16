@@ -214,6 +214,8 @@ const expandedArtifacts = (file, bytes) => {
     currentBytes = nextBytes;
     currentFile = nextFile;
     artifacts.push({ logicalFile: currentFile, bytes: currentBytes });
+    if (isSkippableCompressedFrame(currentBytes))
+      throw new Error(`uninspectable compressed artifact: ${file}`);
     if (isUnsupportedContainer(currentFile, currentBytes))
       throw new Error(`unsupported compressed build artifact: ${file}`);
   }
