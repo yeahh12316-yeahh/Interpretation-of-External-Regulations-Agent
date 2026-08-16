@@ -2,7 +2,7 @@ import type { Finding } from "../../domain/finding";
 import type { WorkflowSession } from "../../app/workflow-store";
 import {
   humanJudgmentCategoryForPurpose,
-  InstitutionImpactCategorySchema,
+  isClosedInstitutionImpactFinding,
 } from "../../domain/closed-categories";
 import {
   createReportContext,
@@ -81,7 +81,7 @@ export const buildQuickCommentary = (
         context,
         (finding) =>
           has(finding, "applicability") ||
-          InstitutionImpactCategorySchema.safeParse(finding.category).success,
+          isClosedInstitutionImpactFinding(finding),
         3,
       ),
     },

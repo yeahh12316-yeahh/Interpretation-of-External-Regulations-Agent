@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import {
+  hasInvalidInstitutionImpactSemantics,
   INSTITUTION_IMPACT_DIMENSIONS,
   INSTITUTION_IMPACT_LABELS,
   InstitutionImpactCategorySchema,
@@ -616,6 +617,14 @@ export const AnalysisArtifactsSchema = z
       }
     }
     for (const [index, finding] of artifacts.findings.entries()) {
+      if (hasInvalidInstitutionImpactSemantics(finding)) {
+        context.addIssue({
+          code: "custom",
+          path: ["findings", index, "category"],
+          message:
+            "机构影响 Finding 必须使用闭合七维 taxonomy 并绑定 ai_inference claimType",
+        });
+      }
       if (
         finding.claimType === "ai_inference" &&
         finding.category !== "institution_impact" &&

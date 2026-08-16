@@ -1,7 +1,10 @@
 import { z } from "zod";
 
 import type { Finding } from "../../domain/finding";
-import { InstitutionImpactCategorySchema } from "../../domain/closed-categories";
+import {
+  hasInvalidInstitutionImpactSemantics,
+  isInstitutionImpactNamespaceCategory,
+} from "../../domain/closed-categories";
 import type { Project } from "../../domain/project";
 import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
 import {
@@ -331,6 +334,7 @@ export function calculateQuality(
       ).length
     : 0;
   let unsupportedFindingCount = activeFindings.filter((finding) => {
+    if (hasInvalidInstitutionImpactSemantics(finding)) return true;
     if (finding.claimType === "pending_confirmation") return true;
     if (!isEvidenceFinding(finding)) return false;
     if (!hasCitation(finding, project)) return true;
@@ -351,7 +355,7 @@ export function calculateQuality(
   const inferenceCandidates = activeFindings.filter(
     (finding) =>
       finding.claimType === "ai_inference" ||
-      InstitutionImpactCategorySchema.safeParse(finding.category).success,
+      isInstitutionImpactNamespaceCategory(finding.category),
   );
   const markedInferences = inferenceCandidates.filter(
     (finding) =>

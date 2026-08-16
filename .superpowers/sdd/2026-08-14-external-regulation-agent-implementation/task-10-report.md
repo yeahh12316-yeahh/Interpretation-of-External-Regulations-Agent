@@ -622,3 +622,148 @@ git diff --check: exit 0
 No API key, endpoint, credential, session secret, model call, export asset,
 unsafe HTML, or logging path was added. Client hashes remain integrity
 consistency bindings, not authentication or digital signatures.
+
+---
+
+## Fix round 3/5 — legacy action-ID binding and impact claim semantics
+
+Fix base: `f45913a786bd08f82d234433e4e58896c56181ad`
+
+### RED evidence
+
+The repository fixture was resealed with a syntactically valid but semantically
+invalid historical/current impact Finding. Before the fix, the real IndexedDB
+load resolved instead of rejecting:
+
+```text
+vitest run src/app/workflow-store.test.ts -t 'restores current findings'
+Test Files  1 failed (1)
+Tests       1 failed | 5 skipped (6)
+Failure: promise resolved instead of rejecting institution_impact:other +
+regulatory_fact
+```
+
+The direct artifact-schema RED isolated category/claim binding independently
+of inference relationships. Four illegal records were accepted, while the
+seven legal linked `ai_inference` dimensions passed:
+
+```text
+vitest run src/features/analysis/skill-orchestrator.test.ts \
+  -t 'impact namespace category|seven exact impact categories'
+Test Files  1 failed (1)
+Tests       4 failed | 1 passed | 47 skipped (52)
+Accepted illegally: institution_impact:other + regulatory_fact;
+institution_impact:system + regulatory_fact/human_judgment/pending_confirmation
+```
+
+The independent report and quality boundaries reproduced the same bypass:
+
+```text
+report-builders -t 'impact category'
+Test Files  1 failed (1)
+Tests       4 failed | 14 skipped (18)
+Failure: full and quick builders did not throw before routing
+
+calculate-quality -t 'unknown impact namespace'
+Test Files  1 failed (1)
+Tests       1 failed | 24 skipped (25)
+Failure: unsupportedFindingCount was 0
+```
+
+The repository migration test also supplies four independently resealed v1
+`add_human` action-ID attacks: zero, an otherwise valid v2 ID, a stale/wrong v1
+ID, and a missing ID. The same fixture retains the exact correctly computed v1
+ID as the positive migration control.
+
+### Implemented fixes
+
+1. Exact v1 action-ID validation before migration
+   - `migrateLegacySession` now recomputes the action ID from the untouched
+     strict v1 action and compares it with the incoming ID before deriving a
+     purpose or computing any v2 ID.
+   - Missing IDs remain rejected structurally. Zero, v2, stale, or wrong IDs
+     now fail even when the caller recomputes the outer consistency hash.
+   - Only the existing exact legal legacy category/`human_judgment` pair can
+     reach migration; successful migration binds the derived purpose into the
+     v2 action ID and reseals the normalized v2 session.
+
+2. Closed institutional-impact category/claim pair
+   - The shared closed-category module now owns the namespace detector, exact
+     seven-dimension plus `ai_inference` predicate, invalid-pair guard, and
+     assertion.
+   - `AnalysisArtifactsSchema` rejects every `institution_impact:` value that
+     is not both an exact seven-dimensional category and `ai_inference` before
+     the existing parent, relationship, and anchor bijections run. Removing a
+     relationship therefore cannot turn an invalid impact into a regulatory
+     fact.
+   - Workflow history/restore inherit the artifact check. Evidence quality
+     counts a mismatched pair as unsupported. Full and quick report context
+     asserts the pair before eligibility/routing, and impact sections only use
+     the shared exact semantic predicate.
+   - The broad generic Finding category schema remains unchanged. The existing
+     exact historical compatibility value `institution_impact` remains under
+     its prior historical rules and was not widened into the namespaced set.
+
+### Focused GREEN evidence
+
+```text
+vitest run src/features/analysis/skill-orchestrator.test.ts \
+  src/features/reports/report-builders.test.ts \
+  src/features/evidence/calculate-quality.test.ts \
+  src/app/workflow-store.test.ts
+
+Test Files  4 passed (4)
+Tests       101 passed (101)
+```
+
+This includes real repository load adversarials, the valid v1-to-v2 migration,
+all seven valid linked impact dimensions, direct artifact validation, report
+fail-closed behavior, and the evidence-quality gate.
+
+### Fresh final gates
+
+Full Vitest after formatting:
+
+```text
+Test Files  28 passed (28)
+Tests       282 passed (282)
+Duration    9.13s
+```
+
+Full Playwright initially could not bind `127.0.0.1:4173` inside the filesystem
+sandbox (`listen EPERM`). The identical command was rerun with permission to
+start the local test server:
+
+```text
+8 passed (11.6s)
+```
+
+Type/build:
+
+```text
+./node_modules/.bin/tsc --noEmit
+exit 0
+
+./node_modules/.bin/vite build
+749 modules transformed
+built in 4.56s
+```
+
+The existing advisory for chunks above 500 kB remains. PDF/DOCX exporters and
+the CJK font remain separate on-demand assets. No exporter content, OOXML, PDF,
+font, or layout code changed in this round, so the scoped instruction did not
+require repeating four-file visual QA.
+
+Final hygiene:
+
+```text
+Prettier targeted check: all matched files use Prettier code style
+exact test credential values in dist/: no matches
+new-line scan for console/localStorage/sessionStorage/API key/endpoint/
+authorization/unsafe HTML: no matches
+git diff --check: exit 0
+```
+
+No API key, endpoint, credential, session secret, URL/log storage, model call,
+export asset, unsafe HTML, or report fact-generation path was introduced.
+Client-side hashes remain consistency checks, not authentication.

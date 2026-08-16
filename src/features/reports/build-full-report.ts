@@ -1,7 +1,7 @@
 import type { Finding } from "../../domain/finding";
 import {
   humanJudgmentCategoryForPurpose,
-  InstitutionImpactCategorySchema,
+  isClosedInstitutionImpactFinding,
 } from "../../domain/closed-categories";
 import {
   createReportContext,
@@ -21,11 +21,7 @@ export const buildFullReport = (
   options: ReportBuildOptions = {},
 ): ReportModel => {
   const context = createReportContext(session, options);
-  const impactItems = itemsMatching(
-    context,
-    (finding) =>
-      InstitutionImpactCategorySchema.safeParse(finding.category).success,
-  );
+  const impactItems = itemsMatching(context, isClosedInstitutionImpactFinding);
   const sections: ReportSection[] = [
     {
       key: "executive_summary",

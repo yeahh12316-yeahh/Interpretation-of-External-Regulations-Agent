@@ -422,6 +422,37 @@ it("restores current findings with append-only audit and attestation records and
     ),
   ).rejects.toThrow(/历史|定位|引文|锚点|ParseResult/);
 
+  const disguisedImpact = {
+    ...originalVersion.findings[0],
+    findingId: "IMPACT-DISGUISED",
+    category: "institution_impact:other",
+    statement: "伪装成监管事实的机构影响",
+    claimType: "regulatory_fact" as const,
+    inferenceParents: [],
+  };
+  const disguisedVersionContent = {
+    ...originalVersionContent,
+    findings: [originalVersion.findings[0], disguisedImpact],
+    replacedFindingIds: ["F1", disguisedImpact.findingId],
+  };
+  const disguisedVersion = {
+    ...disguisedVersionContent,
+    versionHash: analysisVersionHash(disguisedVersionContent),
+  };
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        project: {
+          ...saved.project,
+          findings: [...saved.project.findings, disguisedImpact],
+        },
+        analysisVersions: [disguisedVersion],
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/机构影响|类别|claimType|分析版本/);
+
   const recategorizedFinding = {
     ...originalVersion.findings[0],
     category: "key_matter:core_requirement",
@@ -1041,6 +1072,39 @@ it("restores current findings with append-only audit and attestation records and
     ...legacyUnsealed,
     contentHash: evidenceDigest(legacyContent),
   };
+  for (const [label, invalidActionId] of [
+    ["zero", "fnv1a64:0000000000000000"],
+    ["v2", humanAction.actionId],
+    ["stale", "fnv1a64:1111111111111111"],
+    ["missing", undefined],
+  ] as const) {
+    const invalidLegacyUnsealed = {
+      ...legacyUnsealed,
+      reviewActions: legacyUnsealed.reviewActions.map((action) => {
+        if (action.findingId !== humanAction.findingId) return action;
+        if (invalidActionId === undefined) {
+          const { actionId: _actionId, ...missingActionId } = action;
+          return missingActionId;
+        }
+        return { ...action, actionId: invalidActionId };
+      }),
+    };
+    const { contentHash: _invalidHash, ...invalidLegacyContent } =
+      invalidLegacyUnsealed;
+    await projectDatabase.workflowSessions.put({
+      projectId: legacySession.project.projectId,
+      session: {
+        ...invalidLegacyUnsealed,
+        contentHash: evidenceDigest(invalidLegacyContent),
+      },
+      revision: legacySession.revision,
+      updatedAt: `2026-08-15T04:30:0${label.length}.000Z`,
+    });
+    await expect(
+      workflowSessionRepository.load(legacySession.project.projectId),
+      label,
+    ).rejects.toThrow(/工作流|动作|ID|字段/);
+  }
   const downgradedIllegalActionContent = {
     action: "add_human" as const,
     findingId: humanAction.findingId,

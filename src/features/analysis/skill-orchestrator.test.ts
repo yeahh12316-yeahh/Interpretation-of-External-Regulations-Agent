@@ -394,6 +394,99 @@ describe("runAnalysis", () => {
     ).toBe(false);
   });
 
+  it.each([
+    ["institution_impact:other", "regulatory_fact"],
+    ["institution_impact:system", "regulatory_fact"],
+    ["institution_impact:system", "human_judgment"],
+    ["institution_impact:system", "pending_confirmation"],
+  ] as const)(
+    "rejects impact namespace category %s with claimType %s even without a relationship",
+    (category, claimType) => {
+      const finding = {
+        ...baseFinding,
+        findingId: "IMPACT-CLAIM-MISMATCH",
+        category,
+        statement: "伪装成非推导结论的机构影响",
+        claimType,
+        sourceAnchors: [anchor()],
+        inferenceParents: [],
+        reviewStatus:
+          claimType === "human_judgment"
+            ? ("confirmed" as const)
+            : "unreviewed",
+        requiredReview: true,
+        revisionRecords:
+          claimType === "human_judgment"
+            ? [
+                {
+                  revisedBy: "复核人",
+                  revisedAt: "2026-08-16T03:00:00.000Z",
+                  changeSummary: "攻击夹具",
+                },
+              ]
+            : [],
+      };
+      expect(
+        AnalysisArtifactsSchema.safeParse({
+          findings: [finding],
+          atomicRequirements: [],
+          inferenceRelationships: [],
+          conflicts: [],
+        }).success,
+      ).toBe(false);
+    },
+  );
+
+  it("accepts all seven exact impact categories only as linked ai_inference artifacts", () => {
+    const parent = FindingSchema.parse({
+      ...baseFinding,
+      findingId: "PARENT-VALID",
+      category: "key_matter:core_requirement",
+      statement: regulatorySource.content,
+      claimType: "regulatory_fact",
+      sourceAnchors: [anchor()],
+    });
+    for (const category of [
+      "institution_impact:governance",
+      "institution_impact:institution",
+      "institution_impact:process",
+      "institution_impact:system",
+      "institution_impact:data",
+      "institution_impact:people",
+      "institution_impact:reporting",
+    ]) {
+      const impact = FindingSchema.parse({
+        ...baseFinding,
+        findingId: `VALID-${category}`,
+        category,
+        statement: "闭合的机构影响",
+        claimType: "ai_inference",
+        sourceAnchors: [anchor()],
+        inferenceParents: [parent.findingId],
+        requiredReview: true,
+      });
+      expect(
+        AnalysisArtifactsSchema.safeParse({
+          findings: [parent, impact],
+          atomicRequirements: [],
+          inferenceRelationships: [
+            {
+              relationshipId: `REL-${category}`,
+              fromFindingIds: [parent.findingId],
+              toFindingId: impact.findingId,
+              relationshipType: "potential",
+              sourceAnchors: [anchor()],
+              rationale: "结构化关系",
+              confidence: 0.8,
+              manualVerificationRequired: true,
+            },
+          ],
+          conflicts: [],
+        }).success,
+      ).toBe(true);
+    }
+  });
+
   it("executes a trusted reanalysis directive and returns exactly its authorized target", async () => {
     const gateway = new RecordingGateway(successfulResponse);
     const priorFinding = {

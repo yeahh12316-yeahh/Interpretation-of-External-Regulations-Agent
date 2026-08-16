@@ -111,6 +111,40 @@ export const institutionImpactDimensionForCategory = (
   );
 };
 
+/**
+ * Namespaced institution-impact findings are a closed semantic pair: an exact
+ * seven-dimension category plus an AI-inference claim. Finding.category stays
+ * intentionally broad; persistence, quality, and reporting share this guard.
+ */
+export const isInstitutionImpactNamespaceCategory = (
+  category: string,
+): boolean => category.startsWith("institution_impact:");
+
+export const isClosedInstitutionImpactFinding = (input: {
+  readonly category: string;
+  readonly claimType: ClaimType;
+}): boolean =>
+  InstitutionImpactCategorySchema.safeParse(input.category).success &&
+  input.claimType === "ai_inference";
+
+export const hasInvalidInstitutionImpactSemantics = (input: {
+  readonly category: string;
+  readonly claimType: ClaimType;
+}): boolean =>
+  isInstitutionImpactNamespaceCategory(input.category) &&
+  !isClosedInstitutionImpactFinding(input);
+
+export const assertInstitutionImpactSemantics = (input: {
+  readonly category: string;
+  readonly claimType: ClaimType;
+}): void => {
+  if (hasInvalidInstitutionImpactSemantics(input)) {
+    throw new Error(
+      "机构影响类别必须使用闭合七维 taxonomy 并绑定 ai_inference claimType",
+    );
+  }
+};
+
 export const INSTITUTION_IMPACT_LABELS: Readonly<
   Record<InstitutionImpactDimension, string>
 > = {

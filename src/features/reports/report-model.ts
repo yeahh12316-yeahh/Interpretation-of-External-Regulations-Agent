@@ -2,8 +2,10 @@ import type { ClaimType, Finding, ReviewStatus } from "../../domain/finding";
 import type { SourceAnchor, SourceType } from "../../domain/source";
 import type { WorkflowSession } from "../../app/workflow-store";
 import {
+  assertInstitutionImpactSemantics,
   INSTITUTION_IMPACT_DIMENSIONS,
   INSTITUTION_IMPACT_LABELS,
+  isClosedInstitutionImpactFinding,
   institutionImpactDimensionForCategory,
   resolveHumanJudgmentPurpose,
   type InstitutionImpactDimension,
@@ -193,6 +195,7 @@ export const createReportContext = (
   session: WorkflowSession,
   options: ReportBuildOptions = {},
 ): ReportContext => {
+  session.project.findings.forEach(assertInstitutionImpactSemantics);
   const authoritativeParsing = hasAuthoritativeParsingEvidence(session);
   const index = createSourceIndex({
     sources: session.project.sourceUnits,
@@ -233,7 +236,9 @@ export const createReportContext = (
         findingId: finding.findingId,
         text: finding.statement,
         category: finding.category,
-        dimension: impactDimension(finding.category),
+        dimension: isClosedInstitutionImpactFinding(finding)
+          ? impactDimension(finding.category)
+          : null,
         claimType: finding.claimType,
         claimLabel: claimLabel(finding.claimType),
         reviewStatus: finding.reviewStatus,

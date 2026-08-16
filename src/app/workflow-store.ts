@@ -478,6 +478,11 @@ const migrateLegacySession = (
 ): WorkflowSession => {
   const reviewActions = legacy.reviewActions.map((action) => {
     if (action.action !== "add_human") return action;
+    // Validate the v1 content binding before adding purpose or computing a v2
+    // ID. The enclosing session hash is consistency-only, not authentication.
+    if (action.actionId !== reviewActionId(action)) {
+      throw new Error("旧版人工判断动作 ID 与原始内容不一致");
+    }
     const purpose = resolveHumanJudgmentPurpose({
       claimType: action.afterSnapshot.claimType,
       category: action.afterSnapshot.category,

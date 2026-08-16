@@ -1296,6 +1296,22 @@ describe("calculateQuality", () => {
     ).toBe(false);
   });
 
+  test("counts an unknown impact namespace category disguised as a regulatory fact as unsupported", () => {
+    const disguised = {
+      ...fact,
+      findingId: "BAD-IMPACT-OTHER",
+      category: "institution_impact:other",
+      claimType: "regulatory_fact" as const,
+    };
+    const metrics = calculateQuality(project([fact, disguised]), pageUnits, [
+      completeOutcome,
+    ]);
+    expect(metrics.unsupportedFindingCount).toBeGreaterThan(0);
+    expect(
+      canFinalize(project([fact, disguised]), pageUnits, [completeOutcome]),
+    ).toBe(false);
+  });
+
   test("counts a changed mandatory number as unsupported", () => {
     const changedNumber = {
       ...fact,

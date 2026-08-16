@@ -188,6 +188,33 @@ it("preserves a closed seven-dimension institutional-impact structure", () => {
   ).toEqual([]);
 });
 
+it.each([
+  ["institution_impact:other", "regulatory_fact"],
+  ["institution_impact:governance", "regulatory_fact"],
+  ["institution_impact:governance", "human_judgment"],
+  ["institution_impact:governance", "pending_confirmation"],
+] as const)(
+  "fails closed before report routing for impact category %s with claimType %s",
+  (category, claimType) => {
+    const base = reviewedReportSession();
+    const tampered = {
+      ...base,
+      project: {
+        ...base.project,
+        findings: base.project.findings.map((finding) =>
+          finding.findingId === "F-IMPACT"
+            ? { ...finding, category, claimType }
+            : finding,
+        ),
+      },
+    } as WorkflowSession;
+    expect(() => buildFullReport(tampered)).toThrow(/机构影响|类别|claimType/);
+    expect(() => buildQuickCommentary(tampered)).toThrow(
+      /机构影响|类别|claimType/,
+    );
+  },
+);
+
 it("routes only the closed recommended-action human purpose into action sections", () => {
   const base = reviewedReportSession();
   const anchor = base.project.findings.find(
