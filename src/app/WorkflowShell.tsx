@@ -180,6 +180,10 @@ export function WorkflowShell({
     () => canPreviewReportDraft(session) && !evidenceReady,
     [session, evidenceReady],
   );
+  const hasOcrReviews = session.parseResults.some(
+    ({ ocrReviews }) => ocrReviews.length > 0,
+  );
+  const ocrReviewerMissing = hasOcrReviews && !ocrReviewer.trim();
   const transitionContext = {
     parsingReady: ready,
     evidenceReady,
@@ -580,14 +584,23 @@ export function WorkflowShell({
   ) : session.project.workflowStep === "parsing" ? (
     <section>
       <h1>解析与OCR</h1>
-      {session.parseResults.some(({ ocrReviews }) => ocrReviews.length > 0) ? (
+      {hasOcrReviews ? (
         <label>
           OCR复核人
           <input
             aria-label="OCR复核人"
+            aria-describedby={
+              ocrReviewerMissing ? "ocr-reviewer-required" : undefined
+            }
+            aria-invalid={ocrReviewerMissing}
             value={ocrReviewer}
             onChange={(event) => setOcrReviewer(event.target.value)}
           />
+          {ocrReviewerMissing ? (
+            <p id="ocr-reviewer-required" role="alert">
+              请先填写 OCR 复核人
+            </p>
+          ) : null}
         </label>
       ) : null}
       {session.parseResults.map((result) => (

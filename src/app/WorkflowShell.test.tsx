@@ -293,8 +293,23 @@ it("renders OCR review in the production parsing step and unlocks only after cor
   expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
     text,
   );
+  const reviewerInput = screen.getByLabelText("OCR复核人");
+  const saveCorrection = screen.getByRole("button", { name: "保存纠错" });
+  expect(reviewerInput).toHaveAttribute("aria-invalid", "true");
+  expect(reviewerInput).toHaveAccessibleDescription("请先填写 OCR 复核人");
+  expect(screen.getByText("请先填写 OCR 复核人")).toHaveAttribute(
+    "role",
+    "alert",
+  );
+  expect(saveCorrection).toBeDisabled();
+  await user.click(saveCorrection);
+  expect(screen.getByText("待审阅")).toBeVisible();
+  expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
   await user.type(screen.getByLabelText("OCR复核人"), "复核员甲");
-  await user.click(screen.getByRole("button", { name: "保存纠错" }));
+  expect(reviewerInput).toHaveAttribute("aria-invalid", "false");
+  expect(screen.queryByText("请先填写 OCR 复核人")).not.toBeInTheDocument();
+  expect(saveCorrection).toBeEnabled();
+  await user.click(saveCorrection);
   expect(await screen.findByText("已纠错")).toBeVisible();
   expect(screen.getByRole("button", { name: "下一步" })).toBeEnabled();
 });

@@ -125,8 +125,12 @@ const structuredFindings = (file, jsonBytes) => {
 const startsWith = (bytes, signature) =>
   signature.every((value, index) => bytes[index] === value);
 
+const hasSignatureAt = (bytes, signature, offset) =>
+  bytes.length >= offset + signature.length &&
+  signature.every((value, index) => bytes[offset + index] === value);
+
 const isUnsupportedContainer = (file, bytes) =>
-  /\.(?:zip|7z|rar|tar|tgz|bz2|xz|cab)$/iu.test(file) ||
+  /\.(?:zip|7z|rar|tar|tgz|bz2|xz|cab|zst|lz4)$/iu.test(file) ||
   [
     [0x50, 0x4b, 0x03, 0x04],
     [0x50, 0x4b, 0x05, 0x06],
@@ -134,10 +138,19 @@ const isUnsupportedContainer = (file, bytes) =>
     [0x37, 0x7a, 0xbc, 0xaf, 0x27, 0x1c],
     [0xfd, 0x37, 0x7a, 0x58, 0x5a, 0x00],
     [0x42, 0x5a, 0x68],
-  ].some((signature) => startsWith(bytes, signature));
+    [0x4d, 0x53, 0x43, 0x46],
+    [0x28, 0xb5, 0x2f, 0xfd],
+    [0x04, 0x22, 0x4d, 0x18],
+  ].some((signature) => startsWith(bytes, signature)) ||
+  hasSignatureAt(bytes, [0x75, 0x73, 0x74, 0x61, 0x72], 257);
 
 const isGzip = (file, bytes) =>
   /\.gz$/iu.test(file) || startsWith(bytes, [0x1f, 0x8b]);
+
+const isExpansionLimitError = (error) =>
+  error instanceof Error &&
+  "code" in error &&
+  error.code === "ERR_BUFFER_TOO_LARGE";
 
 const expandedArtifacts = (file, bytes) => {
   if (isUnsupportedContainer(file, bytes))
@@ -150,7 +163,7 @@ const expandedArtifacts = (file, bytes) => {
       digest !== opaqueOcrAsset.sha256
     )
       throw new Error(`OCR traineddata integrity check failed: ${file}`);
-    return [{ logicalFile: file, bytes }];
+    return [{ logicalFile: file, bytes, opaque: true }];
   }
   const artifacts = [{ logicalFile: file, bytes }];
   let currentFile = file;
@@ -176,7 +189,9 @@ const expandedArtifacts = (file, bytes) => {
             maxOutputLength: MAX_EXPANDED_JSON_BYTES,
           });
           nextFile = currentFile.replace(/\.br$/iu, "");
-        } catch {
+        } catch (error) {
+          if (isExpansionLimitError(error))
+            throw new Error(`Brotli build artifact expands too large: ${file}`);
           if (declaredBrotli)
             throw new Error(
               `Brotli build artifact is invalid or too large: ${file}`,
@@ -195,6 +210,18 @@ const expandedArtifacts = (file, bytes) => {
       throw new Error(`unsupported compressed build artifact: ${file}`);
   }
   if (isGzip(currentFile, currentBytes) || /\.br$/iu.test(currentFile))
+    throw new Error(`compressed build artifact nesting is too deep: ${file}`);
+  let additionalBrotliLayer = false;
+  try {
+    brotliDecompressSync(currentBytes, {
+      maxOutputLength: MAX_EXPANDED_JSON_BYTES,
+    });
+    additionalBrotliLayer = true;
+  } catch (error) {
+    if (isExpansionLimitError(error))
+      throw new Error(`Brotli build artifact expands too large: ${file}`);
+  }
+  if (additionalBrotliLayer)
     throw new Error(`compressed build artifact nesting is too deep: ${file}`);
   return artifacts;
 };
@@ -320,20 +347,24 @@ export const scanDirectory = async (directory, options = {}) => {
         type: "forbidden-build-artifact",
       });
     findings.push(
-      ...expanded.flatMap(({ bytes: surfaceBytes }) =>
-        textSurfaces(surfaceBytes).flatMap((text) =>
-          scanText(text).map((finding) => ({
-            ...finding,
-            file: relativeFile,
-          })),
-        ),
+      ...expanded.flatMap(({ bytes: surfaceBytes, opaque }) =>
+        opaque
+          ? []
+          : textSurfaces(surfaceBytes).flatMap((text) =>
+              scanText(text).map((finding) => ({
+                ...finding,
+                file: relativeFile,
+              })),
+            ),
       ),
-      ...expanded.flatMap(({ logicalFile, bytes: expandedBytes }) =>
-        structuredFindings(logicalFile, expandedBytes).map((type) => ({
-          file: relativeFile,
-          line: 1,
-          type,
-        })),
+      ...expanded.flatMap(({ logicalFile, bytes: expandedBytes, opaque }) =>
+        opaque
+          ? []
+          : structuredFindings(logicalFile, expandedBytes).map((type) => ({
+              file: relativeFile,
+              line: 1,
+              type,
+            })),
       ),
     );
   }

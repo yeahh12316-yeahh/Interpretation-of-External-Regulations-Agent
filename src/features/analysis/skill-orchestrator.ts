@@ -14,7 +14,10 @@ import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
 import { throwIfAborted } from "../../lib/abort";
 import { evidenceDigest } from "../evidence/evidence-hash";
 import type { ModelGateway } from "../model/model-gateway";
-import type { ParsedSourceUnit } from "../parsing/build-anchors";
+import {
+  canonicalArticlesForUnits,
+  type ParsedSourceUnit,
+} from "../parsing/build-anchors";
 import {
   chunkDocument,
   type ChunkOptions,
@@ -1278,7 +1281,7 @@ const normalizeParsedUnits = (
   sourceById: ReadonlyMap<string, SourceUnit>,
 ): ParsedSourceUnit[] => {
   if (!parsedUnits) return [];
-  return parsedUnits.map((unit) => {
+  const validated = parsedUnits.map((unit) => {
     const source = sourceById.get(unit.sourceId);
     if (!source) throw new Error("解析定位引用了未提供的来源");
     if (source.sourceType !== unit.sourceType)
@@ -1291,6 +1294,11 @@ const normalizeParsedUnits = (
       throw new Error("解析定位文本未在绑定来源中反向匹配");
     return { ...unit };
   });
+  const canonicalArticles = canonicalArticlesForUnits(validated);
+  return validated.map((unit, index) => ({
+    ...unit,
+    article: canonicalArticles[index],
+  }));
 };
 
 const scopeForChunk = (

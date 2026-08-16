@@ -77,6 +77,7 @@ describe("production smoke URL boundary", () => {
     ["2001::1", false],
     ["2001:100::1", false],
     ["2001:3::1", true],
+    ["2002::1", false],
     ["3fff::1", false],
     ["ff02::1", false],
   ])("classifies IANA global-only address %s", (address, expected) => {
@@ -90,6 +91,15 @@ describe("production smoke URL boundary", () => {
     ];
     await expect(
       resolveAndValidateProductionBaseUrl("https://vercel.com/app", lookup),
+    ).rejects.toThrow(/DNS.*non-global/u);
+  });
+
+  it("fails closed when DNS returns an IANA non-global 6to4 address", async () => {
+    await expect(
+      resolveAndValidateProductionBaseUrl(
+        "https://vercel.com/app",
+        async () => [{ address: "2002::1", family: 6 }],
+      ),
     ).rejects.toThrow(/DNS.*non-global/u);
   });
 

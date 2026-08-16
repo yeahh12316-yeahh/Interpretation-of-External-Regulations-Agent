@@ -12,6 +12,7 @@ import {
 } from "./normalize-text";
 import {
   createSourceIndex,
+  findIndexedParsedUnitForAnchor,
   type OfficialPrimarySourceIds,
   validateFinding,
 } from "./validate-finding";
@@ -1338,5 +1339,50 @@ describe("validateFinding", () => {
       "numbers",
       "inference_parent",
     ]);
+  });
+
+  test("uses Task 4 canonical inherited articles and rejects a raw null anchor", () => {
+    const source: SourceUnit = {
+      sourceId: "REG-INHERITED",
+      sourceType: "regulatory_text",
+      title: "合成继承条款.txt",
+      content: "第一条 合成总则。\n后续段落应当保存记录。",
+    };
+    const units: ParsedSourceUnit[] = [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 0,
+        text: "第一条 合成总则。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 1,
+        text: "后续段落应当保存记录。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const index = createSourceIndex({ sources: [source], parsedUnits: units });
+    const anchor = {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      page: 1,
+      article: "第一条",
+      paragraphIndex: 1,
+      quote: units[1].text,
+    };
+
+    expect(findIndexedParsedUnitForAnchor(anchor, index)?.unit).toBe(units[1]);
+    expect(
+      findIndexedParsedUnitForAnchor({ ...anchor, article: null }, index),
+    ).toBeUndefined();
   });
 });

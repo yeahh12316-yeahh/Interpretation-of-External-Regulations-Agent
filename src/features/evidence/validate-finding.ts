@@ -1,7 +1,10 @@
 import type { Finding } from "../../domain/finding";
 import type { SourceAnchor, SourceUnit } from "../../domain/source";
 import type { AtomicRequirement } from "../analysis/skill-orchestrator";
-import type { ParsedSourceUnit } from "../parsing/build-anchors";
+import {
+  canonicalArticlesForUnits,
+  type ParsedSourceUnit,
+} from "../parsing/build-anchors";
 import {
   canonicalAtomicStrength,
   extractDates,
@@ -85,13 +88,11 @@ export function createSourceIndex({
     ]);
   }
 
-  const articleBySource = new Map<string, string>();
-  const indexedUnits = parsedUnits.map((unit) => {
-    if (unit.article) articleBySource.set(unit.sourceId, unit.article);
+  const canonicalArticles = canonicalArticlesForUnits(parsedUnits);
+  const indexedUnits = parsedUnits.map((unit, index) => {
     return {
       unit,
-      effectiveArticle:
-        unit.article ?? articleBySource.get(unit.sourceId) ?? null,
+      effectiveArticle: canonicalArticles[index],
     };
   });
 

@@ -161,6 +161,48 @@ describe("build secret scanner", () => {
     );
   });
 
+  it("fails closed on five extensionless Brotli layers", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-depth-scan-"));
+    let nested = Buffer.from(
+      JSON.stringify({ choices: [{ message: { content: "hidden" } }] }),
+    );
+    for (let depth = 0; depth < 5; depth += 1)
+      nested = brotliCompressSync(nested);
+    await writeFile(path.join(root, "opaque.bin"), nested);
+
+    await expect(scanDirectory(root)).rejects.toThrow(/nesting.*deep/u);
+  });
+
+  it("rejects renamed CAB and TAR containers by magic", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-magic-scan-"));
+    await writeFile(
+      path.join(root, "cab.bin"),
+      Buffer.from([0x4d, 0x53, 0x43, 0x46, 0, 0, 0, 0]),
+    );
+    await expect(scanDirectory(root)).rejects.toThrow(
+      /unsupported compressed build artifact/u,
+    );
+
+    await writeFile(path.join(root, "cab.bin"), Buffer.from("safe"));
+    const tar = Buffer.alloc(512);
+    tar.write("ustar", 257, "ascii");
+    await writeFile(path.join(root, "archive.bin"), tar);
+    await expect(scanDirectory(root)).rejects.toThrow(
+      /unsupported compressed build artifact/u,
+    );
+  });
+
+  it("fails closed when an extensionless Brotli payload exceeds the expansion cap", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-expand-scan-"));
+    const oversized = Buffer.alloc(8 * 1024 * 1024 + 1, 0x41);
+    await writeFile(
+      path.join(root, "compressed.bin"),
+      brotliCompressSync(oversized),
+    );
+
+    await expect(scanDirectory(root)).rejects.toThrow(/too large|expand/u);
+  });
+
   it("detects nested uploaded source records without relying on names", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "build-upload-scan-"));
     await writeFile(

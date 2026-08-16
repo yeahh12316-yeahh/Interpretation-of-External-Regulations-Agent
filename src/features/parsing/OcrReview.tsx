@@ -184,7 +184,14 @@ export function OcrReview({
           onChange={(event) => setDraft(event.target.value)}
         />
       </label>
-      <button type="button" onClick={save}>
+      <button
+        aria-describedby={
+          !reviewer.trim() ? "ocr-reviewer-required" : undefined
+        }
+        disabled={!reviewer.trim() || !draft.trim()}
+        type="button"
+        onClick={save}
+      >
         保存纠错
       </button>
       <details>

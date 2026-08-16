@@ -48,14 +48,23 @@ const ARTICLE_PATTERN = /第[〇零一二三四五六七八九十百千万两\d]
 export const articleFromText = (text: string): string | null =>
   text.match(ARTICLE_PATTERN)?.[0] ?? null;
 
+export function canonicalArticlesForUnits(
+  units: readonly ParsedSourceUnit[],
+): Array<string | null> {
+  const articleBySource = new Map<string, string>();
+  return units.map((unit) => {
+    const detectedArticle = unit.article ?? articleFromText(unit.text);
+    if (detectedArticle) articleBySource.set(unit.sourceId, detectedArticle);
+    return detectedArticle ?? articleBySource.get(unit.sourceId) ?? null;
+  });
+}
+
 export function buildAnchors(
   units: readonly ParsedSourceUnit[],
 ): SourceAnchor[] {
-  const articleBySource = new Map<string, string>();
+  const canonicalArticles = canonicalArticlesForUnits(units);
 
-  return units.flatMap((unit) => {
-    const detectedArticle = unit.article ?? articleFromText(unit.text);
-    if (detectedArticle) articleBySource.set(unit.sourceId, detectedArticle);
+  return units.flatMap((unit, index) => {
     if (!unit.text.trim()) return [];
 
     return [
@@ -63,7 +72,7 @@ export function buildAnchors(
         sourceId: unit.sourceId,
         sourceType: unit.sourceType,
         page: unit.page,
-        article: detectedArticle ?? articleBySource.get(unit.sourceId) ?? null,
+        article: canonicalArticles[index],
         paragraphIndex: unit.paragraphIndex,
         quote: unit.text,
       },

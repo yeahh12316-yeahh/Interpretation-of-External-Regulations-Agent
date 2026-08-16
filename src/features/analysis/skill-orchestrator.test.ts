@@ -427,6 +427,174 @@ describe("runAnalysis", () => {
     });
   });
 
+  it("sends and validates Task 4 canonical inherited article locators", async () => {
+    const source: SourceUnit = {
+      sourceId: "REG-INHERITED",
+      sourceType: "regulatory_text",
+      title: "合成继承条款",
+      content: "第一条 合成总则。\n后续段落商业银行应当保存记录。",
+    };
+    const parsedUnits: ParsedSourceUnit[] = [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 0,
+        text: "第一条 合成总则。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 1,
+        text: "后续段落商业银行应当保存记录。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const canonicalAnchor: SourceAnchor = {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      page: 1,
+      article: "第一条",
+      paragraphIndex: 1,
+      quote: parsedUnits[1].text,
+    };
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_atomic_clauses_v1")
+        return emptyResponse(request);
+      return {
+        findings: [
+          {
+            ...baseFinding,
+            findingId: "REQ-INHERITED",
+            category: "atomic_requirement",
+            statement: "商业银行应当保存记录",
+            claimType: "regulatory_fact",
+            sourceAnchors: [canonicalAnchor],
+          },
+        ],
+        atomicRequirements: [
+          {
+            requirementId: "AR-INHERITED",
+            findingId: "REQ-INHERITED",
+            subject: "商业银行",
+            action: "保存",
+            object: "记录",
+            condition: null,
+            frequency: null,
+            deadline: null,
+            strength: "应当",
+            responsibility: null,
+            exceptions: null,
+            sharedContext: "第一条",
+            missingFacts: [],
+            sourceAnchors: [canonicalAnchor],
+            confidence: 1,
+            manualVerificationRequired: false,
+          },
+        ],
+      };
+    });
+
+    const result = await runAnalysis({
+      sourceUnits: [source],
+      parsedUnits,
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+    });
+
+    expect(result.findings).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ findingId: "REQ-INHERITED" }),
+      ]),
+    );
+    const atomicRequest = gateway.requests.find(
+      ({ schemaName }) => schemaName === "analysis_atomic_clauses_v1",
+    );
+    const userMessage = atomicRequest?.messages.at(-1)?.content ?? "";
+    const payload = JSON.parse(
+      userMessage.slice(userMessage.indexOf("\n") + 1),
+    ) as {
+      sourceChunk?: {
+        authoritativeLocators?: Array<{ article: string | null }>;
+      };
+    };
+    expect(
+      payload.sourceChunk?.authoritativeLocators?.map(({ article }) => article),
+    ).toEqual(["第一条", "第一条"]);
+  });
+
+  it("rejects a raw null article output when Task 4 canonical inheritance supplies an article", async () => {
+    const source: SourceUnit = {
+      sourceId: "REG-NULL-ARTICLE",
+      sourceType: "regulatory_text",
+      title: "合成继承条款",
+      content: "第一条 合成总则。\n后续段落商业银行应当保存记录。",
+    };
+    const parsedUnits: ParsedSourceUnit[] = [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 0,
+        text: "第一条 合成总则。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 1,
+        text: "后续段落商业银行应当保存记录。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const rawAnchor: SourceAnchor = {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      page: 1,
+      article: null,
+      paragraphIndex: 1,
+      quote: parsedUnits[1].text,
+    };
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_key_matters_v1")
+        return emptyResponse(request);
+      return {
+        findings: [
+          {
+            ...baseFinding,
+            findingId: "KEY-RAW-NULL",
+            category: "key_matter:core_requirement",
+            statement: rawAnchor.quote,
+            claimType: "regulatory_fact",
+            sourceAnchors: [rawAnchor],
+          },
+        ],
+      };
+    });
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [source],
+        parsedUnits,
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+      }),
+    ).rejects.toThrow(/定位|授权/u);
+  });
+
   it("accepts the closed institution impact dimension and emits its exact category", async () => {
     const gateway = new RecordingGateway((request) => {
       if (request.schemaName === "analysis_institution_impact_v1") {
