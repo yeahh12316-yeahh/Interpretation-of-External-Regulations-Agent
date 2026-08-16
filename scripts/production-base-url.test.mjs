@@ -77,7 +77,11 @@ describe("production smoke URL boundary", () => {
     ["2001::1", false],
     ["2001:100::1", false],
     ["2001:3::1", true],
-    ["64:ff9b::1", true],
+    ["64:ff9b::1", false],
+    ["64:ff9b::808:808", true],
+    ["64:ff9b::7f00:1", false],
+    ["64:ff9b::a00:1", false],
+    ["64:ff9b::c0a8:101", false],
     ["2002::1", false],
     ["3fff::1", false],
     ["ff02::1", false],
@@ -105,16 +109,32 @@ describe("production smoke URL boundary", () => {
   });
 
   it("accepts the IANA globally reachable IPv4-IPv6 translation prefix", async () => {
-    expect(resolveProductionBaseUrl("https://[64:ff9b::1]/app")).toBe(
-      "https://[64:ff9b::1]/app/",
+    expect(resolveProductionBaseUrl("https://[64:ff9b::808:808]/app")).toBe(
+      "https://[64:ff9b::808:808]/app/",
     );
     await expect(
       resolveAndValidateProductionBaseUrl(
         "https://vercel.com/app",
-        async () => [{ address: "64:ff9b::1", family: 6 }],
+        async () => [{ address: "64:ff9b::808:808", family: 6 }],
       ),
     ).resolves.toBe("https://vercel.com/app/");
   });
+
+  it.each(["7f00:1", "a00:1", "c0a8:101"])(
+    "rejects NAT64 embedding a non-global IPv4 address %s",
+    async (suffix) => {
+      const address = `64:ff9b::${suffix}`;
+      expect(() =>
+        resolveProductionBaseUrl(`https://[${address}]/app`),
+      ).toThrow(/non-local/u);
+      await expect(
+        resolveAndValidateProductionBaseUrl(
+          "https://vercel.com/app",
+          async () => [{ address, family: 6 }],
+        ),
+      ).rejects.toThrow(/DNS.*non-global/u);
+    },
+  );
 
   it("fails closed on empty or failed DNS and accepts only all-global answers", async () => {
     await expect(

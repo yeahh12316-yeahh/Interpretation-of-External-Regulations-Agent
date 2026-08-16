@@ -105,16 +105,26 @@ const GLOBAL_IETF_PROTOCOL_IPV6 = [
 
 const IANA_GLOBALLY_REACHABLE_IPV6_SPECIAL = [["64:ff9b::", 96]];
 
-const isGlobalIpv6 = (address) =>
-  (ipv6InCidr(address, "2000::", 3) ||
-    IANA_GLOBALLY_REACHABLE_IPV6_SPECIAL.some(([base, prefix]) =>
-      ipv6InCidr(address, base, prefix),
-    )) &&
-  (!ipv6InCidr(address, "2001::", 23) ||
-    GLOBAL_IETF_PROTOCOL_IPV6.some(([base, prefix]) =>
-      ipv6InCidr(address, base, prefix),
-    )) &&
-  !NON_GLOBAL_IPV6.some(([base, prefix]) => ipv6InCidr(address, base, prefix));
+const embeddedIpv4 = (address) => {
+  const value = Number(ipv6Integer(address) & 0xffff_ffffn);
+  return [24, 16, 8, 0].map((shift) => (value >>> shift) & 0xff).join(".");
+};
+
+const isGlobalIpv6 = (address) => {
+  if (ipv6InCidr(address, "64:ff9b::", 96))
+    return isGlobalIpv4(embeddedIpv4(address));
+  return (
+    (ipv6InCidr(address, "2000::", 3) ||
+      IANA_GLOBALLY_REACHABLE_IPV6_SPECIAL.some(([base, prefix]) =>
+        ipv6InCidr(address, base, prefix),
+      )) &&
+    (!ipv6InCidr(address, "2001::", 23) ||
+      GLOBAL_IETF_PROTOCOL_IPV6.some(([base, prefix]) =>
+        ipv6InCidr(address, base, prefix),
+      )) &&
+    !NON_GLOBAL_IPV6.some(([base, prefix]) => ipv6InCidr(address, base, prefix))
+  );
+};
 
 export const isGlobalUnicastIp = (address) => {
   const normalized = address.replace(/^\[|\]$/gu, "");

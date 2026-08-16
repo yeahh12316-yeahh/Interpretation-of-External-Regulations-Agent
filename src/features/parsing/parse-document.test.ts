@@ -797,4 +797,40 @@ describe("page failures and stable anchors", () => {
       null,
     ]);
   });
+
+  test("only switches canonical article at a unit-leading article heading", () => {
+    const common = {
+      sourceId: "SRC-regulatory_text-heading",
+      sourceType: "regulatory_text" as const,
+      page: 1,
+      extractionMethod: "text_layer" as const,
+      confidence: 1,
+    };
+    const units = [
+      {
+        ...common,
+        article: "第五条",
+        paragraphIndex: 0,
+        text: "第五条 总则。",
+      },
+      {
+        ...common,
+        article: "第一条",
+        paragraphIndex: 1,
+        text: "具体流程按照第一条规定执行。",
+      },
+      {
+        ...common,
+        article: null,
+        paragraphIndex: 2,
+        text: "\n  第一条 新编总则。",
+      },
+    ];
+
+    expect(buildAnchors(units).map(({ article }) => article)).toEqual([
+      "第五条",
+      "第五条",
+      "第一条",
+    ]);
+  });
 });

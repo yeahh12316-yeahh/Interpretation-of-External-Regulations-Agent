@@ -1,4 +1,4 @@
-import { brotliCompressSync, gzipSync } from "node:zlib";
+import { brotliCompressSync, gzipSync, zstdCompressSync } from "node:zlib";
 import {
   copyFile,
   mkdtemp,
@@ -191,6 +191,41 @@ describe("build secret scanner", () => {
       /unsupported compressed build artifact/u,
     );
   });
+
+  it("fails closed on renamed Zstd or LZ4 skippable frames", async () => {
+    const response = Buffer.from(
+      JSON.stringify({
+        choices: [{ message: { content: "hidden zstd model response" } }],
+      }),
+    );
+    for (const magic of [0x184d2a50, 0x184d2a5f]) {
+      const root = await mkdtemp(path.join(os.tmpdir(), "build-skippable-"));
+      const header = Buffer.alloc(8);
+      header.writeUInt32LE(magic, 0);
+      header.writeUInt32LE(0, 4);
+      await writeFile(
+        path.join(root, "renamed.bin"),
+        Buffer.concat([header, zstdCompressSync(response)]),
+      );
+      await expect(scanDirectory(root)).rejects.toThrow(
+        /uninspectable compressed artifact/u,
+      );
+    }
+  });
+
+  it.each([
+    ["zstd", Buffer.from([0x28, 0xb5, 0x2f, 0xfd, 0, 0, 0, 0])],
+    ["lz4", Buffer.from([0x04, 0x22, 0x4d, 0x18, 0, 0, 0, 0])],
+  ])(
+    "never treats recognized %s magic as an ordinary clean file",
+    async (_, bytes) => {
+      const root = await mkdtemp(path.join(os.tmpdir(), "build-known-magic-"));
+      await writeFile(path.join(root, "renamed.bin"), bytes);
+      await expect(scanDirectory(root)).rejects.toThrow(
+        /unsupported compressed build artifact/u,
+      );
+    },
+  );
 
   it("fails closed when an extensionless Brotli payload exceeds the expansion cap", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "build-expand-scan-"));

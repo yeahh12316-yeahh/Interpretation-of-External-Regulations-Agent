@@ -1429,4 +1429,76 @@ describe("validateFinding", () => {
       findIndexedParsedUnitForAnchor(fabricatedAnchor, index),
     ).toBeUndefined();
   });
+
+  test("does not let an in-sentence article reference replace canonical context", () => {
+    const source: SourceUnit = {
+      sourceId: "REG-ARTICLE-REFERENCE",
+      sourceType: "regulatory_text",
+      title: "合成条款引用.txt",
+      content:
+        "第五条 总则。\n\n具体流程按照第一条规定执行。\n\n第一条 新编总则。",
+    };
+    const units: ParsedSourceUnit[] = [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: "第五条",
+        paragraphIndex: 0,
+        text: "第五条 总则。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: "第一条",
+        paragraphIndex: 1,
+        text: "具体流程按照第一条规定执行。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 2,
+        text: "第一条 新编总则。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const index = createSourceIndex({ sources: [source], parsedUnits: units });
+    const continuationAnchor = {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      page: 1,
+      article: "第五条",
+      paragraphIndex: 1,
+      quote: units[1].text,
+    };
+    const switchedAnchor = {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      page: 1,
+      article: "第一条",
+      paragraphIndex: 2,
+      quote: units[2].text,
+    };
+
+    expect(
+      findIndexedParsedUnitForAnchor(continuationAnchor, index)?.unit,
+    ).toBe(units[1]);
+    expect(findIndexedParsedUnitForAnchor(switchedAnchor, index)?.unit).toBe(
+      units[2],
+    );
+    expect(
+      findIndexedParsedUnitForAnchor(
+        { ...continuationAnchor, article: "第一条" },
+        index,
+      ),
+    ).toBeUndefined();
+  });
 });

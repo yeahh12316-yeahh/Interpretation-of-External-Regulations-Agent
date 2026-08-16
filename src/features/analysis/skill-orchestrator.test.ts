@@ -640,6 +640,70 @@ describe("runAnalysis", () => {
     expect(serializedRequests).not.toContain("第九十九条");
   });
 
+  it("keeps canonical article context when a continuation merely references another article", async () => {
+    const source: SourceUnit = {
+      sourceId: "REG-ARTICLE-REFERENCE",
+      sourceType: "regulatory_text",
+      title: "合成条款引用",
+      content:
+        "第五条 总则。\n\n具体流程按照第一条规定执行。\n\n第一条 新编总则。",
+    };
+    const parsedUnits: ParsedSourceUnit[] = [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: "第五条",
+        paragraphIndex: 0,
+        text: "第五条 总则。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: "第一条",
+        paragraphIndex: 1,
+        text: "具体流程按照第一条规定执行。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 2,
+        text: "第一条 新编总则。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const gateway = new RecordingGateway(emptyResponse);
+
+    await runAnalysis({
+      sourceUnits: [source],
+      parsedUnits,
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+    });
+
+    const atomicRequest = gateway.requests.find(
+      ({ schemaName }) => schemaName === "analysis_atomic_clauses_v1",
+    );
+    const content = atomicRequest?.messages.at(-1)?.content ?? "";
+    const payload = JSON.parse(content.slice(content.indexOf("\n") + 1)) as {
+      sourceChunk: {
+        authoritativeLocators: Array<{ article: string | null }>;
+      };
+    };
+    expect(
+      payload.sourceChunk.authoritativeLocators.map(({ article }) => article),
+    ).toEqual(["第五条", "第五条", "第一条"]);
+  });
+
   it("accepts the closed institution impact dimension and emits its exact category", async () => {
     const gateway = new RecordingGateway((request) => {
       if (request.schemaName === "analysis_institution_impact_v1") {

@@ -43,10 +43,11 @@ export interface ParsedSourceUnit {
   }>;
 }
 
-const ARTICLE_PATTERN = /第[〇零一二三四五六七八九十百千万两\d]+条/;
+const ARTICLE_PATTERN =
+  /^[\s\uFEFF]*(第[〇零一二三四五六七八九十百千万两\d]+条)/u;
 
 export const articleFromText = (text: string): string | null =>
-  text.match(ARTICLE_PATTERN)?.[0] ?? null;
+  text.match(ARTICLE_PATTERN)?.[1] ?? null;
 
 export function canonicalArticlesForUnits(
   units: readonly ParsedSourceUnit[],

@@ -129,6 +129,14 @@ const hasSignatureAt = (bytes, signature, offset) =>
   bytes.length >= offset + signature.length &&
   signature.every((value, index) => bytes[offset + index] === value);
 
+const isSkippableCompressedFrame = (bytes) =>
+  bytes.length >= 4 &&
+  bytes[0] >= 0x50 &&
+  bytes[0] <= 0x5f &&
+  bytes[1] === 0x2a &&
+  bytes[2] === 0x4d &&
+  bytes[3] === 0x18;
+
 const isUnsupportedContainer = (file, bytes) =>
   /\.(?:zip|7z|rar|tar|tgz|bz2|xz|cab|zst|lz4)$/iu.test(file) ||
   [
@@ -153,6 +161,8 @@ const isExpansionLimitError = (error) =>
   error.code === "ERR_BUFFER_TOO_LARGE";
 
 const expandedArtifacts = (file, bytes) => {
+  if (isSkippableCompressedFrame(bytes))
+    throw new Error(`uninspectable compressed artifact: ${file}`);
   if (isUnsupportedContainer(file, bytes))
     throw new Error(`unsupported compressed build artifact: ${file}`);
   const opaqueOcrAsset = OPAQUE_OCR_ASSETS.get(file);
