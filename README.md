@@ -1,3 +1,5 @@
+# Interpretation-of-External-Regulations-Agent
+
 # 外规解读agent
 
 外规解读agent 是一个证据优先、人工定稿的浏览器端监管文件分析工具。它支持监管文件与官方解读分源上传，本地解析 PDF、DOCX、TXT 和扫描 PDF，通过用户自带的 OpenAI 兼容模型接口生成结构化结论，并把每项结论反向绑定到原文证据。
@@ -40,4 +42,4 @@ pnpm scan:secrets -- --root src --root scripts --root dist --root artifacts
 
 ## 当前发布状态
 
-仓库包含 CI、静态构建、敏感信息扫描和生产冒烟配置，但本任务没有添加 Git remote、推送代码或创建真实部署。只有公开 HTTPS 地址上的生产冒烟通过后，才能声明该网址已完成发布验收。
+仓库包含 CI、静态构建、敏感信息扫描和生产冒烟配置，但本任务尚未创建真实部署。只有公开 HTTPS 地址上的生产冒烟通过后，才能声明该网址已完成发布验收。
