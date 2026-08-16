@@ -13,6 +13,14 @@ const ModalitySchema = z.enum([
   "attachment",
   "long_document",
 ]);
+const Sha256Schema = z.string().regex(/^[0-9a-f]{64}$/u);
+const ArtifactSchema = z
+  .object({
+    path: z.string().min(1),
+    sha256: Sha256Schema,
+    size: z.number().int().positive(),
+  })
+  .strict();
 
 const exactCoverage = (
   actual: readonly string[],
@@ -25,6 +33,7 @@ export const BenchmarkManifestSchema = z
   .object({
     benchmarkId: z.string().min(1),
     benchmarkVersion: z.string().min(1),
+    asOf: z.string().datetime(),
     description: z.string().min(1),
     disclaimer: z.string().min(1),
     expectedFile: z.string().min(1),
@@ -44,11 +53,17 @@ export const BenchmarkManifestSchema = z
       .array(
         z
           .object({
-            sampleId: z.string().min(1),
+            sourceId: z.string().min(1),
+            sourceType: z.enum(["regulatory_text", "official_interpretation"]),
+            path: z.string().min(1),
+            sha256: Sha256Schema,
+            size: z.number().int().positive(),
             fileType: FileTypeSchema,
             regulatorType: z.string().min(1),
             modalities: z.array(ModalitySchema).min(1),
             officialInterpretation: z.enum(["with", "without"]),
+            primarySourceId: z.string().min(1).optional(),
+            attachments: z.array(ArtifactSchema).default([]),
             synthetic: z.literal(true),
           })
           .strict(),
@@ -86,7 +101,7 @@ export const BenchmarkManifestSchema = z
         manifest.coverage.officialInterpretation,
       ) ||
       !exactCoverage(sampleRegulatorTypes, manifest.coverage.regulatorTypes) ||
-      new Set(manifest.samples.map(({ sampleId }) => sampleId)).size !==
+      new Set(manifest.samples.map(({ sourceId }) => sourceId)).size !==
         manifest.samples.length
     )
       context.addIssue({
@@ -94,6 +109,37 @@ export const BenchmarkManifestSchema = z
         path: ["coverage"],
         message: "benchmark manifest 未完整声明必需文件、模态、解读和类别覆盖",
       });
+    const sampleById = new Map(
+      manifest.samples.map((sample) => [sample.sourceId, sample]),
+    );
+    manifest.samples.forEach((sample, index) => {
+      if (
+        sample.modalities.includes("attachment") !==
+        sample.attachments.length > 0
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["samples", index, "attachments"],
+          message: "attachment 模态必须绑定实际附件文件",
+        });
+      if (sample.sourceType === "official_interpretation") {
+        const primary = sample.primarySourceId
+          ? sampleById.get(sample.primarySourceId)
+          : undefined;
+        if (!primary || primary.sourceType !== "regulatory_text")
+          context.addIssue({
+            code: "custom",
+            path: ["samples", index, "primarySourceId"],
+            message: "官方解读必须配对 manifest 中的监管原文",
+          });
+      } else if (sample.primarySourceId) {
+        context.addIssue({
+          code: "custom",
+          path: ["samples", index, "primarySourceId"],
+          message: "监管原文不得声明 primarySourceId",
+        });
+      }
+    });
   });
 
 export type BenchmarkManifest = z.infer<typeof BenchmarkManifestSchema>;
@@ -127,6 +173,7 @@ export const renderEvaluationSummary = (
     `重大遗漏 IDs: ${input.metrics.criticalOmissions.join(",") || "none"}`,
     `未标记 AI 推导 IDs: ${input.metrics.unmarkedAiInferenceIds.join(",") || "none"}`,
     `人工检查页: ${input.metrics.ocr.manualReviewPages.map(({ sourceId, page }) => `${sourceId}:p${page}`).join(",") || "none"}`,
+    `待人工检查页: ${input.metrics.ocr.pendingManualReviewPages.map(({ sourceId, page }) => `${sourceId}:p${page}`).join(",") || "none"}`,
     `失败规则: ${input.metrics.releaseGate.failures.join(",") || "none"}`,
   ];
   return `${lines.join("\n")}\n`;

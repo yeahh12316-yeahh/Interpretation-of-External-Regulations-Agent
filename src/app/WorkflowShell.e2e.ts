@@ -1,4 +1,4 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../../playwright-fixtures";
 import { inflateRawSync } from "node:zlib";
 
 const unzipText = (bytes: Buffer, fileName: string): string => {

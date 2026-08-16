@@ -99,6 +99,26 @@
       "reviewStatus": "unreviewed",
       "requiredReview": true,
       "revisionRecords": []
+    },
+    {
+      "findingId": "BAD-OFFICIAL-COVERAGE",
+      "category": "official_context:implementation_guidance",
+      "statement": "官方说明建议按年度核验",
+      "claimType": "official_explanation",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-OFFICIAL",
+          "sourceType": "official_interpretation",
+          "page": null,
+          "article": null,
+          "paragraphIndex": 0,
+          "quote": "官方说明建议按年度核验。"
+        }
+      ],
+      "inferenceParents": ["BAD-CORE"],
+      "reviewStatus": "unreviewed",
+      "requiredReview": false,
+      "revisionRecords": []
     }
   ],
   "atomicRequirements": [

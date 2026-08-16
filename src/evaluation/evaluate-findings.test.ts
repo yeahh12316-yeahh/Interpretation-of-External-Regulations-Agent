@@ -66,7 +66,13 @@ const corpus = (
   findings: Finding[],
   atomicRequirements: AtomicRequirement[] = [],
   ocrPages: EvaluationCorpus["ocrPages"] = [],
-): EvaluationCorpus => ({ findings, atomicRequirements, ocrPages });
+  ocrPageReviews: EvaluationCorpus["ocrPageReviews"] = [],
+): EvaluationCorpus => ({
+  findings,
+  atomicRequirements,
+  ocrPages,
+  ocrPageReviews,
+});
 
 describe("evaluateFindings", () => {
   it("strictly rejects malformed corpora and incomplete benchmark modality coverage", () => {
@@ -320,6 +326,7 @@ describe("evaluateFindings", () => {
       expectedCharacters: 12,
       accuracy: 1,
       manualReviewPages: [],
+      pendingManualReviewPages: [],
       evaluable: true,
     });
   });
@@ -357,6 +364,133 @@ describe("evaluateFindings", () => {
       expect.arrayContaining([
         "unmarked_ai_inference",
         "ocr_accuracy_below_99",
+      ]),
+    );
+  });
+
+  it("blocks a low-accuracy page even when aggregate OCR accuracy exceeds 99 percent", () => {
+    const expected = corpus(
+      [],
+      [],
+      [
+        { sourceId: "SYNTH-SCAN-A", page: 1, text: "正".repeat(1000) },
+        { sourceId: "SYNTH-SCAN-A", page: 2, text: "甲" },
+      ],
+    );
+    const actual = corpus(
+      [],
+      [],
+      [
+        { sourceId: "SYNTH-SCAN-A", page: 1, text: "正".repeat(1000) },
+        { sourceId: "SYNTH-SCAN-A", page: 2, text: "乙" },
+      ],
+    );
+
+    const metrics = evaluateFindings(expected, actual);
+
+    expect(metrics.ocr.accuracy).toBeGreaterThan(0.99);
+    expect(metrics.ocr.pendingManualReviewPages).toEqual([
+      { sourceId: "SYNTH-SCAN-A", page: 2 },
+    ]);
+    expect(metrics.releaseGate.failures).toContain("ocr_manual_review_pending");
+  });
+
+  it("accepts only a current-bound valid OCR page review", () => {
+    const expectedPage = { sourceId: "SYNTH-SCAN-A", page: 2, text: "甲" };
+    const actualPage = { sourceId: "SYNTH-SCAN-A", page: 2, text: "乙" };
+    const review = {
+      sourceId: "SYNTH-SCAN-A",
+      page: 2,
+      reviewer: "合成复核人",
+      reviewedAt: "2026-08-16T08:00:00.000Z",
+      decision: "confirmed" as const,
+      expectedTextDigest: "fnv1a64:bf36070d45708dd2",
+      actualTextDigest: "fnv1a64:f054f10f4ad3f1ef",
+    };
+    const reviewed = evaluateFindings(
+      corpus([], [], [expectedPage]),
+      corpus([], [], [actualPage], [review]),
+    );
+    const stale = evaluateFindings(
+      corpus([], [], [expectedPage]),
+      corpus(
+        [],
+        [],
+        [actualPage],
+        [{ ...review, actualTextDigest: "fnv1a64:0000000000000000" }],
+      ),
+    );
+
+    expect(reviewed.ocr.pendingManualReviewPages).toEqual([]);
+    expect(reviewed.releaseGate.failures).not.toContain(
+      "ocr_manual_review_pending",
+    );
+    expect(stale.ocr.pendingManualReviewPages).toEqual([
+      { sourceId: "SYNTH-SCAN-A", page: 2 },
+    ]);
+    expect(stale.releaseGate.failures).toContain("ocr_manual_review_pending");
+  });
+
+  it("strictly rejects malformed, duplicate, conflicting, wrong-page and empty OCR reviews", () => {
+    const base = {
+      findings: [],
+      atomicRequirements: [],
+      ocrPages: [{ sourceId: "SYNTH-SCAN-A", page: 2, text: "乙" }],
+    };
+    const valid = {
+      sourceId: "SYNTH-SCAN-A",
+      page: 2,
+      reviewer: "合成复核人",
+      reviewedAt: "2026-08-16T08:00:00.000Z",
+      decision: "confirmed",
+      expectedTextDigest: "fnv1a64:bf36070d45708dd2",
+      actualTextDigest: "fnv1a64:f054f10f4ad3f1ef",
+    };
+    for (const reviews of [
+      [{ ...valid, reviewer: "" }],
+      [{ ...valid, reviewedAt: "not-a-time" }],
+      [{ ...valid, page: 3 }],
+      [valid, valid],
+      [valid, { ...valid, decision: "corrected", correctedText: "乙" }],
+    ]) {
+      expect(
+        EvaluationCorpusSchema.safeParse({ ...base, ocrPageReviews: reviews })
+          .success,
+      ).toBe(false);
+    }
+  });
+
+  it("keeps overall OCR threshold blocking and handles empty/Unicode pages by code point", () => {
+    const metrics = evaluateFindings(
+      corpus(
+        [],
+        [],
+        [
+          { sourceId: "SYNTH-SCAN-A", page: 1, text: "😀甲" },
+          { sourceId: "SYNTH-SCAN-A", page: 2, text: "" },
+        ],
+      ),
+      corpus(
+        [],
+        [],
+        [
+          { sourceId: "SYNTH-SCAN-A", page: 1, text: "😀乙" },
+          { sourceId: "SYNTH-SCAN-A", page: 2, text: "" },
+        ],
+      ),
+    );
+
+    expect(metrics.ocr.errors).toBe(1);
+    expect(metrics.ocr.expectedCharacters).toBe(2);
+    expect(metrics.ocr.accuracy).toBe(0.5);
+    expect(metrics.ocr.pendingManualReviewPages).toEqual([
+      { sourceId: "SYNTH-SCAN-A", page: 1 },
+      { sourceId: "SYNTH-SCAN-A", page: 2 },
+    ]);
+    expect(metrics.releaseGate.failures).toEqual(
+      expect.arrayContaining([
+        "ocr_accuracy_below_99",
+        "ocr_manual_review_pending",
       ]),
     );
   });

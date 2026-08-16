@@ -1,4 +1,13 @@
-import { expect, test } from "@playwright/test";
+import { expect, test as baseTest } from "../../../../playwright-fixtures";
+
+// Tesseract chi_sim ships legacy config keys that the current engine reports as
+// ignored warnings; recognition still completes and is asserted below.
+const test = baseTest.extend({
+  allowedConsoleErrors: async ({}, use) =>
+    use([
+      /^Warning: Parameter not found: (?:language_model_ngram_on|segsearch_max_char_wh_ratio|language_model_ngram_space_delimited_language|language_model_use_sigmoidal_certainty|language_model_ngram_nonmatch_score|classify_integer_matcher_multiplier|assume_fixed_pitch_char_segment|allow_blob_division)$/u,
+    ]),
+});
 
 import type { ParseResult } from "../parse-document";
 

@@ -1,6 +1,7 @@
-import { expect, test } from "@playwright/test";
+import { expect, test } from "../../playwright-fixtures";
 
 import {
+  assertReportStructure,
   downloadReport,
   installSuccessfulModelRoute,
   reviewAllFindings,
@@ -55,4 +56,8 @@ test("production App completes the real two-source flow and exports structurally
   expect(quickDocx.bytes.subarray(0, 2).toString()).toBe("PK");
   expect(fullPdf.bytes.subarray(0, 5).toString()).toBe("%PDF-");
   expect(quickPdf.bytes.subarray(0, 5).toString()).toBe("%PDF-");
+  assertReportStructure(fullDocx, "full");
+  assertReportStructure(fullPdf, "full");
+  assertReportStructure(quickDocx, "quick");
+  assertReportStructure(quickPdf, "quick");
 });

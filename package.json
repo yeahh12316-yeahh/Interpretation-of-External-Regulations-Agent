@@ -6,6 +6,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "benchmark": "tsx scripts/run-benchmark.ts",
+    "scan:secrets": "tsx scripts/scan-secrets.ts",
     "test": "vitest",
     "test:e2e": "playwright test"
   },

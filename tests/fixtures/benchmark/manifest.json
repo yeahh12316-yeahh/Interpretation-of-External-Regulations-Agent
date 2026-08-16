@@ -1,7 +1,8 @@
 {
   "benchmarkId": "synthetic-regression-v1",
-  "benchmarkVersion": "1.0.0",
-  "description": "外规解读agent合成脱敏回归基准",
+  "benchmarkVersion": "1.1.0",
+  "asOf": "2026-08-14T00:00:00.000Z",
+  "description": "外规解读agent fixture-bound static regression corpus",
   "disclaimer": "合成回归基准，仅证明该测试语料/版本，不代表未知文件95%正确率",
   "expectedFile": "expected-findings.json",
   "actualFile": "actual-findings.json",
@@ -21,43 +22,75 @@
   },
   "samples": [
     {
-      "sampleId": "SYNTH-TEXT-PDF",
+      "sourceId": "SYNTH-REG-PDF",
+      "sourceType": "regulatory_text",
+      "path": "sources/regulatory-text.pdf",
+      "sha256": "502613009e1e8051ed716d2d6f2532710ae9a6a47a568e5756079876b220f681",
+      "size": 2386,
       "fileType": "pdf_text",
       "regulatorType": "合成国家级监管机构",
-      "modalities": ["text", "table"],
-      "officialInterpretation": "with",
+      "modalities": ["text"],
+      "officialInterpretation": "without",
+      "attachments": [],
       "synthetic": true
     },
     {
-      "sampleId": "SYNTH-SCAN-PDF",
+      "sourceId": "SYNTH-REG-SCAN",
+      "sourceType": "regulatory_text",
+      "path": "sources/regulatory-scan.pdf",
+      "sha256": "4b69b710ce0b8602aa2b4e01f2e93c074ef946848fbc0ef3f36cc12997f392c1",
+      "size": 48739,
       "fileType": "pdf_scan",
       "regulatorType": "合成行业监管机构",
       "modalities": ["scanned"],
       "officialInterpretation": "without",
+      "attachments": [],
       "synthetic": true
     },
     {
-      "sampleId": "SYNTH-DOCX",
+      "sourceId": "SYNTH-REG-DOCX",
+      "sourceType": "regulatory_text",
+      "path": "sources/regulatory-table.docx",
+      "sha256": "e8df30e18f71ade8c5284c91cc26922effa55992862a44e63a35f3e069b2e959",
+      "size": 8799,
       "fileType": "docx",
       "regulatorType": "合成行业监管机构",
-      "modalities": ["text", "attachment"],
+      "modalities": ["text", "table", "attachment"],
       "officialInterpretation": "without",
+      "attachments": [
+        {
+          "path": "sources/regulatory-attachment.txt",
+          "sha256": "8d00a5b53ba2f05e89fcf3254e4bdb599182b378ee7704a30cf9be474df86915",
+          "size": 76
+        }
+      ],
       "synthetic": true
     },
     {
-      "sampleId": "SYNTH-TXT-LONG",
+      "sourceId": "SYNTH-REG-TXT",
+      "sourceType": "regulatory_text",
+      "path": "sources/regulatory-long.txt",
+      "sha256": "6d6a751ddd27dfa5925c50100683b56f393e0ef112dc370894881a80c6227e11",
+      "size": 70955,
       "fileType": "txt",
       "regulatorType": "合成国家级监管机构",
       "modalities": ["text", "long_document"],
       "officialInterpretation": "with",
+      "attachments": [],
       "synthetic": true
     },
     {
-      "sampleId": "SYNTH-TABLE-ATTACHMENT",
-      "fileType": "pdf_text",
-      "regulatorType": "合成行业监管机构",
-      "modalities": ["table", "attachment"],
+      "sourceId": "SYNTH-OFFICIAL",
+      "sourceType": "official_interpretation",
+      "path": "sources/official-interpretation.txt",
+      "sha256": "b68a8dfd287c3eb2c2e30645931a0ca689fc4efa324ee2e0ebc5c1a2b5a76103",
+      "size": 100,
+      "fileType": "txt",
+      "regulatorType": "合成国家级监管机构",
+      "modalities": ["text"],
       "officialInterpretation": "with",
+      "primarySourceId": "SYNTH-REG-TXT",
+      "attachments": [],
       "synthetic": true
     }
   ]

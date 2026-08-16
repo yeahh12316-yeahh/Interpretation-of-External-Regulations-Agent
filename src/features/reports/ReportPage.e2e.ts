@@ -1,7 +1,8 @@
 import { mkdir } from "node:fs/promises";
 import path from "node:path";
 
-import { expect, test, type Download, type Page } from "@playwright/test";
+import { expect, test, type Page } from "../../../playwright-fixtures";
+import type { Download } from "@playwright/test";
 
 test.use({ viewport: { width: 1024, height: 900 } });
 

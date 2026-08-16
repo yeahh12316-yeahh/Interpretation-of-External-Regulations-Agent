@@ -1,14 +1,12 @@
-import { mkdir, readFile, writeFile } from "node:fs/promises";
+import { mkdir, writeFile } from "node:fs/promises";
 import path from "node:path";
 
+import { evaluateFindings } from "../src/evaluation/evaluate-findings";
 import {
-  EvaluationCorpusSchema,
-  evaluateFindings,
-} from "../src/evaluation/evaluate-findings";
-import {
-  BenchmarkManifestSchema,
-  renderEvaluationSummary,
-} from "../src/evaluation/evaluation-report";
+  buildMachineReportJson,
+  loadBenchmarkBundle,
+} from "../src/evaluation/benchmark-input";
+import { renderEvaluationSummary } from "../src/evaluation/evaluation-report";
 
 const valueAfter = (flag: string): string | undefined => {
   const index = process.argv.indexOf(flag);
@@ -19,8 +17,15 @@ const valueAfter = (flag: string): string | undefined => {
   return value;
 };
 
-const readJson = async (filePath: string): Promise<unknown> =>
-  JSON.parse(await readFile(filePath, "utf8")) as unknown;
+const generatedAtOverride = (): string | undefined => {
+  const explicit = valueAfter("--generated-at");
+  if (explicit) return explicit;
+  const epoch = process.env.SOURCE_DATE_EPOCH;
+  if (!epoch) return undefined;
+  if (!/^\d+$/u.test(epoch))
+    throw new Error("SOURCE_DATE_EPOCH must be integer seconds");
+  return new Date(Number(epoch) * 1000).toISOString();
+};
 
 const main = async (): Promise<void> => {
   const root = process.cwd();
@@ -28,45 +33,31 @@ const main = async (): Promise<void> => {
     root,
     valueAfter("--manifest") ?? "tests/fixtures/benchmark/manifest.json",
   );
-  const manifest = BenchmarkManifestSchema.parse(await readJson(manifestPath));
-  const fixtureDirectory = path.dirname(manifestPath);
-  const expectedPath = path.resolve(fixtureDirectory, manifest.expectedFile);
-  const actualPath = path.resolve(
-    fixtureDirectory,
-    valueAfter("--actual") ?? manifest.actualFile,
+  const bundle = await loadBenchmarkBundle(
+    manifestPath,
+    valueAfter("--actual"),
   );
-  const expected = EvaluationCorpusSchema.parse(await readJson(expectedPath));
-  const actual = EvaluationCorpusSchema.parse(await readJson(actualPath));
-  const metrics = evaluateFindings(expected, actual);
+  const metrics = evaluateFindings(bundle.expected, bundle.actual);
   const outputDirectory = path.resolve(
     root,
     valueAfter("--output-dir") ?? "artifacts/benchmark",
   );
   const summary = renderEvaluationSummary({
-    benchmarkId: manifest.benchmarkId,
-    benchmarkVersion: manifest.benchmarkVersion,
-    disclaimer: manifest.disclaimer,
+    benchmarkId: bundle.manifest.benchmarkId,
+    benchmarkVersion: bundle.manifest.benchmarkVersion,
+    disclaimer: bundle.manifest.disclaimer,
     metrics,
   });
-  const machineReport = {
-    schemaVersion: 1,
-    benchmarkId: manifest.benchmarkId,
-    benchmarkVersion: manifest.benchmarkVersion,
-    generatedAt: new Date().toISOString(),
-    disclaimer: manifest.disclaimer,
-    inputs: {
-      manifest: path.basename(manifestPath),
-      expected: path.basename(expectedPath),
-      actual: path.basename(actualPath),
-    },
-    coverage: manifest.coverage,
+  const machineReport = buildMachineReportJson(
+    bundle,
     metrics,
-  };
+    generatedAtOverride(),
+  );
   await mkdir(outputDirectory, { recursive: true });
   await Promise.all([
     writeFile(
       path.join(outputDirectory, "benchmark-report.json"),
-      `${JSON.stringify(machineReport, null, 2)}\n`,
+      machineReport,
       "utf8",
     ),
     writeFile(

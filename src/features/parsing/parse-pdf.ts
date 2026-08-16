@@ -430,7 +430,7 @@ export async function parsePdf(
     throw new Error("PDF 文本提取失败");
   } finally {
     signal.removeEventListener("abort", cancelLoading);
-    void loadingTask.destroy().catch(() => undefined);
+    await loadingTask.destroy().catch(() => undefined);
   }
 }
 
@@ -464,6 +464,6 @@ export async function inspectPdfTextLayer(
     throw new Error("PDF 文本层检查失败");
   } finally {
     signal.removeEventListener("abort", cancelLoading);
-    void loadingTask.destroy().catch(() => undefined);
+    await loadingTask.destroy().catch(() => undefined);
   }
 }

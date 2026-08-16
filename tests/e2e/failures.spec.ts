@@ -1,12 +1,22 @@
 import path from "node:path";
 
-import { expect, test, type Page } from "@playwright/test";
+import { expect, test as baseTest, type Page } from "../../playwright-fixtures";
 
 import {
   installSuccessfulModelRoute,
   reviewAllFindings,
   uploadAndAnalyze,
 } from "./support/production-flow";
+
+// These resource errors are the browser's expected diagnostics for the routes
+// deliberately aborted or fulfilled with failures in this failure-only suite.
+const test = baseTest.extend({
+  allowedConsoleErrors: async ({}, use) =>
+    use([
+      /^Failed to load resource: net::ERR_(?:BLOCKED_BY_CLIENT\.Inspector|CONNECTION_REFUSED|FAILED)$/u,
+      /^Failed to load resource: the server responded with a status of (?:401 \(Unauthorized\)|404 \(Not Found\)|429 \(Too Many Requests\))$/u,
+    ]),
+});
 
 type FailureMode = "cors" | "network" | 401 | 404 | 429 | "invalid" | "success";
 

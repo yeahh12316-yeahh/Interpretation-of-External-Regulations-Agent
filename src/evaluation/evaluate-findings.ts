@@ -7,6 +7,7 @@ import {
   AtomicRequirementSchema,
   type AtomicRequirement,
 } from "../features/analysis/skill-orchestrator";
+import { evidenceDigest } from "../features/evidence/evidence-hash";
 import { normalizeText } from "../features/evidence/normalize-text";
 
 export interface EvaluationOcrPage {
@@ -15,10 +16,25 @@ export interface EvaluationOcrPage {
   readonly text: string;
 }
 
+export interface EvaluationOcrPageReview {
+  readonly sourceId: string;
+  readonly page: number;
+  readonly reviewer: string;
+  readonly reviewedAt: string;
+  readonly decision: "confirmed" | "corrected";
+  readonly expectedTextDigest: string;
+  readonly actualTextDigest: string;
+  readonly correctedText?: string;
+}
+
+export const ocrPageTextDigest = (page: EvaluationOcrPage): string =>
+  evidenceDigest({ sourceId: page.sourceId, page: page.page, text: page.text });
+
 export interface EvaluationCorpus {
   readonly findings: readonly Finding[];
   readonly atomicRequirements: readonly AtomicRequirement[];
   readonly ocrPages: readonly EvaluationOcrPage[];
+  readonly ocrPageReviews: readonly EvaluationOcrPageReview[];
 }
 
 const EvaluationOcrPageSchema = z
@@ -29,11 +45,33 @@ const EvaluationOcrPageSchema = z
   })
   .strict();
 
+const EvaluationOcrPageReviewSchema = z
+  .object({
+    sourceId: z.string().trim().min(1),
+    page: z.number().int().positive(),
+    reviewer: z.string().trim().min(1),
+    reviewedAt: z.string().datetime(),
+    decision: z.enum(["confirmed", "corrected"]),
+    expectedTextDigest: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+    actualTextDigest: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+    correctedText: z.string().min(1).optional(),
+  })
+  .strict()
+  .superRefine((review, context) => {
+    if ((review.decision === "corrected") !== Boolean(review.correctedText))
+      context.addIssue({
+        code: "custom",
+        path: ["correctedText"],
+        message: "corrected 决策必须且仅能提供非空 correctedText",
+      });
+  });
+
 export const EvaluationCorpusSchema = z
   .object({
     findings: z.array(FindingSchema),
     atomicRequirements: z.array(AtomicRequirementSchema),
     ocrPages: z.array(EvaluationOcrPageSchema),
+    ocrPageReviews: z.array(EvaluationOcrPageReviewSchema).default([]),
   })
   .strict()
   .superRefine((corpus, context) => {
@@ -85,6 +123,37 @@ export const EvaluationCorpusSchema = z
         });
       ocrKeys.add(key);
     });
+    const reviewKeys = new Set<string>();
+    corpus.ocrPageReviews.forEach((review, index) => {
+      const key = `${review.sourceId}\u0000${review.page}`;
+      if (reviewKeys.has(key))
+        context.addIssue({
+          code: "custom",
+          path: ["ocrPageReviews", index],
+          message: "同一 OCR 页只能有一条当前人工检查记录",
+        });
+      reviewKeys.add(key);
+      const page = corpus.ocrPages.find(
+        (candidate) =>
+          candidate.sourceId === review.sourceId &&
+          candidate.page === review.page,
+      );
+      if (!page)
+        context.addIssue({
+          code: "custom",
+          path: ["ocrPageReviews", index],
+          message: "人工检查记录必须绑定当前 OCR 页",
+        });
+      if (
+        review.decision === "corrected" &&
+        review.correctedText !== page?.text
+      )
+        context.addIssue({
+          code: "custom",
+          path: ["ocrPageReviews", index, "correctedText"],
+          message: "correctedText 必须等于当前 OCR 页文本",
+        });
+    });
   });
 
 export interface CountMetrics {
@@ -116,6 +185,10 @@ export interface EvaluationMetrics {
     readonly expectedCharacters: number;
     readonly accuracy: number | null;
     readonly manualReviewPages: readonly {
+      readonly sourceId: string;
+      readonly page: number;
+    }[];
+    readonly pendingManualReviewPages: readonly {
       readonly sourceId: string;
       readonly page: number;
     }[];
@@ -303,6 +376,7 @@ const editDistance = (expected: string, actual: string): number => {
 const ocrMetrics = (
   expectedPages: readonly EvaluationOcrPage[],
   actualPages: readonly EvaluationOcrPage[],
+  reviews: readonly EvaluationOcrPageReview[],
 ): EvaluationMetrics["ocr"] & { readonly coverageMatches: boolean } => {
   const pageKey = ({ sourceId, page }: EvaluationOcrPage) =>
     `${sourceId}\u0000${page}`;
@@ -312,6 +386,8 @@ const ocrMetrics = (
   let errors = 0;
   let expectedCharacters = 0;
   const manualReviewPages: Array<{ sourceId: string; page: number }> = [];
+  const pendingManualReviewPages: Array<{ sourceId: string; page: number }> =
+    [];
   for (const expectedPage of expectedPages) {
     const expectedLength = codePoints(expectedPage.text).length;
     const actualPage = actualByPage.get(pageKey(expectedPage));
@@ -322,11 +398,31 @@ const ocrMetrics = (
     expectedCharacters += expectedLength;
     const pageAccuracy =
       expectedLength === 0 ? null : 1 - pageErrors / expectedLength;
-    if (pageAccuracy === null || pageAccuracy < 0.99)
+    if (pageAccuracy === null || pageAccuracy < 0.99) {
       manualReviewPages.push({
         sourceId: expectedPage.sourceId,
         page: expectedPage.page,
       });
+      const review = reviews.find(
+        (candidate) =>
+          candidate.sourceId === expectedPage.sourceId &&
+          candidate.page === expectedPage.page,
+      );
+      const isCurrent = Boolean(
+        review &&
+        actualPage &&
+        review.expectedTextDigest === ocrPageTextDigest(expectedPage) &&
+        review.actualTextDigest === ocrPageTextDigest(actualPage) &&
+        (review.decision === "confirmed" ||
+          (review.decision === "corrected" &&
+            review.correctedText === actualPage.text)),
+      );
+      if (!isCurrent)
+        pendingManualReviewPages.push({
+          sourceId: expectedPage.sourceId,
+          page: expectedPage.page,
+        });
+    }
   }
   const expectedKeys = expectedPages.map(pageKey).sort();
   const actualKeys = actualPages.map(pageKey).sort();
@@ -335,6 +431,7 @@ const ocrMetrics = (
     expectedCharacters,
     accuracy: expectedCharacters === 0 ? null : 1 - errors / expectedCharacters,
     manualReviewPages,
+    pendingManualReviewPages,
     evaluable: expectedCharacters > 0,
     coverageMatches: expectedKeys.join("\u0000") === actualKeys.join("\u0000"),
   };
@@ -415,6 +512,7 @@ export const evaluateFindings = (
   const { coverageMatches, ...ocr } = ocrMetrics(
     expected.ocrPages,
     actual.ocrPages,
+    actual.ocrPageReviews,
   );
 
   const failures: string[] = [];
@@ -451,6 +549,8 @@ export const evaluateFindings = (
   if (!ocr.evaluable) failures.push("ocr_not_evaluable");
   else if (below(ocr.accuracy, 0.99)) failures.push("ocr_accuracy_below_99");
   if (!coverageMatches) failures.push("ocr_page_coverage_mismatch");
+  if (ocr.pendingManualReviewPages.length > 0)
+    failures.push("ocr_manual_review_pending");
 
   return {
     critical,

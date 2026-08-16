@@ -213,7 +213,7 @@ no matches (rg exit 1)
 ```
 
 ```text
-rg 'task11-secret-key-must-not-leak|synthetic-session-key|synthetic-failure-key|playwright-session-key|model.example|failure.example' dist artifacts
+rg '<synthetic privacy key and endpoint needles>' dist artifacts
 no matches (exit 0 due explicit `|| true`)
 ```
 
@@ -231,3 +231,192 @@ no matches (exit 0 due explicit `|| true`)
 1. 内置 Browser runtime 初始化成功但 `browsers.list()` 返回空数组；按 browser skill 读取 bootstrap troubleshooting 后未切换到不相关浏览器工具。真实 Playwright Chromium 17/17 已覆盖可渲染行为。
 2. 环境提供的 `pnpm` fallback 会尝试从 registry 获取 `@pnpm/exe`，网络受限后报 `GET https://registry.npmjs.org/@pnpm%2Fexe: fetch failed`；因此最终门禁使用项目已安装的直接 binaries。测试、E2E、benchmark、tsc、build 均为 fresh 实际执行。
 3. benchmark perfect 分数只代表这组显式合成 fixture，不应对外表述为产品在未知文件上的 100% 或 95% 精度。
+
+---
+
+# Task 11 fix round 1（2026-08-16）
+
+Base: `1e4e4d41354cffc204f8a984c0fa19c22b0f61a5`
+
+## 修复结论
+
+- OCR 门禁同时计算总体 CER 与逐页准确率。任何低于 99% 或空 expected 页进入 `manualReviewPages`；只有严格绑定当前 `sourceId/page/expectedTextDigest/actualTextDigest` 的结构化人工检查记录才可从 `pendingManualReviewPages` 移除。错页、空复核人、非法时间、重复/冲突记录、陈旧 digest 均由 strict schema 或门禁拒绝。
+- manifest 由声明性 coverage 升级为 fixture-bound corpus：5 个 sourceId 分别绑定真实合成 text PDF、scan PDF、含 `w:tbl` 的 DOCX、超过 24,000 字的 TXT、官方解读 TXT；DOCX 样本另绑定真实附件。loader 校验 benchmark 根目录约束、存在性、SHA-256、size、magic、PDF text layer/scan layer、OOXML table、长文长度、附件，以及官方解读到监管原文的配对。expected 与 actual 各自都必须覆盖全部 manifest sourceId，且所有 anchor/OCR sourceId 都必须已声明。
+- 机器 JSON 的 `generatedAt` 默认使用 manifest `asOf`；可由 `--generated-at` 或 `SOURCE_DATE_EPOCH` 明确注入。同输入两次输出 byte-equal。
+- full-flow 对四份下载逐一验证：DOCX 的 Heading1 严格为 full 11 章或 quick 8 章；PDF 标题唯一且同序；quick `top_changes` 为 3–5 项；evidence appendix 仅存在于 full。
+- privacy E2E 刷新恢复后真实完成复核并下载 full/quick DOCX/PDF，扫描 DOCX 全部 XML/rels/coreProps 与 PDF raw bytes/PDF.js 文本；API key 与 endpoint 仅允许存在于 sessionStorage 配置，不进入 IDB/localStorage/backup/URL/DOM/log/error/report/dist/export。
+- responsive 每个 1440x900、1024x768、768x1024 都覆盖 intake upload/nav/buttons 与 review evidence/actions/keyboard/overflow；1440 为右栏，1024/768 为下置证据。
+- 所有 Playwright 测试使用统一 `console.error`/`pageerror` 捕获；仅 OCR 测试中的 Tesseract 已知旧参数 warning、failure-only 测试主动 abort/401/404/429 产生的浏览器资源错误采用逐文件注释白名单。其他错误一律失败。
+- 生产 PDF.js 路径和测试 PDF 提取 helper 均在 `finally` 等待 loading task destroy 完成。
+- `scan:secrets` 成为可复用 package script；支持 `--root` 和重复 `--needle`，供 Task 12 CI 使用。
+
+生成器固定系统时钟并规范 ZIP 时间字段；连续两次生成的 table DOCX：
+
+```text
+e8df30e18f71ade8c5284c91cc26922effa55992862a44e63a35f3e069b2e959  regulatory-table.docx
+e8df30e18f71ade8c5284c91cc26922effa55992862a44e63a35f3e069b2e959  regulatory-table.docx
+```
+
+## RED evidence
+
+OCR gate RED:
+
+```text
+Command: node_modules/.bin/vitest run src/evaluation/evaluate-findings.test.ts
+Test Files 1 failed (1)
+Tests 3 failed | 8 passed (11)
+Failure: expected pendingManualReviewPages, received undefined
+```
+
+Manifest boundary RED:
+
+```text
+Command: node_modules/.bin/vitest run src/evaluation/benchmark-input.test.ts
+FAIL src/evaluation/benchmark-input.test.ts
+Error: Failed to resolve import "./benchmark-input"
+Test Files 1 failed (1)
+exit_code: 1
+```
+
+Export structure RED:
+
+```text
+Command: node_modules/.bin/playwright test tests/e2e/full-flow.spec.ts --list
+SyntaxError: './support/production-flow' does not provide an export named 'assertReportStructure'
+exit_code: 1
+```
+
+Focused E2E first run correctly exposed that DOCX does not export findingId labels; the test was corrected to count the four fixture-bound statements, without changing production output:
+
+```text
+Running 5 tests using 1 worker
+1 failed, 4 passed
+Expected top_changes >= 3; received 0
+```
+
+## GREEN / focused outputs
+
+```text
+Command: node_modules/.bin/vitest run scripts/scan-secrets.test.ts src/evaluation/evaluate-findings.test.ts src/evaluation/benchmark-input.test.ts
+Test Files 3 passed (3)
+Tests 15 passed (15)
+exit_code: 0
+```
+
+```text
+Command: node_modules/.bin/playwright test tests/e2e/full-flow.spec.ts tests/e2e/privacy.spec.ts tests/e2e/responsive.spec.ts
+Running 5 tests using 1 worker
+5 passed (11.6s)
+exit_code: 0
+```
+
+全局错误捕获首次 full run 报出 4 个预期非致命 console 类别（2 个 OCR、2 个 deliberate failure）；业务断言 13/17 已通过。初版 option-array whitelist 在 failure file 被 Playwright 解包成单值，随后改为逐文件 `test.extend` fixture。最终 focused：
+
+```text
+Command: node_modules/.bin/playwright test src/features/parsing/ocr/OcrWorker.e2e.ts tests/e2e/failures.spec.ts
+Running 7 tests using 1 worker
+7 passed (12.7s)
+exit_code: 0
+```
+
+## Fresh benchmark gates
+
+Passing fixture:
+
+```text
+BENCHMARK: synthetic-regression-v1 @ 1.1.0
+RELEASE GATE: PASS
+重大事项: precision=100.00%, recall=100.00%, TP=4, FP=0, FN=0
+原子要求: precision=100.00%, recall=100.00%, TP=1, FP=0, FN=0
+事实引用: 5/5 (100.00%)
+OCR: errors=0, expectedCharacters=17, accuracy=100.00%
+人工检查页: none
+待人工检查页: none
+失败规则: none
+exit_code: 0
+```
+
+同一 pass 输入写入两个目录后：
+
+```text
+cmp /private/tmp/task11-fix-pass-a/benchmark-report.json /private/tmp/task11-fix-pass-b/benchmark-report.json
+exit_code: 0
+```
+
+Deliberate failing fixture（loader 验证通过后由 threshold 产生 exit 1）：
+
+```text
+BENCHMARK: synthetic-regression-v1 @ 1.1.0
+RELEASE GATE: FAIL
+重大事项: precision=100.00%, recall=75.00%, TP=3, FP=0, FN=1
+原子要求: precision=0.00%, recall=0.00%, TP=0, FP=1, FN=1
+事实引用: 4/5 (80.00%)
+OCR: errors=1, expectedCharacters=17, accuracy=94.12%
+重大遗漏 IDs: EXP-TRANSITION
+未标记 AI 推导 IDs: BAD-UNMARKED-IMPACT
+人工检查页: SYNTH-REG-SCAN:p3
+待人工检查页: SYNTH-REG-SCAN:p3
+失败规则: critical_precision_below_95:transition_period,critical_recall_below_95:transition_period,atomic_precision_below_90,atomic_recall_below_85,citation_validity_below_100,unmarked_ai_inference,critical_omissions,ocr_accuracy_below_99,ocr_manual_review_pending
+exit_code: 1
+```
+
+## Fresh full gates
+
+```text
+Command: node_modules/.bin/vitest run
+Test Files 31 passed (31)
+Tests 297 passed (297)
+Duration 10.89s
+exit_code: 0
+```
+
+Vitest 仍仅输出既有合成 CFF 字体 warning；PDF 导出和文本提取测试通过。
+
+```text
+Command: node_modules/.bin/playwright test
+Running 17 tests using 1 worker
+17 passed (33.0s)
+exit_code: 0
+```
+
+```text
+Command: node_modules/.bin/tsc --noEmit
+exit_code: 0
+```
+
+```text
+Command: node_modules/.bin/vite build
+✓ 749 modules transformed.
+✓ built in 7.03s
+exit_code: 0
+```
+
+Vite 只报告既有大 chunk 建议。
+
+## Privacy / scans
+
+```text
+Command: node --import tsx scripts/scan-secrets.ts --needle <synthetic-key-needle> --needle <synthetic-endpoint-needle>
+SECRET SCAN PASS
+exit_code: 0
+```
+
+```text
+Command: git diff --check
+exit_code: 0
+```
+
+```text
+Command: rg '(BEGIN ... PRIVATE KEY|AKIA...|sk-...)' src scripts tests/fixtures/benchmark task-11-report.md
+scripts/scan-secrets.test.ts: synthetic deliberate scanner-positive fixture only
+exit_code: 0
+```
+
+隐私说明：测试 credential 仅为明确合成字符串；fixtures 均为合成/脱敏条款，不包含真实客户、个人、项目数据或密钥。browser privacy 深扫和构建后 secret scan 均通过。
+
+## 自查与局限
+
+1. 本基准仍是 **fixture-bound static regression corpus**：静态 actual 与本组版本化合成语料绑定，只证明该语料/该版本回归行为，不代表未知监管文件上达到 95% 或任何统计精度。
+2. SHA-256、size 和有序 fixture 内容校验用于检测测试输入漂移，不是发布者身份认证或数字签名。
+3. Playwright whitelist 仅限已验证的 Tesseract 旧参数 warning 和 failure-only 测试主动制造的浏览器网络资源错误；不存在通配 pageerror 白名单。
+4. `dist/` 为 build 输出且未纳入 commit；构建后的 secret scan 已实际执行。
