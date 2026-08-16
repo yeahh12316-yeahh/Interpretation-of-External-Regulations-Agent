@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { mkdir, writeFile } from "node:fs/promises";
+import { mkdir, readFile, writeFile } from "node:fs/promises";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
@@ -135,33 +135,6 @@ const buildTextPdf = (pages: readonly (readonly string[])[]): Buffer => {
   return finishPdf(objects);
 };
 
-const buildScannedPdf = (): Buffer => {
-  const objects = [
-    "<< /Type /Catalog /Pages 2 0 R >>",
-    "",
-    "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB " +
-      "/BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 7 >>\nstream\n335577>\nendstream",
-  ];
-  const pageIds: number[] = [];
-  for (let page = 1; page <= 3; page += 1) {
-    const content =
-      page === 3 ? "q\n420 0 0 120 72 620 cm\n/Im1 Do\nQ" : "";
-    const contentId = objects.push(
-      `<< /Length ${Buffer.byteLength(content)} >>\nstream\n${content}\nendstream`,
-    );
-    const resources =
-      page === 3 ? "/Resources << /XObject << /Im1 3 0 R >> >> " : "";
-    const pageId = objects.push(
-      `<< /Type /Page /Parent 2 0 R /MediaBox [0 0 595 842] ${resources}/Contents ${contentId} 0 R >>`,
-    );
-    pageIds.push(pageId);
-  }
-  objects[1] =
-    `<< /Type /Pages /Kids [${pageIds.map((id) => `${id} 0 R`).join(" ")}] ` +
-    `/Count ${pageIds.length} >>`;
-  return finishPdf(objects);
-};
-
 const textPdf = buildTextPdf([
   ["合成监管文件目录。"],
   [
@@ -169,7 +142,11 @@ const textPdf = buildTextPdf([
     "第十一条 过渡期截至二〇二六年六月三十日。",
   ],
 ]);
-const scannedPdf = buildScannedPdf();
+// Reuse the repository's deterministic, synthetic Task 5 OCR fixture. It has
+// a real 1200x700 rasterized Chinese page and no PDF text layer.
+const scannedPdf = await readFile(
+  path.join(benchmarkRoot, "..", "scanned-regulation.pdf"),
+);
 await Promise.all([
   writeFile(path.join(sourceRoot, "regulatory-text.pdf"), textPdf),
   writeFile(path.join(sourceRoot, "regulatory-scan.pdf"), scannedPdf),
@@ -255,12 +232,14 @@ await writeFile(
       scanFileSha256: scanDigest,
       pages: [
         {
-          page: 3,
+          page: 1,
+          expectedText:
+            "合成扫描监管文件\n第一条 银行业金融机构不得泄露客户信息。\n仅用于脱敏测试，不代表任何真实机构或项目。",
           paragraphs: [
             {
               paragraphIndex: 0,
-              article: "第三条",
-              text: "第三条 示例机构必须每年报送合成报告。",
+              article: "第一条",
+              text: "第一条 银行业金融机构不得泄露客户信息。",
             },
           ],
         },

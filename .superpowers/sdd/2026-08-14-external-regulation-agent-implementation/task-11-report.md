@@ -550,3 +550,107 @@ exit_code: 0
 ## Benchmark 声明与自查
 
 本结果仍是 **fixture-bound static regression corpus**：actual 是与版本化合成 fixture 强绑定的静态回归结果，只证明本测试语料和本版本行为，不代表未知文件达到 95% 产品精度。fixture SHA-256/size/locator 绑定用于发现测试语料漂移，不是来源身份认证。PDF.js 在 benchmark/scanner/E2E 的 document loading task 均通过 `finally destroy()` 释放。代码与 fixture 自查未发现真实客户、个人、监管项目数据或真实凭据。
+
+---
+
+# Task 11 fix round 3/5（2026-08-16）
+
+Base：`96fbfd723dfe01d908543551d3f916298c312376`
+
+## 修复结果
+
+- manifest、expected、actual、sources、attachments、scan GT 全部进入同一 canonical uniqueness 集；expected/actual canonical path 相同时，在读取 corpus 前拒绝。
+- scan GT 每页新增完整 `expectedText`。expected OCR page 必须与 GT 在 NFKC/换行空白规范化后 exact 相等，actual 必须保持相同 source/page 完整覆盖但允许文字差异用于 CER；既有 review digest 仍严格绑定 GT-authorized expected page 和当前 actual page。
+- raw `evaluateFindings` 无条件输出 `fixture_evidence_not_validated`。删除公开 validated evaluator 后门；loader 返回递归 frozen bundle，并在模块私有 `WeakSet` 登记对象身份。`evaluateValidatedBenchmark(unknown)` 只接受该精确对象，structured clone、spread clone、手造对象和修改均拒绝。
+- benchmark scan fixture 改为确定性复用仓内 Task5 合成 OCR fixture：真实 1200×700 中文像素图、0 text layer、真实 image paint。人工渲染确认可视内容为“合成扫描监管文件 / 第一条 银行业金融机构不得泄露客户信息 / 仅用于脱敏测试，不代表任何真实机构或项目”。loader 要求至少 300×200、像素数据足够且非纯色；blank/1×1 均拒绝。
+- DOCX scanner 新增 256 entries、32 MiB 单 entry、128 MiB total、200:1 ratio 限额；inflate 前检查 local header，使用 `maxOutputLength`，后验核对 declared/actual size，并逐 entry 对比 central-directory method/compressed/uncompressed metadata。data descriptor、重复 entry、越界和不支持压缩均受控失败，不落盘解压。
+
+## RED
+
+```text
+Command: vitest --run src/evaluation/benchmark-input.test.ts scripts/scan-secrets.test.ts
+benchmark-input.test.ts: 9 tests | 8 failed, 1 passed
+Reason: GT expectedText was unrecognized; expected-as-actual, forged OCR and forged capability were not yet protected.
+scan-secrets.test.ts: 4 tests | 1 failed
+Reason: declared oversize / high-ratio / 300-entry archives resolved [] instead of rejecting.
+exit_code: 1
+```
+
+## Focused GREEN
+
+```text
+Command: vitest --run src/evaluation/benchmark-input.test.ts scripts/scan-secrets.test.ts src/evaluation/evaluate-findings.test.ts
+Test Files 3 passed (3)
+Tests 24 passed (24)
+exit_code: 0
+```
+
+额外 1×1 image adversarial 加入后：
+
+```text
+Command: vitest --run src/evaluation/benchmark-input.test.ts
+Test Files 1 passed (1)
+Tests 9 passed (9)
+exit_code: 0
+```
+
+## Benchmark gates
+
+```text
+Command: node --import tsx scripts/run-benchmark.ts --output-dir /private/tmp/task11-fix3-pass
+RELEASE GATE: PASS
+重大事项 precision=100.00%, recall=100.00%
+原子要求 precision=100.00%, recall=100.00%
+事实引用 5/5 (100.00%)
+OCR errors=0, expectedCharacters=51, accuracy=100.00%
+exit_code: 0
+```
+
+```text
+Command: node --import tsx scripts/run-benchmark.ts --actual actual-findings-failing.json --output-dir /private/tmp/task11-fix3-fail
+RELEASE GATE: FAIL
+重大事项 recall=75.00%
+原子要求 precision=0.00%, recall=0.00%
+事实引用 4/5 (80.00%)
+OCR errors=1, expectedCharacters=51, accuracy=98.04%
+重大遗漏 EXP-TRANSITION；未标记推导 BAD-UNMARKED-IMPACT
+exit_code: 1
+```
+
+## Fresh full gates
+
+```text
+Command: vitest --run
+Test Files 32 passed (32)
+Tests 307 passed (307)
+Duration 9.76s
+exit_code: 0
+```
+
+```text
+Command: playwright test --reporter=line
+Running 18 tests using 1 worker
+18 passed (25.6s)
+exit_code: 0
+```
+
+```text
+Command: tsc --noEmit
+exit_code: 0
+
+Command: vite build
+✓ 749 modules transformed.
+✓ built in 4.61s
+exit_code: 0
+
+Command: node --import tsx scripts/scan-secrets.ts --needle <synthetic-key> --needle <synthetic-endpoint>
+SECRET SCAN PASS
+exit_code: 0
+
+Command: git diff --check
+exit_code: 0
+```
+
+## Reproducibility / privacy note
+
+Generator 重跑后的 scan PDF SHA-256 为 `4b69b710ce0b8602aa2b4e01f2e93c074ef946848fbc0ef3f36cc12997f392c1`，GT SHA-256 为 `3bf30ba7de0c9490be70b065b7dab63579dc41c2a68be657e7c3e51413ac3d43`，均与 manifest 一致。本轮仍仅使用合成/脱敏条款，不含真实监管项目、客户、个人或密钥数据。该基准仍是 fixture-bound static regression corpus，不构成未知文件产品精度承诺。

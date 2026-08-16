@@ -38,8 +38,8 @@
       "sourceId": "SYNTH-REG-SCAN",
       "sourceType": "regulatory_text",
       "path": "sources/regulatory-scan.pdf",
-      "sha256": "52ed5acffe93ceb81467a4b75494a66edba3471d107bb69bbd37dfe21d5c1d57",
-      "size": 1080,
+      "sha256": "4b69b710ce0b8602aa2b4e01f2e93c074ef946848fbc0ef3f36cc12997f392c1",
+      "size": 48739,
       "fileType": "pdf_scan",
       "regulatorType": "合成行业监管机构",
       "modalities": ["scanned"],
@@ -47,8 +47,8 @@
       "attachments": [],
       "groundTruth": {
         "path": "sources/regulatory-scan.ground-truth.json",
-        "sha256": "9138a229ce7aa50b563dee3a6dba52f8af09f2e33b0696c5486f3a777921614a",
-        "size": 361,
+        "sha256": "3bf30ba7de0c9490be70b065b7dab63579dc41c2a68be657e7c3e51413ac3d43",
+        "size": 539,
         "reviewer": "合成基准复核人",
         "reviewedAt": "2026-08-14T00:00:00.000Z"
       },

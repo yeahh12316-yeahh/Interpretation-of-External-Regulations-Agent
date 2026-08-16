@@ -1,11 +1,28 @@
 import { mkdtemp, readFile, writeFile } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import path from "node:path";
+import { deflateRawSync } from "node:zlib";
 
 import { describe, expect, it } from "vitest";
 import { Document, Packer, Paragraph } from "docx";
 
 import { scanPaths } from "./scan-secrets";
+
+const localZipEntry = (
+  name: string,
+  content: Buffer,
+  declaredUncompressed = content.length,
+): Buffer => {
+  const compressed = deflateRawSync(content);
+  const header = Buffer.alloc(30);
+  header.writeUInt32LE(0x04034b50, 0);
+  header.writeUInt16LE(20, 4);
+  header.writeUInt16LE(8, 8);
+  header.writeUInt32LE(compressed.length, 18);
+  header.writeUInt32LE(declaredUncompressed, 22);
+  header.writeUInt16LE(Buffer.byteLength(name), 26);
+  return Buffer.concat([header, Buffer.from(name), compressed]);
+};
 
 describe("scanPaths", () => {
   it("reports exact forbidden needles and credential-shaped values reproducibly", async () => {
@@ -41,9 +58,7 @@ describe("scanPaths", () => {
       new Document({
         sections: [
           {
-            children: [
-              new Paragraph("sk-abcdefghijklmnopqrstuvwxyz123456"),
-            ],
+            children: [new Paragraph("sk-abcdefghijklmnopqrstuvwxyz123456")],
           },
         ],
       }),
@@ -62,8 +77,37 @@ describe("scanPaths", () => {
     const root = await mkdtemp(path.join(tmpdir(), "secret-clean-"));
     await writeFile(path.join(root, "clean.bin"), Buffer.from([0, 1, 2, 3]));
     await expect(scanPaths([root])).resolves.toEqual([]);
-    await expect(
-      scanPaths([path.join(root, "missing-dist")]),
-    ).rejects.toThrow(/required scan root/u);
+    await expect(scanPaths([path.join(root, "missing-dist")])).rejects.toThrow(
+      /required scan root/u,
+    );
+  });
+
+  it("bounds DOCX entry count, declared size, output size, and compression ratio", async () => {
+    const root = await mkdtemp(path.join(tmpdir(), "secret-zip-bounds-"));
+    const cases = [
+      [
+        "declared.docx",
+        localZipEntry("word/document.xml", Buffer.from("safe"), 200_000_000),
+      ],
+      [
+        "ratio.docx",
+        localZipEntry("word/document.xml", Buffer.alloc(2_000_000, 65)),
+      ],
+      [
+        "flood.docx",
+        Buffer.concat(
+          Array.from({ length: 300 }, (_, index) =>
+            localZipEntry(`word/item-${index}.xml`, Buffer.from("safe")),
+          ),
+        ),
+      ],
+    ] as const;
+    for (const [name, bytes] of cases) {
+      const file = path.join(root, name);
+      await writeFile(file, bytes);
+      await expect(scanPaths([file])).rejects.toThrow(
+        /DOCX|ZIP|limit|ratio|size|entries/u,
+      );
+    }
   });
 });

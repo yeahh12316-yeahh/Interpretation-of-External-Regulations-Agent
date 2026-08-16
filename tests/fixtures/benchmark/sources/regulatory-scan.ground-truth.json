@@ -1,14 +1,15 @@
 {
   "sourceId": "SYNTH-REG-SCAN",
-  "scanFileSha256": "52ed5acffe93ceb81467a4b75494a66edba3471d107bb69bbd37dfe21d5c1d57",
+  "scanFileSha256": "4b69b710ce0b8602aa2b4e01f2e93c074ef946848fbc0ef3f36cc12997f392c1",
   "pages": [
     {
-      "page": 3,
+      "page": 1,
+      "expectedText": "合成扫描监管文件\n第一条 银行业金融机构不得泄露客户信息。\n仅用于脱敏测试，不代表任何真实机构或项目。",
       "paragraphs": [
         {
           "paragraphIndex": 0,
-          "article": "第三条",
-          "text": "第三条 示例机构必须每年报送合成报告。"
+          "article": "第一条",
+          "text": "第一条 银行业金融机构不得泄露客户信息。"
         }
       ]
     }

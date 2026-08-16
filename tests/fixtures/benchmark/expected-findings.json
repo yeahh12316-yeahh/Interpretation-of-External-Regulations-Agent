@@ -83,16 +83,16 @@
     {
       "findingId": "EXP-ATOMIC",
       "category": "atomic_requirement",
-      "statement": "示例机构必须每年报送合成报告",
+      "statement": "银行业金融机构不得泄露客户信息",
       "claimType": "regulatory_fact",
       "sourceAnchors": [
         {
           "sourceId": "SYNTH-REG-SCAN",
           "sourceType": "regulatory_text",
-          "page": 3,
-          "article": "第三条",
+          "page": 1,
+          "article": "第一条",
           "paragraphIndex": 0,
-          "quote": "第三条 示例机构必须每年报送合成报告。"
+          "quote": "第一条 银行业金融机构不得泄露客户信息。"
         }
       ],
       "inferenceParents": [],
@@ -145,25 +145,25 @@
     {
       "requirementId": "EXP-AR-1",
       "findingId": "EXP-ATOMIC",
-      "subject": "示例机构",
-      "action": "报送",
-      "object": "合成报告",
-      "condition": "开展示例业务时",
-      "frequency": "每年",
-      "deadline": "二〇二六年一月一日前",
-      "strength": "必须",
-      "responsibility": "合规部门",
-      "exceptions": "依法豁免的除外",
+      "subject": "银行业金融机构",
+      "action": "泄露",
+      "object": "客户信息",
+      "condition": null,
+      "frequency": null,
+      "deadline": null,
+      "strength": "不得",
+      "responsibility": null,
+      "exceptions": null,
       "sharedContext": null,
       "missingFacts": [],
       "sourceAnchors": [
         {
           "sourceId": "SYNTH-REG-SCAN",
           "sourceType": "regulatory_text",
-          "page": 3,
-          "article": "第三条",
+          "page": 1,
+          "article": "第一条",
           "paragraphIndex": 0,
-          "quote": "第三条 示例机构必须每年报送合成报告。"
+          "quote": "第一条 银行业金融机构不得泄露客户信息。"
         }
       ],
       "confidence": 1,
@@ -173,8 +173,8 @@
   "ocrPages": [
     {
       "sourceId": "SYNTH-REG-SCAN",
-      "page": 3,
-      "text": "第三条示例机构必须每年报送合成报告"
+      "page": 1,
+      "text": "合成扫描监管文件\n第一条 银行业金融机构不得泄露客户信息。\n仅用于脱敏测试，不代表任何真实机构或项目。"
     }
   ],
   "officialPrimarySourceIds": {

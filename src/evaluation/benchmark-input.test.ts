@@ -55,6 +55,28 @@ const blankPdf = (): Buffer => {
   return Buffer.from(pdf, "binary");
 };
 
+const onePixelPdf = (): Buffer => {
+  const objects = [
+    "<< /Type /Catalog /Pages 2 0 R >>",
+    "<< /Type /Pages /Kids [5 0 R] /Count 1 >>",
+    "<< /Type /XObject /Subtype /Image /Width 1 /Height 1 /ColorSpace /DeviceRGB /BitsPerComponent 8 /Filter /ASCIIHexDecode /Length 7 >>\nstream\n335577>\nendstream",
+    "<< /Length 32 >>\nstream\nq\n300 0 0 300 0 0 cm\n/Im1 Do\nQ\nendstream",
+    "<< /Type /Page /Parent 2 0 R /MediaBox [0 0 300 300] /Resources << /XObject << /Im1 3 0 R >> >> /Contents 4 0 R >>",
+  ];
+  let pdf = "%PDF-1.4\n";
+  const offsets = [0];
+  objects.forEach((body, index) => {
+    offsets.push(Buffer.byteLength(pdf));
+    pdf += `${index + 1} 0 obj\n${body}\nendobj\n`;
+  });
+  const xref = Buffer.byteLength(pdf);
+  pdf += `xref\n0 6\n0000000000 65535 f\r\n${offsets
+    .slice(1)
+    .map((offset) => `${String(offset).padStart(10, "0")} 00000 n\r\n`)
+    .join("")}trailer\n<< /Size 6 /Root 1 0 R >>\nstartxref\n${xref}\n%%EOF\n`;
+  return Buffer.from(pdf, "binary");
+};
+
 const rewriteJson = async (
   filePath: string,
   mutate: (value: any) => void,
@@ -77,7 +99,11 @@ describe("benchmark input boundary", () => {
     ]);
     expect(bundle.samples.every(({ verified }) => verified)).toBe(true);
     expect(bundle.validatedAnchorCount).toBeGreaterThan(0);
-    expect(bundle.manifest.samples.find(({ sourceId }) => sourceId === "SYNTH-REG-SCAN")?.groundTruth).toEqual(
+    expect(
+      bundle.manifest.samples.find(
+        ({ sourceId }) => sourceId === "SYNTH-REG-SCAN",
+      )?.groundTruth,
+    ).toEqual(
       expect.objectContaining({
         reviewer: "合成基准复核人",
         reviewedAt: "2026-08-14T00:00:00.000Z",
@@ -87,10 +113,7 @@ describe("benchmark input boundary", () => {
 
   it("rejects symlinks and duplicate canonical source or attachment files", async () => {
     const symlinkRoot = await temporaryBundle();
-    const sourcePath = path.join(
-      symlinkRoot,
-      "sources/regulatory-text.pdf",
-    );
+    const sourcePath = path.join(symlinkRoot, "sources/regulatory-text.pdf");
     const outside = path.join(
       await mkdtemp(path.join(tmpdir(), "benchmark-outside-")),
       "outside.pdf",
@@ -191,18 +214,61 @@ describe("benchmark input boundary", () => {
     });
 
     await expect(loadBenchmarkBundle(manifestPath)).rejects.toThrow(/image/u);
+
+    const pixelRoot = await temporaryBundle();
+    const pixelManifest = path.join(pixelRoot, "manifest.json");
+    const pixelBytes = onePixelPdf();
+    const pixelPath = path.join(pixelRoot, "sources/one-pixel.pdf");
+    await writeFile(pixelPath, pixelBytes);
+    await rewriteJson(pixelManifest, (manifest) => {
+      const sample = manifest.samples.find(
+        ({ sourceId }: any) => sourceId === "SYNTH-REG-SCAN",
+      );
+      sample.path = "sources/one-pixel.pdf";
+      sample.sha256 = digest(pixelBytes);
+      sample.size = pixelBytes.length;
+    });
+    await expect(loadBenchmarkBundle(pixelManifest)).rejects.toThrow(
+      /image.*(?:small|uniform|blank)/u,
+    );
   });
 
   it("blocks raw-corpus release metrics and only unlocks fixture-validated bundles", async () => {
     const bundle = await loadBenchmarkBundle(fixtureManifest);
 
-    expect(evaluateFindings(bundle.expected, bundle.actual).releaseGate.failures).toContain(
-      "fixture_evidence_not_validated",
-    );
+    expect(
+      evaluateFindings(bundle.expected, bundle.actual).releaseGate.failures,
+    ).toContain("fixture_evidence_not_validated");
     expect(evaluateValidatedBenchmark(bundle).releaseGate).toEqual({
       passed: true,
       failures: [],
     });
+  });
+
+  it("rejects expected-as-actual, forged OCR truth, and forged or cloned capabilities", async () => {
+    await expect(
+      loadBenchmarkBundle(fixtureManifest, "expected-findings.json"),
+    ).rejects.toThrow(/expected.*actual|canonical/u);
+
+    const root = await temporaryBundle();
+    for (const name of ["expected-findings.json", "actual-findings.json"]) {
+      await rewriteJson(path.join(root, name), (corpus) => {
+        corpus.ocrPages[0].text = "双方同时伪造的 OCR 文本";
+      });
+    }
+    await expect(
+      loadBenchmarkBundle(path.join(root, "manifest.json")),
+    ).rejects.toThrow(/OCR.*ground-truth|expected OCR/u);
+
+    const bundle = await loadBenchmarkBundle(fixtureManifest);
+    expect(Object.isFrozen(bundle)).toBe(true);
+    expect(() => ((bundle.actual as any).ocrPages = [])).toThrow();
+    await expect(() =>
+      evaluateValidatedBenchmark(structuredClone(bundle) as any),
+    ).toThrow(/provenance|loader/u);
+    await expect(() =>
+      evaluateValidatedBenchmark({ ...bundle } as any),
+    ).toThrow(/provenance|loader/u);
   });
 
   it("rejects a tampered source, path escape, and corpus anchor outside the manifest", async () => {

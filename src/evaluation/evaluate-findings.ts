@@ -159,9 +159,7 @@ export const EvaluationCorpusSchema = z
     const officialSourceIds = new Set(
       corpus.findings.flatMap(({ sourceAnchors }) =>
         sourceAnchors
-          .filter(
-            ({ sourceType }) => sourceType === "official_interpretation",
-          )
+          .filter(({ sourceType }) => sourceType === "official_interpretation")
           .map(({ sourceId }) => sourceId),
       ),
     );
@@ -464,7 +462,6 @@ const below = (value: number | null, threshold: number): boolean =>
 const evaluate = (
   expected: EvaluationCorpus,
   actual: EvaluationCorpus,
-  fixtureEvidenceValidated: boolean,
 ): EvaluationMetrics => {
   const matches = deterministicMatches(expected, actual);
   const criticalExpectedIds = idsWhere(
@@ -573,8 +570,7 @@ const evaluate = (
   if (!coverageMatches) failures.push("ocr_page_coverage_mismatch");
   if (ocr.pendingManualReviewPages.length > 0)
     failures.push("ocr_manual_review_pending");
-  if (!fixtureEvidenceValidated)
-    failures.push("fixture_evidence_not_validated");
+  failures.push("fixture_evidence_not_validated");
 
   return {
     critical,
@@ -592,10 +588,4 @@ const evaluate = (
 export const evaluateFindings = (
   expected: EvaluationCorpus,
   actual: EvaluationCorpus,
-): EvaluationMetrics => evaluate(expected, actual, false);
-
-/** @internal Only benchmark-input may call this after fixture validation. */
-export const evaluateFixtureValidatedFindings = (
-  expected: EvaluationCorpus,
-  actual: EvaluationCorpus,
-): EvaluationMetrics => evaluate(expected, actual, true);
+): EvaluationMetrics => evaluate(expected, actual);

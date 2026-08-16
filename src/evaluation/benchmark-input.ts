@@ -11,7 +11,7 @@ import { articleFromText } from "../features/parsing/build-anchors";
 import { normalizeText } from "../features/evidence/normalize-text";
 import {
   EvaluationCorpusSchema,
-  evaluateFixtureValidatedFindings,
+  evaluateFindings,
   type EvaluationCorpus,
   type EvaluationMetrics,
 } from "./evaluate-findings";
@@ -45,6 +45,20 @@ export interface BenchmarkBundle {
   readonly validatedAnchorCount: number;
 }
 
+const validatedBundles = new WeakSet<object>();
+
+const deepFreeze = <T>(value: T): T => {
+  if (value && typeof value === "object" && !Object.isFrozen(value)) {
+    for (const child of Object.values(value as Record<string, unknown>))
+      deepFreeze(child);
+    Object.freeze(value);
+  }
+  return value;
+};
+
+const isBenchmarkBundle = (value: unknown): value is BenchmarkBundle =>
+  typeof value === "object" && value !== null;
+
 const GroundTruthFileSchema = z
   .object({
     sourceId: z.string().min(1),
@@ -54,6 +68,7 @@ const GroundTruthFileSchema = z
         z
           .object({
             page: z.number().int().positive(),
+            expectedText: z.string().trim().min(1),
             paragraphs: z
               .array(
                 z
@@ -123,7 +138,9 @@ const canonicalInside = async (
     current = path.join(current, part);
     const stat = await lstat(current);
     if (stat.isSymbolicLink())
-      throw new Error(`symlink is forbidden in benchmark path: ${relativePath}`);
+      throw new Error(
+        `symlink is forbidden in benchmark path: ${relativePath}`,
+      );
   }
   const canonical = await realpath(resolved);
   const canonicalRelative = path.relative(rootCanonical, canonical);
@@ -132,7 +149,9 @@ const canonicalInside = async (
     canonicalRelative === ".." ||
     canonicalRelative.startsWith(`..${path.sep}`)
   )
-    throw new Error(`real path must remain inside benchmark root: ${relativePath}`);
+    throw new Error(
+      `real path must remain inside benchmark root: ${relativePath}`,
+    );
   return canonical;
 };
 
@@ -227,6 +246,7 @@ interface PdfInspection {
   readonly units: readonly FixtureUnit[];
   readonly textCharacters: number;
   readonly imagePages: ReadonlySet<number>;
+  readonly meaningfulImagePages: ReadonlySet<number>;
   readonly pageCount: number;
 }
 
@@ -239,6 +259,7 @@ const inspectPdf = async (
     const document = await loadingTask.promise;
     const units: FixtureUnit[] = [];
     const imagePages = new Set<number>();
+    const meaningfulImagePages = new Set<number>();
     let textCharacters = 0;
     for (let pageNumber = 1; pageNumber <= document.numPages; pageNumber += 1) {
       const page = await document.getPage(pageNumber);
@@ -273,20 +294,43 @@ const inspectPdf = async (
         });
       });
       const operatorList = await page.getOperatorList();
-      if (
-        operatorList.fnArray.some(
-          (operator) =>
-            operator === OPS.paintImageXObject ||
-            operator === OPS.paintInlineImageXObject ||
-            operator === OPS.paintImageMaskXObject,
+      operatorList.fnArray.forEach((operator, index) => {
+        if (
+          operator !== OPS.paintImageXObject &&
+          operator !== OPS.paintInlineImageXObject &&
+          operator !== OPS.paintImageMaskXObject
         )
-      )
+          return;
         imagePages.add(pageNumber);
+        const [imageId, declaredWidth, declaredHeight] = operatorList.argsArray[
+          index
+        ] as [string, number, number];
+        const image =
+          typeof imageId === "string"
+            ? (page.objs.get(imageId) as {
+                width?: number;
+                height?: number;
+                data?: Uint8Array;
+              })
+            : undefined;
+        const width = image?.width ?? declaredWidth;
+        const height = image?.height ?? declaredHeight;
+        const data = image?.data;
+        if (
+          width >= 300 &&
+          height >= 200 &&
+          data &&
+          data.length >= width * height &&
+          data.some((value) => value !== data[0])
+        )
+          meaningfulImagePages.add(pageNumber);
+      });
     }
     return {
       units,
       textCharacters,
       imagePages,
+      meaningfulImagePages,
       pageCount: document.numPages,
     };
   } finally {
@@ -334,9 +378,17 @@ const verifySampleContent = async (
     throw new Error(`scan PDF must have zero text layer: ${sample.path}`);
   if (inspection.imagePages.size === 0)
     throw new Error(`scan PDF has no image paint operation: ${sample.path}`);
+  if (inspection.meaningfulImagePages.size === 0)
+    throw new Error(
+      `scan PDF image is blank, uniform, or too small: ${sample.path}`,
+    );
   if (!sample.groundTruth)
     throw new Error(`scan PDF is missing ground-truth: ${sample.path}`);
-  const truthArtifact = await verifyArtifact(root, rootCanonical, sample.groundTruth);
+  const truthArtifact = await verifyArtifact(
+    root,
+    rootCanonical,
+    sample.groundTruth,
+  );
   registerCanonical(truthArtifact.path);
   const truth = GroundTruthFileSchema.parse(
     JSON.parse(truthArtifact.bytes.toString("utf8")) as unknown,
@@ -347,8 +399,13 @@ const verifySampleContent = async (
   )
     throw new Error(`ground-truth binding mismatch for ${sample.sourceId}`);
   const units = truth.pages.flatMap((page) => {
-    if (page.page > inspection.pageCount || !inspection.imagePages.has(page.page))
-      throw new Error(`ground-truth page has no scanned image: ${sample.sourceId}:p${page.page}`);
+    if (
+      page.page > inspection.pageCount ||
+      !inspection.meaningfulImagePages.has(page.page)
+    )
+      throw new Error(
+        `ground-truth page has no scanned image: ${sample.sourceId}:p${page.page}`,
+      );
     return page.paragraphs.map((paragraph) => ({
       sourceId: sample.sourceId,
       page: page.page,
@@ -396,10 +453,15 @@ const verifyOfficialPairing = (
   manifest: BenchmarkManifest,
   corpus: EvaluationCorpus,
 ): void => {
-  const samples = new Map(manifest.samples.map((sample) => [sample.sourceId, sample]));
+  const samples = new Map(
+    manifest.samples.map((sample) => [sample.sourceId, sample]),
+  );
   for (const sample of manifest.samples) {
     if (sample.sourceType !== "official_interpretation") continue;
-    if (corpus.officialPrimarySourceIds[sample.sourceId] !== sample.primarySourceId)
+    if (
+      corpus.officialPrimarySourceIds[sample.sourceId] !==
+      sample.primarySourceId
+    )
       throw new Error(`official primary pair mismatch for ${sample.sourceId}`);
   }
   for (const finding of corpus.findings) {
@@ -410,23 +472,36 @@ const verifyOfficialPairing = (
         .map(({ sourceId }) => sourceId),
     );
     if (officialSources.size !== 1 || finding.inferenceParents.length === 0)
-      throw new Error(`official explanation must have one source and primary parent: ${finding.findingId}`);
+      throw new Error(
+        `official explanation must have one source and primary parent: ${finding.findingId}`,
+      );
     const officialSourceId = [...officialSources][0];
     const expectedPrimary = corpus.officialPrimarySourceIds[officialSourceId];
-    if (!expectedPrimary || samples.get(expectedPrimary)?.sourceType !== "regulatory_text")
-      throw new Error(`official primary source is invalid for ${finding.findingId}`);
+    if (
+      !expectedPrimary ||
+      samples.get(expectedPrimary)?.sourceType !== "regulatory_text"
+    )
+      throw new Error(
+        `official primary source is invalid for ${finding.findingId}`,
+      );
     for (const parentId of finding.inferenceParents) {
-      const parent = corpus.findings.find(({ findingId }) => findingId === parentId);
+      const parent = corpus.findings.find(
+        ({ findingId }) => findingId === parentId,
+      );
       if (
         !parent ||
-        !["regulatory_fact", "pending_confirmation"].includes(parent.claimType) ||
+        !["regulatory_fact", "pending_confirmation"].includes(
+          parent.claimType,
+        ) ||
         parent.sourceAnchors.length === 0 ||
         parent.sourceAnchors.some(
           ({ sourceId, sourceType }) =>
             sourceType !== "regulatory_text" || sourceId !== expectedPrimary,
         )
       )
-        throw new Error(`official primary parent mismatch for ${finding.findingId}`);
+        throw new Error(
+          `official primary parent mismatch for ${finding.findingId}`,
+        );
     }
   }
 };
@@ -436,25 +511,55 @@ const verifyCorpus = (
   corpusName: "expected" | "actual",
   corpus: EvaluationCorpus,
   unitsBySource: ReadonlyMap<string, readonly FixtureUnit[]>,
+  groundTruthExpectedByPage: ReadonlyMap<string, string>,
 ): number => {
-  const samples = new Map(manifest.samples.map((sample) => [sample.sourceId, sample]));
+  const samples = new Map(
+    manifest.samples.map((sample) => [sample.sourceId, sample]),
+  );
   const anchors = corpusAnchors(corpus);
   for (const anchor of anchors) {
     const sample = samples.get(anchor.sourceId);
     if (!sample)
-      throw new Error(`corpus anchor references undeclared source ${anchor.sourceId}`);
+      throw new Error(
+        `corpus anchor references undeclared source ${anchor.sourceId}`,
+      );
     if (sample.sourceType !== anchor.sourceType)
-      throw new Error(`corpus anchor source type mismatch for ${anchor.sourceId}`);
+      throw new Error(
+        `corpus anchor source type mismatch for ${anchor.sourceId}`,
+      );
     verifyAnchor(anchor, unitsBySource.get(anchor.sourceId) ?? []);
   }
   const covered = new Set(anchors.map(({ sourceId }) => sourceId));
   for (const sourceId of samples.keys()) {
     if (!covered.has(sourceId))
-      throw new Error(`manifest source is not covered by ${corpusName} corpus: ${sourceId}`);
+      throw new Error(
+        `manifest source is not covered by ${corpusName} corpus: ${sourceId}`,
+      );
   }
   for (const page of corpus.ocrPages) {
     if (!samples.has(page.sourceId))
-      throw new Error(`OCR corpus references undeclared source ${page.sourceId}`);
+      throw new Error(
+        `OCR corpus references undeclared source ${page.sourceId}`,
+      );
+  }
+  const scanKeys = [...groundTruthExpectedByPage.keys()];
+  const corpusOcrKeys = corpus.ocrPages.map(
+    ({ sourceId, page }) => `${sourceId}\u0000${page}`,
+  );
+  if (scanKeys.sort().join("\u0000") !== corpusOcrKeys.sort().join("\u0000"))
+    throw new Error(
+      `${corpusName} OCR page coverage does not match scan ground-truth`,
+    );
+  if (corpusName === "expected") {
+    for (const page of corpus.ocrPages) {
+      const expectedText = groundTruthExpectedByPage.get(
+        `${page.sourceId}\u0000${page.page}`,
+      );
+      if (!expectedText || !sameText(page.text, expectedText))
+        throw new Error(
+          `expected OCR text does not match scan ground-truth: ${page.sourceId}:p${page.page}`,
+        );
+    }
   }
   verifyOfficialPairing(manifest, corpus);
   return anchors.length;
@@ -473,7 +578,9 @@ const verifyManifestPairingLabels = (manifest: BenchmarkManifest): void => {
       sample.sourceType === "official_interpretation" ||
       pairedPrimaryIds.has(sample.sourceId);
     if ((sample.officialInterpretation === "with") !== shouldBeWith)
-      throw new Error(`official interpretation label mismatch for ${sample.sourceId}`);
+      throw new Error(
+        `official interpretation label mismatch for ${sample.sourceId}`,
+      );
   }
 };
 
@@ -483,19 +590,30 @@ export const loadBenchmarkBundle = async (
 ): Promise<BenchmarkBundle> => {
   const manifestPath = path.resolve(manifestPathInput);
   const manifestStat = await lstat(manifestPath);
-  if (manifestStat.isSymbolicLink()) throw new Error("manifest symlink is forbidden");
+  if (manifestStat.isSymbolicLink())
+    throw new Error("manifest symlink is forbidden");
   const root = path.dirname(manifestPath);
   const rootCanonical = await realpath(root);
   const manifest = BenchmarkManifestSchema.parse(await readJson(manifestPath));
   verifyManifestPairingLabels(manifest);
-  const expectedPath = await canonicalInside(root, rootCanonical, manifest.expectedFile);
+  const expectedPath = await canonicalInside(
+    root,
+    rootCanonical,
+    manifest.expectedFile,
+  );
   const actualRelative = actualPathInput ?? manifest.actualFile;
   const actualPath = await canonicalInside(root, rootCanonical, actualRelative);
+  if (expectedPath === actualPath)
+    throw new Error("expected and actual canonical paths must be different");
   const [expected, actual] = await Promise.all([
     readJson(expectedPath).then((value) => EvaluationCorpusSchema.parse(value)),
     readJson(actualPath).then((value) => EvaluationCorpusSchema.parse(value)),
   ]);
-  const canonicalArtifacts = new Set<string>();
+  const canonicalArtifacts = new Set<string>([
+    await realpath(manifestPath),
+    expectedPath,
+    actualPath,
+  ]);
   const registerCanonical = (filePath: string): void => {
     if (canonicalArtifacts.has(filePath))
       throw new Error(`duplicate canonical benchmark artifact: ${filePath}`);
@@ -503,6 +621,7 @@ export const loadBenchmarkBundle = async (
   };
   const samples: VerifiedBenchmarkSample[] = [];
   const unitsBySource = new Map<string, readonly FixtureUnit[]>();
+  const groundTruthExpectedByPage = new Map<string, string>();
   for (const sample of manifest.samples) {
     const artifact = await verifyArtifact(root, rootCanonical, sample);
     registerCanonical(artifact.path);
@@ -514,6 +633,19 @@ export const loadBenchmarkBundle = async (
       registerCanonical,
     );
     unitsBySource.set(sample.sourceId, units);
+    if (sample.fileType === "pdf_scan" && sample.groundTruth) {
+      const truthPath = await canonicalInside(
+        root,
+        rootCanonical,
+        sample.groundTruth.path,
+      );
+      const truth = GroundTruthFileSchema.parse(await readJson(truthPath));
+      for (const page of truth.pages)
+        groundTruthExpectedByPage.set(
+          `${sample.sourceId}\u0000${page.page}`,
+          page.expectedText,
+        );
+    }
     for (const attachment of sample.attachments) {
       const verified = await verifyArtifact(root, rootCanonical, attachment);
       registerCanonical(verified.path);
@@ -525,9 +657,21 @@ export const loadBenchmarkBundle = async (
     });
   }
   const validatedAnchorCount =
-    verifyCorpus(manifest, "expected", expected, unitsBySource) +
-    verifyCorpus(manifest, "actual", actual, unitsBySource);
-  return {
+    verifyCorpus(
+      manifest,
+      "expected",
+      expected,
+      unitsBySource,
+      groundTruthExpectedByPage,
+    ) +
+    verifyCorpus(
+      manifest,
+      "actual",
+      actual,
+      unitsBySource,
+      groundTruthExpectedByPage,
+    );
+  const bundle = deepFreeze({
     manifest,
     manifestPath,
     expectedPath,
@@ -536,13 +680,25 @@ export const loadBenchmarkBundle = async (
     actual,
     samples,
     validatedAnchorCount,
-  };
+  });
+  validatedBundles.add(bundle);
+  return bundle;
 };
 
 export const evaluateValidatedBenchmark = (
-  bundle: BenchmarkBundle,
-): EvaluationMetrics =>
-  evaluateFixtureValidatedFindings(bundle.expected, bundle.actual);
+  bundle: unknown,
+): EvaluationMetrics => {
+  if (!isBenchmarkBundle(bundle) || !validatedBundles.has(bundle))
+    throw new Error("benchmark provenance missing: use loadBenchmarkBundle");
+  const raw = evaluateFindings(bundle.expected, bundle.actual);
+  const failures = raw.releaseGate.failures.filter(
+    (failure) => failure !== "fixture_evidence_not_validated",
+  );
+  return {
+    ...raw,
+    releaseGate: { passed: failures.length === 0, failures },
+  };
+};
 
 export const buildMachineReportJson = (
   bundle: BenchmarkBundle,
