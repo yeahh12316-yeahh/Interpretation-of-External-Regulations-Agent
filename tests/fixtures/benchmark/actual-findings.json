@@ -1,0 +1,180 @@
+{
+  "findings": [
+    {
+      "findingId": "ACT-CORE",
+      "category": "key_matter:core_requirement",
+      "statement": "示例机构必须建立治理机制",
+      "claimType": "regulatory_fact",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-REG-TXT",
+          "sourceType": "regulatory_text",
+          "page": null,
+          "article": "第一条",
+          "paragraphIndex": 0,
+          "quote": "第一条 示例机构必须建立治理机制。"
+        }
+      ],
+      "inferenceParents": [],
+      "reviewStatus": "unreviewed",
+      "requiredReview": false,
+      "revisionRecords": []
+    },
+    {
+      "findingId": "ACT-BAN",
+      "category": "key_matter:prohibition",
+      "statement": "示例机构不得虚构业务记录",
+      "claimType": "regulatory_fact",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-REG-DOCX",
+          "sourceType": "regulatory_text",
+          "page": null,
+          "article": "第二条",
+          "paragraphIndex": 1,
+          "quote": "第二条 示例机构不得虚构业务记录。"
+        }
+      ],
+      "inferenceParents": [],
+      "reviewStatus": "unreviewed",
+      "requiredReview": false,
+      "revisionRecords": []
+    },
+    {
+      "findingId": "ACT-DATE",
+      "category": "key_matter:effective_date",
+      "statement": "本办法自二〇二六年一月一日起施行",
+      "claimType": "regulatory_fact",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-REG-PDF",
+          "sourceType": "regulatory_text",
+          "page": 2,
+          "article": "第十条",
+          "paragraphIndex": 0,
+          "quote": "第十条 本办法自二〇二六年一月一日起施行。"
+        }
+      ],
+      "inferenceParents": [],
+      "reviewStatus": "unreviewed",
+      "requiredReview": false,
+      "revisionRecords": []
+    },
+    {
+      "findingId": "ACT-TRANSITION",
+      "category": "key_matter:transition_period",
+      "statement": "过渡期截至二〇二六年六月三十日",
+      "claimType": "regulatory_fact",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-REG-PDF",
+          "sourceType": "regulatory_text",
+          "page": 2,
+          "article": "第十一条",
+          "paragraphIndex": 1,
+          "quote": "第十一条 过渡期截至二〇二六年六月三十日。"
+        }
+      ],
+      "inferenceParents": [],
+      "reviewStatus": "unreviewed",
+      "requiredReview": false,
+      "revisionRecords": []
+    },
+    {
+      "findingId": "ACT-ATOMIC",
+      "category": "atomic_requirement",
+      "statement": "示例机构必须每年报送合成报告",
+      "claimType": "regulatory_fact",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-REG-SCAN",
+          "sourceType": "regulatory_text",
+          "page": 3,
+          "article": "第三条",
+          "paragraphIndex": 0,
+          "quote": "第三条 示例机构必须每年报送合成报告。"
+        }
+      ],
+      "inferenceParents": [],
+      "reviewStatus": "unreviewed",
+      "requiredReview": false,
+      "revisionRecords": []
+    },
+    {
+      "findingId": "ACT-OFFICIAL",
+      "category": "official_context:implementation_guidance",
+      "statement": "官方说明建议按年度核验",
+      "claimType": "official_explanation",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-OFFICIAL",
+          "sourceType": "official_interpretation",
+          "page": null,
+          "article": null,
+          "paragraphIndex": 0,
+          "quote": "官方说明建议按年度核验。"
+        }
+      ],
+      "inferenceParents": ["ACT-CORE"],
+      "reviewStatus": "unreviewed",
+      "requiredReview": false,
+      "revisionRecords": []
+    },
+    {
+      "findingId": "ACT-IMPACT",
+      "category": "institution_impact:system",
+      "statement": "可能需要调整示例报送系统",
+      "claimType": "ai_inference",
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-REG-TXT",
+          "sourceType": "regulatory_text",
+          "page": null,
+          "article": "第一条",
+          "paragraphIndex": 0,
+          "quote": "第一条 示例机构必须建立治理机制。"
+        }
+      ],
+      "inferenceParents": ["ACT-CORE"],
+      "reviewStatus": "unreviewed",
+      "requiredReview": true,
+      "revisionRecords": []
+    }
+  ],
+  "atomicRequirements": [
+    {
+      "requirementId": "ACT-AR-1",
+      "findingId": "ACT-ATOMIC",
+      "subject": "示例机构",
+      "action": "报送",
+      "object": "合成报告",
+      "condition": "开展示例业务时",
+      "frequency": "每年",
+      "deadline": "二〇二六年一月一日前",
+      "strength": "必须",
+      "responsibility": "合规部门",
+      "exceptions": "依法豁免的除外",
+      "sharedContext": null,
+      "missingFacts": [],
+      "sourceAnchors": [
+        {
+          "sourceId": "SYNTH-REG-SCAN",
+          "sourceType": "regulatory_text",
+          "page": 3,
+          "article": "第三条",
+          "paragraphIndex": 0,
+          "quote": "第三条 示例机构必须每年报送合成报告。"
+        }
+      ],
+      "confidence": 1,
+      "manualVerificationRequired": false
+    }
+  ],
+  "ocrPages": [
+    {
+      "sourceId": "SYNTH-REG-SCAN",
+      "page": 3,
+      "text": "第三条示例机构必须每年报送合成报告"
+    }
+  ]
+}
