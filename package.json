@@ -6,17 +6,21 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "benchmark": "tsx scripts/run-benchmark.ts",
+    "scan:build": "node scripts/scan-build-secrets.mjs dist",
     "scan:secrets": "tsx scripts/scan-secrets.ts",
-    "test": "vitest",
-    "test:e2e": "playwright test"
+    "test": "vitest run",
+    "test:e2e": "playwright test",
+    "test:production": "playwright test --config=playwright.production.config.ts",
+    "typecheck": "tsc --noEmit"
   },
   "keywords": [],
   "author": "",
   "license": "ISC",
+  "packageManager": "pnpm@11.19.0",
   "devEngines": {
     "packageManager": {
       "name": "pnpm",
-      "version": "^11.19.0",
+      "version": "11.19.0",
       "onFail": "download"
     }
   },
