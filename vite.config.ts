@@ -99,5 +99,9 @@ const localOcrAssets = (): Plugin => ({
 });
 
 export default defineConfig({
+  base:
+    process.env.GITHUB_ACTIONS === "true"
+      ? "/Interpretation-of-External-Regulations-Agent/"
+      : "/",
   plugins: [react(), localOcrAssets()],
 });
