@@ -24,6 +24,7 @@ const emptySession = (): WorkflowSession =>
 afterEach(() => {
   sessionCredentials.clear();
   modelDataFlowConsent.clear();
+  localStorage.clear();
 });
 
 const analysisSession = (): WorkflowSession => {
@@ -170,6 +171,107 @@ it("uses the authoritative Task 8 parse gate and blocks stale source content", a
   render(<WorkflowShell initialSession={session} />);
   expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
   expect(screen.getByRole("alert")).toHaveTextContent(/解析|OCR/);
+});
+
+it("renders OCR review in the production parsing step and unlocks only after correction", async () => {
+  const user = userEvent.setup();
+  const session = emptySession();
+  const text = "第一条 不得泄露合成信息。";
+  const source = {
+    sourceId: "REG-OCR",
+    sourceType: "regulatory_text" as const,
+    title: "合成扫描件.pdf",
+    content: text,
+  };
+  const review = {
+    unitId: "REG-OCR:p1:ocr",
+    sourceId: source.sourceId,
+    sourceType: source.sourceType,
+    page: 1,
+    method: "ocr" as const,
+    confidence: 0.6,
+    text,
+    originalOcrText: text,
+    correctedText: null,
+    reviewStatus: "unreviewed" as const,
+    reviewedAt: null,
+    reviewedBy: null,
+    correctionHistory: [],
+    boundingBox: { x: 0, y: 0, width: 100, height: 100 },
+    regions: [],
+    lowConfidenceCharacters: [],
+  };
+  const unit = {
+    unitId: review.unitId,
+    sourceId: source.sourceId,
+    sourceType: source.sourceType,
+    page: 1,
+    article: "第一条",
+    paragraphIndex: 0,
+    text,
+    extractionMethod: "ocr" as const,
+    confidence: 0.6,
+    boundingBox: review.boundingBox,
+    originalOcrText: text,
+    correctedText: null,
+    reviewStatus: "unreviewed" as const,
+    reviewedAt: null,
+    reviewedBy: null,
+    correctionHistory: [],
+    ocrRegions: [],
+    lowConfidenceCharacters: [],
+  };
+  const parseResult = {
+    fileHash: "a".repeat(64),
+    source,
+    pageCount: 1,
+    successfulPages: [1],
+    failedPages: [],
+    units: [unit],
+    ocrReviews: [review],
+    anchors: [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: "第一条",
+        paragraphIndex: 0,
+        quote: text,
+      },
+    ],
+    quality: {
+      totalCharacters: text.length,
+      parsedUnitCount: 1,
+      failedPageCount: 0,
+      lowTextPages: [1],
+      extractionCoverage: 1,
+      ocrFailedPages: [],
+      finalizationBlocked: false,
+    },
+  };
+  const ocrSession: WorkflowSession = {
+    ...session,
+    project: {
+      ...session.project,
+      workflowStep: "parsing",
+      sourceUnits: [source],
+      parsingCompleted: true,
+    },
+    parsedUnits: [unit],
+    parseResults: [parseResult],
+  };
+  render(
+    <WorkflowShell
+      initialSession={ocrSession}
+      repository={{ load: vi.fn(), save: vi.fn() }}
+    />,
+  );
+
+  expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+  await user.type(screen.getByLabelText("OCR复核人"), "复核员甲");
+  await user.click(screen.getByRole("button", { name: "保存纠错" }));
+  expect(await screen.findByText("已纠错")).toBeVisible();
+  expect(screen.getByRole("button", { name: "下一步" })).toBeEnabled();
 });
 
 it("automatically restores the latest valid session on production mount", async () => {

@@ -14,6 +14,7 @@ import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
 import { throwIfAborted } from "../../lib/abort";
 import { evidenceDigest } from "../evidence/evidence-hash";
 import type { ModelGateway } from "../model/model-gateway";
+import type { ParsedSourceUnit } from "../parsing/build-anchors";
 import {
   chunkDocument,
   type ChunkOptions,
@@ -787,6 +788,8 @@ export type AnalysisArtifacts = z.infer<typeof AnalysisArtifactsSchema>;
 
 export interface AnalysisInput {
   sourceUnits: readonly SourceUnit[];
+  /** Browser-derived locator evidence. It is prompt context, never model-authored authority. */
+  parsedUnits?: readonly ParsedSourceUnit[];
   gateway: ModelGateway;
   model: string;
   hasOfficialInterpretation: boolean;
@@ -869,7 +872,43 @@ const sha256 = async (value: string): Promise<string> => {
     .join("");
 };
 
-const serializeChunk = (chunk: DocumentChunk): object => ({
+const locatorForPrompt = (unit: ParsedSourceUnit): object => ({
+  sourceId: unit.sourceId,
+  sourceType: unit.sourceType,
+  page: unit.page,
+  article: unit.article,
+  paragraphIndex: unit.paragraphIndex,
+  text: unit.text,
+  extractionMethod: unit.extractionMethod,
+  confidence: unit.confidence,
+});
+
+const locatorsForChunk = (
+  chunk: DocumentChunk,
+  parsedUnits: readonly ParsedSourceUnit[],
+): ParsedSourceUnit[] => {
+  const chunkTextBySource = new Map<string, string>();
+  for (const unit of chunk.units) {
+    chunkTextBySource.set(
+      unit.sourceId,
+      `${chunkTextBySource.get(unit.sourceId) ?? ""}${unit.content}`,
+    );
+  }
+  return parsedUnits.filter((unit) => {
+    const chunkText = chunkTextBySource.get(unit.sourceId);
+    const locatorText = normalizedEvidenceText(unit.text);
+    return (
+      chunkText !== undefined &&
+      locatorText.length > 0 &&
+      normalizedEvidenceText(chunkText).includes(locatorText)
+    );
+  });
+};
+
+const serializeChunk = (
+  chunk: DocumentChunk,
+  parsedUnits: readonly ParsedSourceUnit[],
+): object => ({
   chunkId: chunk.chunkId,
   sourceType: chunk.sourceType,
   units: chunk.units.map((unit) => ({
@@ -881,6 +920,9 @@ const serializeChunk = (chunk: DocumentChunk): object => ({
     sourceEndOffset: unit.sourceEndOffset,
     content: unit.content,
   })),
+  authoritativeLocators: locatorsForChunk(chunk, parsedUnits).map(
+    locatorForPrompt,
+  ),
 });
 
 const nodesFor = (chunks: readonly DocumentChunk[]): AnalysisNode[] => {
@@ -975,6 +1017,7 @@ const normalizeOfficialPrimaryContext = (
 
 const executionPlanFingerprint = async (
   sources: readonly SourceUnit[],
+  parsedUnits: readonly ParsedSourceUnit[],
   policy: ChunkOptions,
   nodes: readonly AnalysisNode[],
   officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
@@ -1009,10 +1052,18 @@ const executionPlanFingerprint = async (
       ),
     })),
   );
+  const locatorManifest = await Promise.all(
+    parsedUnits.map(async (unit) => ({
+      ...locatorForPrompt(unit),
+      textHash: await sha256(unit.text),
+      text: undefined,
+    })),
+  );
   return sha256(
     canonicalJson({
       policy,
       sourceManifest,
+      locatorManifest,
       nodeManifest,
       officialPrimaryContext,
       reanalysisDirective: reanalysisDirective ?? null,
@@ -1220,6 +1271,26 @@ type AuthorizedSourceScope = ReadonlyMap<string, AuthorizedSourceEvidence>;
 
 const normalizedEvidenceText = (value: string): string =>
   value.normalize("NFKC").replace(/\s+/g, "").trim();
+
+const normalizeParsedUnits = (
+  parsedUnits: readonly ParsedSourceUnit[] | undefined,
+  sourceById: ReadonlyMap<string, SourceUnit>,
+): ParsedSourceUnit[] => {
+  if (!parsedUnits) return [];
+  return parsedUnits.map((unit) => {
+    const source = sourceById.get(unit.sourceId);
+    if (!source) throw new Error("解析定位引用了未提供的来源");
+    if (source.sourceType !== unit.sourceType)
+      throw new Error("解析定位与输入来源类型不一致");
+    const text = normalizedEvidenceText(unit.text);
+    if (
+      text.length > 0 &&
+      !normalizedEvidenceText(source.content).includes(text)
+    )
+      throw new Error("解析定位文本未在绑定来源中反向匹配");
+    return { ...unit };
+  });
+};
 
 const scopeForChunk = (
   chunk: DocumentChunk,
@@ -2489,6 +2560,7 @@ export async function runAnalysis(
   if (actualHasOfficial !== input.hasOfficialInterpretation) {
     throw new Error("官方解读存在标志与输入来源不一致");
   }
+  const parsedUnits = normalizeParsedUnits(input.parsedUnits, sourceById);
 
   const chunkOptions = resolveChunkPolicy(input.chunkOptions);
   const officialPrimaryContext = normalizeOfficialPrimaryContext(
@@ -2506,6 +2578,7 @@ export async function runAnalysis(
   );
   const inputFingerprint = await executionPlanFingerprint(
     input.sourceUnits,
+    parsedUnits,
     chunkOptions,
     nodes,
     officialPrimaryContext,
@@ -2555,7 +2628,7 @@ export async function runAnalysis(
       const messages = buildDocumentIdentityMessages(
         promptPayload(
           {
-            sourceChunk: serializeChunk(node.chunk),
+            sourceChunk: serializeChunk(node.chunk, parsedUnits),
             primaryRegulatoryFindings: primaryFindings,
           },
           reanalysisDirective,
@@ -2610,7 +2683,7 @@ export async function runAnalysis(
         signal,
         messages: buildAtomicClausesMessages(
           promptPayload(
-            { sourceChunk: serializeChunk(node.chunk) },
+            { sourceChunk: serializeChunk(node.chunk, parsedUnits) },
             reanalysisDirective,
           ),
         ),
@@ -2627,7 +2700,7 @@ export async function runAnalysis(
         messages: buildKeyMattersMessages(
           promptPayload(
             {
-              sourceChunk: serializeChunk(node.chunk),
+              sourceChunk: serializeChunk(node.chunk, parsedUnits),
               upstreamAtomicRequirements: checkpoint.atomicRequirements.filter(
                 (requirement) =>
                   requirement.sourceAnchors.length > 0 &&
@@ -2668,7 +2741,7 @@ export async function runAnalysis(
         messages: buildInstitutionImpactMessages(
           promptPayload(
             {
-              sourceChunk: serializeChunk(node.chunk),
+              sourceChunk: serializeChunk(node.chunk, parsedUnits),
               upstreamFindings,
             },
             reanalysisDirective,

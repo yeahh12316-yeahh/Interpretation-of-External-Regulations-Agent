@@ -13,6 +13,7 @@ import {
   type ModelGateway,
   type StructuredModelRequest,
 } from "../model/model-gateway";
+import type { ParsedSourceUnit } from "../parsing/build-anchors";
 import {
   AnalysisCheckpointSchema,
   AnalysisDraftSchema,
@@ -265,6 +266,73 @@ const completedImpactCheckpoint = async (): Promise<AnalysisCheckpoint> => {
 };
 
 describe("runAnalysis", () => {
+  it("sends browser-authoritative parsed locators with the matching source chunk", async () => {
+    const parsedUnit: ParsedSourceUnit = {
+      sourceId: regulatorySource.sourceId,
+      sourceType: regulatorySource.sourceType,
+      page: 7,
+      article: "第一条",
+      paragraphIndex: 3,
+      text: regulatorySource.content,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const gateway = new RecordingGateway(emptyResponse);
+
+    await runAnalysis({
+      sourceUnits: [regulatorySource],
+      parsedUnits: [parsedUnit],
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+    });
+
+    const atomicRequest = gateway.requests.find(
+      ({ schemaName }) => schemaName === "analysis_atomic_clauses_v1",
+    );
+    const userMessage = atomicRequest?.messages.at(-1)?.content ?? "";
+    const payload = JSON.parse(
+      userMessage.slice(userMessage.indexOf("\n") + 1),
+    ) as {
+      sourceChunk?: { authoritativeLocators?: unknown[] };
+    };
+    expect(payload.sourceChunk?.authoritativeLocators).toEqual([
+      {
+        sourceId: "REG-1",
+        sourceType: "regulatory_text",
+        page: 7,
+        article: "第一条",
+        paragraphIndex: 3,
+        text: regulatorySource.content,
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ]);
+  });
+
+  it("rejects parsed locator evidence that is not bound to an input source", async () => {
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource],
+        parsedUnits: [
+          {
+            sourceId: "REG-OTHER",
+            sourceType: "regulatory_text",
+            page: 1,
+            article: null,
+            paragraphIndex: 0,
+            text: regulatorySource.content,
+            extractionMethod: "text_layer",
+            confidence: 1,
+          },
+        ],
+        gateway: new RecordingGateway(emptyResponse),
+        model: "user-model",
+        hasOfficialInterpretation: false,
+      }),
+    ).rejects.toThrow(/解析定位.*来源/);
+  });
+
   it("accepts the closed institution impact dimension and emits its exact category", async () => {
     const gateway = new RecordingGateway((request) => {
       if (request.schemaName === "analysis_institution_impact_v1") {

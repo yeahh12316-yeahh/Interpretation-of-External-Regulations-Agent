@@ -1,3 +1,4 @@
+import { brotliCompressSync, gzipSync } from "node:zlib";
 import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
@@ -80,6 +81,121 @@ describe("build secret scanner", () => {
     await symlink(outside, path.join(root, "dist", "linked.txt"));
     await expect(scanDirectory(path.join(root, "dist"))).rejects.toThrow(
       /symbolic links are not allowed/u,
+    );
+  });
+
+  it("fails closed before reading an oversized file or aggregate", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-bounds-scan-"));
+    await writeFile(path.join(root, "one.bin"), Buffer.alloc(6));
+    await expect(
+      scanDirectory(root, { maxFileBytes: 5, maxTotalBytes: 100 }),
+    ).rejects.toThrow(/file size limit/u);
+
+    await writeFile(path.join(root, "one.bin"), Buffer.alloc(5));
+    await writeFile(path.join(root, "two.bin"), Buffer.alloc(5));
+    await expect(
+      scanDirectory(root, { maxFileBytes: 10, maxTotalBytes: 9 }),
+    ).rejects.toThrow(/total size limit/u);
+  });
+
+  it("detects nested generic model responses even when gzip-compressed", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-response-scan-"));
+    await mkdir(path.join(root, "assets", "cache"), { recursive: true });
+    const response = JSON.stringify({
+      envelope: {
+        result: {
+          choices: [
+            { message: { content: "model-authored fixture response" } },
+          ],
+        },
+      },
+    });
+    await writeFile(
+      path.join(root, "assets", "cache", "payload.json.gz"),
+      gzipSync(response),
+    );
+
+    await expect(scanDirectory(root)).resolves.toEqual([
+      {
+        file: "assets/cache/payload.json.gz",
+        line: 1,
+        type: "test-response-content",
+      },
+    ]);
+  });
+
+  it("detects nested uploaded source records without relying on names", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-upload-scan-"));
+    await writeFile(
+      path.join(root, "state.json"),
+      JSON.stringify({
+        cache: {
+          source: {
+            sourceType: "regulatory_text",
+            fileName: "customer-regulation.pdf",
+            fileHash: "a".repeat(64),
+            content: "private uploaded body",
+          },
+        },
+      }),
+    );
+    await expect(scanDirectory(root)).resolves.toEqual([
+      {
+        file: "state.json",
+        line: 1,
+        type: "uploaded-sample-content",
+      },
+    ]);
+  });
+
+  it("detects Brotli-compressed generic responses and UTF-16LE secrets", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-encoding-scan-"));
+    const response = JSON.stringify({
+      nested: {
+        choices: [{ message: { content: "compressed response" } }],
+      },
+    });
+    await writeFile(
+      path.join(root, "response.json.br"),
+      brotliCompressSync(response),
+    );
+    await writeFile(
+      path.join(root, "credential.bin"),
+      Buffer.from(`\ufeffsk-utf16le-secret`, "utf16le"),
+    );
+    await expect(scanDirectory(root)).resolves.toEqual([
+      {
+        file: "credential.bin",
+        line: 1,
+        type: "api-key-pattern",
+      },
+      {
+        file: "response.json.br",
+        line: 1,
+        type: "test-response-content",
+      },
+    ]);
+  });
+
+  it("fails closed on an unsupported compressed container", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-container-scan-"));
+    await writeFile(
+      path.join(root, "opaque.zip"),
+      Buffer.from([0x50, 0x4b, 0x03, 0x04, 0, 0, 0, 0]),
+    );
+    await expect(scanDirectory(root)).rejects.toThrow(
+      /unsupported compressed build artifact/u,
+    );
+  });
+
+  it("does not treat an arbitrary traineddata suffix as an opaque allowlist", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-opaque-scan-"));
+    await writeFile(
+      path.join(root, "untrusted.traineddata.gz"),
+      Buffer.from("not gzip"),
+    );
+    await expect(scanDirectory(root)).rejects.toThrow(
+      /gzip build artifact is invalid/u,
     );
   });
 });

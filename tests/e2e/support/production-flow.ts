@@ -1,6 +1,6 @@
 import { inflateRawSync } from "node:zlib";
 
-import { expect, type Page } from "@playwright/test";
+import { expect, type FilePayload, type Page } from "@playwright/test";
 import { getDocument } from "pdfjs-dist/legacy/build/pdf.mjs";
 
 export const SYNTHETIC_REGULATORY_TEXT = [
@@ -37,32 +37,54 @@ export const QUICK_REPORT_HEADINGS = [
 ] as const;
 
 const parsedChunk = (payload: string) => {
-  const sourceType = payload.match(
-    /"sourceChunk":\{"chunkId":"[^"]+","sourceType":"(regulatory_text|official_interpretation)"/u,
-  )?.[1];
-  const sourceId = payload.match(
-    /"sourceChunk":\{.*?"units":\[\{"sourceId":"([^"]+)"/u,
-  )?.[1];
+  const parsed = JSON.parse(payload.slice(payload.indexOf("\n") + 1)) as {
+    sourceChunk?: {
+      sourceType?: "regulatory_text" | "official_interpretation";
+      units?: Array<{ sourceId?: string }>;
+      authoritativeLocators?: Array<{
+        sourceId: string;
+        sourceType: "regulatory_text" | "official_interpretation";
+        page: number | null;
+        article: string | null;
+        paragraphIndex: number;
+        text: string;
+      }>;
+    };
+  };
+  const sourceType = parsed.sourceChunk?.sourceType;
+  const sourceId = parsed.sourceChunk?.units?.[0]?.sourceId;
   if (!sourceId || !sourceType)
     throw new Error(
       "production analysis request omitted source chunk identity",
     );
-  return { sourceId, sourceType } as const;
+  const authoritativeLocators = parsed.sourceChunk?.authoritativeLocators ?? [];
+  return { sourceId, sourceType, authoritativeLocators } as const;
 };
 
 const anchor = (
   sourceId: string,
-  paragraphIndex: number,
-  article: string,
   quote: string,
-) => ({
-  sourceId,
-  sourceType: "regulatory_text" as const,
-  page: null,
-  article,
-  paragraphIndex,
-  quote,
-});
+  authoritativeLocators: ReturnType<
+    typeof parsedChunk
+  >["authoritativeLocators"],
+) => {
+  const locator = authoritativeLocators.find(
+    (candidate) =>
+      candidate.sourceId === sourceId && candidate.text.includes(quote),
+  );
+  if (!locator)
+    throw new Error(
+      "production analysis request omitted authoritative locator",
+    );
+  return {
+    sourceId,
+    sourceType: "regulatory_text" as const,
+    page: locator.page,
+    article: locator.article,
+    paragraphIndex: locator.paragraphIndex,
+    quote,
+  };
+};
 
 export const installSuccessfulModelRoute = async (
   page: Page,
@@ -82,12 +104,11 @@ export const installSuccessfulModelRoute = async (
       parsedChunk(payload);
       output = { findings: [], conflicts: [] };
     } else if (schemaName === "analysis_atomic_clauses_v1") {
-      const { sourceId } = parsedChunk(payload);
+      const { sourceId, authoritativeLocators } = parsedChunk(payload);
       const sourceAnchor = anchor(
         sourceId,
-        0,
-        "第一条",
         "第一条 示例银行应当建立管理机制。",
+        authoritativeLocators,
       );
       output = {
         findings: [
@@ -125,7 +146,7 @@ export const installSuccessfulModelRoute = async (
         ],
       };
     } else if (schemaName === "analysis_key_matters_v1") {
-      const { sourceId } = parsedChunk(payload);
+      const { sourceId, authoritativeLocators } = parsedChunk(payload);
       const definitions = [
         [
           "K1",
@@ -151,12 +172,12 @@ export const installSuccessfulModelRoute = async (
       ] as const;
       output = {
         findings: definitions.map(
-          ([findingId, category, paragraphIndex, article, quote]) => ({
+          ([findingId, category, _paragraphIndex, _article, quote]) => ({
             findingId,
             category,
             statement: quote,
             claimType: "regulatory_fact",
-            sourceAnchors: [anchor(sourceId, paragraphIndex, article, quote)],
+            sourceAnchors: [anchor(sourceId, quote, authoritativeLocators)],
             inferenceParents: [],
             reviewStatus: "unreviewed",
             requiredReview: false,
@@ -183,33 +204,69 @@ export const uploadAndAnalyze = async (
   apiKey = "synthetic-session-key",
   baseUrl = "https://model.example/v1",
   rememberEndpointAndModel = false,
+  options: {
+    readonly navigate?: boolean;
+    readonly regulatoryFile?: FilePayload;
+    readonly officialFile?: FilePayload;
+  } = {},
 ): Promise<void> => {
-  await page.goto("/");
-  await page.getByLabel("选择监管文件").setInputFiles({
-    name: "合成监管办法.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from(SYNTHETIC_REGULATORY_TEXT, "utf8"),
+  if (options.navigate !== false) await page.goto("./");
+  await page.getByLabel("选择监管文件").setInputFiles(
+    options.regulatoryFile ?? {
+      name: "合成监管办法.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(SYNTHETIC_REGULATORY_TEXT, "utf8"),
+    },
+  );
+  const regulatoryUpload = page.getByRole("region", {
+    name: "监管文件上传",
   });
   await expect(
-    page.getByRole("status").filter({ hasText: "解析完成" }).last(),
+    regulatoryUpload.getByRole("status").filter({ hasText: "解析完成" }),
   ).toBeVisible();
-  await page.getByLabel("选择官方解读").setInputFiles({
-    name: "合成官方解读.txt",
-    mimeType: "text/plain",
-    buffer: Buffer.from(SYNTHETIC_OFFICIAL_TEXT, "utf8"),
+  await page.getByLabel("选择官方解读").setInputFiles(
+    options.officialFile ?? {
+      name: "合成官方解读.txt",
+      mimeType: "text/plain",
+      buffer: Buffer.from(SYNTHETIC_OFFICIAL_TEXT, "utf8"),
+    },
+  );
+  const officialUpload = page.getByRole("region", {
+    name: "官方解读上传",
   });
+  await expect(officialUpload).toContainText(
+    options.officialFile?.name ?? "合成官方解读.txt",
+  );
   await expect(
-    page.getByRole("status").filter({ hasText: "解析完成" }).last(),
+    officialUpload.getByRole("status").filter({ hasText: "解析完成" }),
   ).toBeVisible();
+  await expect(officialUpload).toHaveAttribute(
+    "data-finalization-ready",
+    "true",
+  );
   await page.getByRole("button", { name: "模型接口设置" }).click();
   const settings = page.getByRole("dialog", { name: "模型接口设置" });
   await settings.getByLabel("Base URL").fill(baseUrl);
   await settings.getByLabel("API Key").fill(apiKey);
   await settings.getByLabel("模型", { exact: true }).fill("synthetic-model");
   if (rememberEndpointAndModel)
-    await settings.getByRole("checkbox", { name: "记住接口地址和模型" }).check();
+    await settings
+      .getByRole("checkbox", { name: "记住接口地址和模型" })
+      .check();
   await settings.getByRole("button", { name: "保存设置" }).click();
   await page.getByRole("button", { name: "下一步" }).click();
+  const ocrReviews = page.getByRole("region", { name: /页 OCR 审阅/u });
+  const ocrReviewCount = await ocrReviews.count();
+  if (ocrReviewCount > 0) {
+    await page.getByLabel("OCR复核人").fill("合成流程复核人");
+    for (let index = 0; index < ocrReviewCount; index += 1) {
+      const review = ocrReviews.nth(index);
+      await expect(review.getByText("待审阅")).toBeVisible();
+      await review.getByRole("button", { name: "保存纠错" }).click();
+      await expect(review.getByText("已纠错")).toBeVisible();
+    }
+    await expect(page.getByRole("button", { name: "下一步" })).toBeEnabled();
+  }
   await page.getByRole("button", { name: "下一步" }).click();
   await page.getByRole("button", { name: "开始监管分析" }).click();
   const consent = page.getByRole("dialog", { name: /第三方模型数据流/u });
@@ -448,6 +505,12 @@ export const assertReportStructure = (
         report.archiveEntries.get("word/document.xml")!.toString("utf8"),
       )
     : pdfTopChangesCount(report.text);
-  expect(topChanges, "top_changes must contain 3–5 structural list items").toBeGreaterThanOrEqual(3);
-  expect(topChanges, "top_changes must contain 3–5 structural list items").toBeLessThanOrEqual(5);
+  expect(
+    topChanges,
+    "top_changes must contain 3–5 structural list items",
+  ).toBeGreaterThanOrEqual(3);
+  expect(
+    topChanges,
+    "top_changes must contain 3–5 structural list items",
+  ).toBeLessThanOrEqual(5);
 };

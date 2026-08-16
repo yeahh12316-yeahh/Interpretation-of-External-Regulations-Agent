@@ -36,7 +36,10 @@
 ## 发布与导出防泄漏
 
 - CI 不接受或注入共享模型凭证，GitHub workflow 权限固定为 `contents: read`；
-- 构建后递归扫描 `dist/` 的文本和二进制字节，缺目录、符号链接或发现凭证模式均失败；
+- GitHub Actions 均固定到上游已核验的完整 commit SHA，checkout 禁止持久化凭证；
+- 构建后递归扫描 `dist/` 的文本和二进制字节，缺目录、符号链接、单文件/总量越界、嵌套上传记录、压缩模型响应或凭证模式均失败；Vercel build command 本身也串联该扫描；
+- scanner 有界展开 gzip/Brotli 静态文本与 JSON，并检查 UTF-8/带 BOM 的 UTF-16LE；ZIP/RAR/7z/TAR/XZ/BZip2/CAB 等未支持容器直接 fail-closed。唯一不展开的 gzip 是固定路径下的版本化 Tesseract `*.traineddata.gz` 公共运行时资产，它仍受锁文件与原始字节扫描约束；
+- CSP 禁止 framing/object/base 注入，worker 仅允许同源或 blob，字体/图片限定为业务所需来源；`connect-src 'self' https:` 是支持用户任意 HTTPS BYOK 服务商的必要边界，不表示平台替用户信任任意服务商；
 - source/dist/artifacts 扫描覆盖 DOCX ZIP 内容、PDF 原始字节与抽取文本；
 - 生产冒烟只使用合成材料、合成会话凭证和浏览器 route 拦截，不调用真实模型账户；
 - 正式 Deloitte 标识只有在取得授权资产和用途授权后才能进入产品，当前构建不包含标识图片。

@@ -41,6 +41,7 @@ import {
 } from "../features/model/model-gateway";
 import { sessionCredentials } from "../features/model/session-credentials";
 import type { ParseResult } from "../features/parsing/parse-document";
+import { OcrReview } from "../features/parsing/OcrReview";
 import { ReviewPage } from "../features/review/ReviewPage";
 import { ReportPage } from "../features/reports/ReportPage";
 import { canPreviewReportDraft } from "../features/reports/report-model";
@@ -149,6 +150,7 @@ export function WorkflowShell({
     text: string;
   } | null>(null);
   const [running, setRunning] = useState(false);
+  const [ocrReviewer, setOcrReviewer] = useState("");
   const [progress, setProgress] = useState<{
     stage: string;
     completed: number;
@@ -396,9 +398,15 @@ export function WorkflowShell({
             request.sourceIds.includes(sourceId),
           )
         : startingSession.project.sourceUnits;
+      const selectedSourceIds = new Set(
+        sourceUnits.map(({ sourceId }) => sourceId),
+      );
       const draft = await runAnalysisImpl(
         {
           sourceUnits,
+          parsedUnits: startingSession.parsedUnits.filter(({ sourceId }) =>
+            selectedSourceIds.has(sourceId),
+          ),
           gateway: createModelGateway(
             {
               ...DEFAULT_MODEL_CONFIG,
@@ -572,6 +580,16 @@ export function WorkflowShell({
   ) : session.project.workflowStep === "parsing" ? (
     <section>
       <h1>解析与OCR</h1>
+      {session.parseResults.some(({ ocrReviews }) => ocrReviews.length > 0) ? (
+        <label>
+          OCR复核人
+          <input
+            aria-label="OCR复核人"
+            value={ocrReviewer}
+            onChange={(event) => setOcrReviewer(event.target.value)}
+          />
+        </label>
+      ) : null}
       {session.parseResults.map((result) => (
         <article key={result.source.sourceId}>
           <h2>{result.source.title}</h2>
@@ -583,6 +601,16 @@ export function WorkflowShell({
           <p>
             解析段落 {result.units.length}；失败页 {result.failedPages.length}
           </p>
+          {result.ocrReviews.map((review) => (
+            <OcrReview
+              key={review.unitId}
+              result={result}
+              reviewId={review.unitId}
+              reviewer={ocrReviewer}
+              onHydrate={handleParsed}
+              onChange={handleParsed}
+            />
+          ))}
         </article>
       ))}
       {!ready ? (

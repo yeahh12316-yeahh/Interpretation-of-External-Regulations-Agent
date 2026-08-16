@@ -31,7 +31,7 @@ pnpm scan:secrets -- --root src --root scripts --root dist --root artifacts
 
 ## 部署与隐私
 
-- [部署说明](docs/deployment.md)：推荐 Vercel 连接私有 GitHub 仓库，发布公开静态站点；GitHub Pages 仅作为套餐条件允许时的备选。
+- [部署说明](docs/deployment.md)：推荐 Vercel 连接私有 GitHub 仓库，发布公开静态站点；GitHub Pages 通常公开，符合条件的 GitHub Enterprise Cloud 组织项目站点可配置私有可见性。
 - [隐私说明](docs/privacy.md)：说明本地存储、用户自带模型接口和第三方数据流边界。
 
 ## 品牌授权
