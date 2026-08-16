@@ -203,6 +203,30 @@ describe("build secret scanner", () => {
     await expect(scanDirectory(root)).rejects.toThrow(/too large|expand/u);
   });
 
+  it("inspects a 9,437,277-byte renamed Brotli structured response", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-large-brotli-"));
+    const response = brotliCompressSync(
+      JSON.stringify({
+        choices: [{ message: { content: "renamed large model response" } }],
+      }),
+    );
+    const exactSize = 9_437_277;
+    const renamed = Buffer.concat([
+      response,
+      Buffer.alloc(exactSize - response.length),
+    ]);
+    expect(renamed).toHaveLength(exactSize);
+    await writeFile(path.join(root, "opaque.bin"), renamed);
+
+    await expect(scanDirectory(root)).resolves.toEqual([
+      {
+        file: "opaque.bin",
+        line: 1,
+        type: "test-response-content",
+      },
+    ]);
+  });
+
   it("detects nested uploaded source records without relying on names", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "build-upload-scan-"));
     await writeFile(

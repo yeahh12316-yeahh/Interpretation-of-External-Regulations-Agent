@@ -53,7 +53,7 @@ export function canonicalArticlesForUnits(
 ): Array<string | null> {
   const articleBySource = new Map<string, string>();
   return units.map((unit) => {
-    const detectedArticle = unit.article ?? articleFromText(unit.text);
+    const detectedArticle = articleFromText(unit.text);
     if (detectedArticle) articleBySource.set(unit.sourceId, detectedArticle);
     return detectedArticle ?? articleBySource.get(unit.sourceId) ?? null;
   });

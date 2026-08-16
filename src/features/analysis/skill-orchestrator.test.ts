@@ -595,6 +595,51 @@ describe("runAnalysis", () => {
     ).rejects.toThrow(/定位|授权/u);
   });
 
+  it("does not send a self-reported parsed article absent from authoritative text", async () => {
+    const source: SourceUnit = {
+      sourceId: "REG-UNTRUSTED-ARTICLE",
+      sourceType: "regulatory_text",
+      title: "合成伪条款定位",
+      content: "前言。\n\n银行应当保存记录。",
+    };
+    const parsedUnits: ParsedSourceUnit[] = [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: "第九十九条",
+        paragraphIndex: 0,
+        text: "前言。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 1,
+        text: "银行应当保存记录。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const gateway = new RecordingGateway(emptyResponse);
+
+    await runAnalysis({
+      sourceUnits: [source],
+      parsedUnits,
+      gateway,
+      model: "user-model",
+      hasOfficialInterpretation: false,
+    });
+
+    const serializedRequests = gateway.requests
+      .flatMap(({ messages }) => messages.map(({ content }) => content))
+      .join("\n");
+    expect(serializedRequests).not.toContain("第九十九条");
+  });
+
   it("accepts the closed institution impact dimension and emits its exact category", async () => {
     const gateway = new RecordingGateway((request) => {
       if (request.schemaName === "analysis_institution_impact_v1") {

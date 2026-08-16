@@ -407,14 +407,14 @@ describe("EvidencePanel", () => {
     };
     const maliciousUnit: ParsedSourceUnit = {
       ...parsedUnits[0],
-      text: malicious,
+      text: `第七条 ${malicious}`,
     };
 
     const { container } = render(
       <EvidencePanel
         selectedFindingId="XSS"
         findings={[maliciousFinding]}
-        sources={[{ ...sources[0], content: malicious }]}
+        sources={[{ ...sources[0], content: `第七条 ${malicious}` }]}
         parsedUnits={[maliciousUnit]}
       />,
     );

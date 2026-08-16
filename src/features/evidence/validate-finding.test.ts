@@ -23,7 +23,7 @@ const sources: SourceUnit[] = [
     sourceType: "regulatory_text",
     title: "合成监管办法.txt",
     content:
-      "第八条 机构不得在2026年12月31日前收取超过10%的费用。\n\n重复条款。",
+      "第八条 机构不得在2026年12月31日前收取超过10%的费用。\n\n第十七条 重复条款。\n\n第十八条 重复条款。",
   },
   {
     sourceId: "OFF-1",
@@ -50,7 +50,7 @@ const parsedUnits: ParsedSourceUnit[] = [
     page: 17,
     article: "第十七条",
     paragraphIndex: 0,
-    text: "重复条款。",
+    text: "第十七条 重复条款。",
     extractionMethod: "text_layer",
     confidence: 1,
   },
@@ -60,7 +60,7 @@ const parsedUnits: ParsedSourceUnit[] = [
     page: 18,
     article: "第十八条",
     paragraphIndex: 0,
-    text: "重复条款。",
+    text: "第十八条 重复条款。",
     extractionMethod: "text_layer",
     confidence: 1,
   },
@@ -1383,6 +1383,50 @@ describe("validateFinding", () => {
     expect(findIndexedParsedUnitForAnchor(anchor, index)?.unit).toBe(units[1]);
     expect(
       findIndexedParsedUnitForAnchor({ ...anchor, article: null }, index),
+    ).toBeUndefined();
+  });
+
+  test("does not authorize a parsed unit article absent from its text", () => {
+    const source: SourceUnit = {
+      sourceId: "REG-UNTRUSTED-ARTICLE",
+      sourceType: "regulatory_text",
+      title: "合成伪条款定位.txt",
+      content: "前言。\n\n银行应当保存记录。",
+    };
+    const units: ParsedSourceUnit[] = [
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: "第九十九条",
+        paragraphIndex: 0,
+        text: "前言。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+      {
+        sourceId: source.sourceId,
+        sourceType: source.sourceType,
+        page: 1,
+        article: null,
+        paragraphIndex: 1,
+        text: "银行应当保存记录。",
+        extractionMethod: "text_layer",
+        confidence: 1,
+      },
+    ];
+    const index = createSourceIndex({ sources: [source], parsedUnits: units });
+    const fabricatedAnchor = {
+      sourceId: source.sourceId,
+      sourceType: source.sourceType,
+      page: 1,
+      article: "第九十九条",
+      paragraphIndex: 1,
+      quote: units[1].text,
+    };
+
+    expect(
+      findIndexedParsedUnitForAnchor(fabricatedAnchor, index),
     ).toBeUndefined();
   });
 });

@@ -183,20 +183,18 @@ const expandedArtifacts = (file, bytes) => {
       nextFile = currentFile.replace(/\.gz$/iu, "");
     } else {
       const declaredBrotli = /\.br$/iu.test(currentFile);
-      if (declaredBrotli || currentBytes.length <= MAX_EXPANDED_JSON_BYTES) {
-        try {
-          nextBytes = brotliDecompressSync(currentBytes, {
-            maxOutputLength: MAX_EXPANDED_JSON_BYTES,
-          });
-          nextFile = currentFile.replace(/\.br$/iu, "");
-        } catch (error) {
-          if (isExpansionLimitError(error))
-            throw new Error(`Brotli build artifact expands too large: ${file}`);
-          if (declaredBrotli)
-            throw new Error(
-              `Brotli build artifact is invalid or too large: ${file}`,
-            );
-        }
+      try {
+        nextBytes = brotliDecompressSync(currentBytes, {
+          maxOutputLength: MAX_EXPANDED_JSON_BYTES,
+        });
+        nextFile = currentFile.replace(/\.br$/iu, "");
+      } catch (error) {
+        if (isExpansionLimitError(error))
+          throw new Error(`Brotli build artifact expands too large: ${file}`);
+        if (declaredBrotli)
+          throw new Error(
+            `Brotli build artifact is invalid or too large: ${file}`,
+          );
       }
     }
     if (!nextBytes) return artifacts;

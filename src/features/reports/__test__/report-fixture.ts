@@ -20,6 +20,10 @@ const regulatoryClauses = [
   "本办法适用于境内金融机构",
 ];
 
+const regulatoryUnitTexts = regulatoryClauses.map(
+  (text, paragraphIndex) => `第${paragraphIndex + 1}条 ${text}`,
+);
+
 const finding = (
   findingId: string,
   category: string,
@@ -54,15 +58,15 @@ export const reviewedReportSession = (): WorkflowSession => {
     sourceId: "REG-A",
     sourceType: "regulatory_text" as const,
     title: "监管办法",
-    content: regulatoryClauses.join("\n\n"),
+    content: regulatoryUnitTexts.join("\n\n"),
   };
   const officialSource = {
     sourceId: "OFF-A",
     sourceType: "official_interpretation" as const,
     title: "监管办法官方解读",
-    content: "官方解读说明本办法旨在完善机构治理",
+    content: "第一条 官方解读说明本办法旨在完善机构治理",
   };
-  const regulatoryUnits = regulatoryClauses.map((text, paragraphIndex) => ({
+  const regulatoryUnits = regulatoryUnitTexts.map((text, paragraphIndex) => ({
     unitId: `REG-U${paragraphIndex + 1}`,
     sourceId: "REG-A",
     sourceType: "regulatory_text" as const,
@@ -78,7 +82,7 @@ export const reviewedReportSession = (): WorkflowSession => {
     sourceId: "OFF-A",
     sourceType: "official_interpretation" as const,
     page: null,
-    article: "解读第一段",
+    article: "第一条",
     paragraphIndex: 0,
     text: officialSource.content,
     extractionMethod: "plain_text" as const,
@@ -120,16 +124,16 @@ export const reviewedReportSession = (): WorkflowSession => {
     {
       findingId: "F-OFFICIAL",
       category: "official_context:policy_background",
-      statement: officialSource.content,
+      statement: "官方解读说明本办法旨在完善机构治理",
       claimType: "official_explanation",
       sourceAnchors: [
         {
           sourceId: "OFF-A",
           sourceType: "official_interpretation",
           page: null,
-          article: "解读第一段",
+          article: "第一条",
           paragraphIndex: 0,
-          quote: officialSource.content,
+          quote: "官方解读说明本办法旨在完善机构治理",
         },
       ],
       inferenceParents: ["F-BG"],

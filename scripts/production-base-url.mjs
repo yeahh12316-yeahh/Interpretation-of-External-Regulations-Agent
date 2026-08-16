@@ -103,8 +103,13 @@ const GLOBAL_IETF_PROTOCOL_IPV6 = [
   ["2001:30::", 28],
 ];
 
+const IANA_GLOBALLY_REACHABLE_IPV6_SPECIAL = [["64:ff9b::", 96]];
+
 const isGlobalIpv6 = (address) =>
-  ipv6InCidr(address, "2000::", 3) &&
+  (ipv6InCidr(address, "2000::", 3) ||
+    IANA_GLOBALLY_REACHABLE_IPV6_SPECIAL.some(([base, prefix]) =>
+      ipv6InCidr(address, base, prefix),
+    )) &&
   (!ipv6InCidr(address, "2001::", 23) ||
     GLOBAL_IETF_PROTOCOL_IPV6.some(([base, prefix]) =>
       ipv6InCidr(address, base, prefix),

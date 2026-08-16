@@ -767,4 +767,34 @@ describe("page failures and stable anchors", () => {
       },
     ]);
   });
+
+  test("does not trust a parsed unit article that is absent from its text", () => {
+    const units = [
+      {
+        sourceId: "SRC-regulatory_text-untrusted",
+        sourceType: "regulatory_text" as const,
+        page: 1,
+        article: "第九十九条",
+        paragraphIndex: 0,
+        text: "前言。",
+        extractionMethod: "text_layer" as const,
+        confidence: 1,
+      },
+      {
+        sourceId: "SRC-regulatory_text-untrusted",
+        sourceType: "regulatory_text" as const,
+        page: 1,
+        article: null,
+        paragraphIndex: 1,
+        text: "银行应当保存记录。",
+        extractionMethod: "text_layer" as const,
+        confidence: 1,
+      },
+    ];
+
+    expect(buildAnchors(units).map(({ article }) => article)).toEqual([
+      null,
+      null,
+    ]);
+  });
 });
