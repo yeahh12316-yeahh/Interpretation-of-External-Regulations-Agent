@@ -553,6 +553,186 @@ exit_code: 0
 
 ---
 
+# Task 11 fix round 4/5（2026-08-16）
+
+Base：`a47cad0a9668053dffaf3de6c2d889da6ff8e220`
+
+## 修复结果
+
+### Descriptor-bound fixture provenance
+
+- manifest、expected、actual、每个 source、attachment、scan ground-truth
+  统一通过安全 descriptor 打开并从同一 fd buffer 解析。最终路径 symlink
+  使用 `O_NOFOLLOW`（平台提供时）及逐段 `lstat` 双重拒绝，随后执行
+  `realpath` benchmark-root containment。
+- open 后先 `fstat` 并拒绝 non-regular file、hardlink (`nlink !== 1`) 与
+  超限文件；读取前后精确比较 dev、ino、size、mtime、ctime。读取前后还将
+  path `lstat` identity 与已打开 fd 对齐，因此 rename/replace 不会使校验与
+  实际解析落在两个不同文件上。
+- SHA-256、size、JSON/content 均来自该 fd 的单一 buffer，不再 canonical
+  check 后按 path 二次打开；scan GT 也不再在 sample 校验后第三次打开。
+- 所有独立 artifacts 以 `dev+ino` 登记唯一身份。macOS 当前使用该强身份；
+  若平台不给可用 inode，fail-closed fallback 使用 content SHA-256+size，
+  并在冲突错误中保留两个 artifact roles。expected/actual 必须独立。
+- client-side SHA/size 仍只是 fixture consistency/provenance gate，不是发布者
+  身份认证或数字签名。
+
+### Strict bounded DOCX ZIP reader
+
+- scanner 在 `readFile` 前 `stat` 并限制整个输入；读后再次核对 buffer size。
+  DOCX raw bytes 仅产生一个 latin1 surface，各 entry 只产生一个 UTF-8
+  surface，不再先复制 raw latin1+UTF-8 两份。
+- 单一严格 reader 同时供 benchmark DOCX 和 secret scanner 使用，限额包括：
+  64 MiB whole file、256 entries、16 MiB single compressed、32 MiB total
+  compressed、32 MiB single uncompressed、128 MiB total uncompressed、200:1
+  ratio。所有长度累加和边界计算先检查 safe/bounded arithmetic。
+- reader 从合法 EOCD 定位 central directory，拒绝 multi-disk/ZIP64；逐项严格
+  对齐 local 与 central 的 flags、method、name、CRC、compressed/uncompressed
+  size 及 central 声明的 local offset。拒绝 encryption、data descriptor、
+  unsupported flags/method、duplicate names、truncation、overlap/gap、隐藏 local
+  records、越界和不完整 directory。
+- 全部 local ranges、metadata、entry/count/ratio/size 限额在 inflate 前完成；
+  deflate 使用 `maxOutputLength`，之后核对实际长度并计算 CRC32，与 local 和
+  central 的相同 declared CRC 比较。任何损坏都受控 throw；scanner CLI 捕获后
+  输出 `SECRET SCAN ERROR` 并 exit 1，不会静默产生空 findings/PASS。
+
+## RED evidence
+
+Descriptor identity/TOCTOU RED：
+
+```text
+Command: vitest run src/evaluation/benchmark-input.test.ts
+Test Files  1 failed (1)
+Tests       2 failed | 9 passed (11)
+Failures:
+- hard-linked expected file used as actual resolved a validated bundle
+- stable descriptor snapshot assertion did not exist
+exit_code: 1
+```
+
+ZIP integrity/bounds RED：
+
+```text
+Command: vitest run scripts/scan-secrets.test.ts
+Test Files  1 failed (1)
+Tests       2 failed | 5 passed (7)
+Failures:
+- CRC-zero/corrupt/local-central mismatch/truncated/unsafe archives could resolve []
+- a sparse 70 MiB DOCX was read and resolved [] instead of failing the input cap
+exit_code: 1
+```
+
+受控 CLI RED：
+
+```text
+Command: vitest run scripts/scan-secrets.test.ts -t 'controlled CLI'
+Test Files  1 failed (1)
+Tests       1 failed | 7 skipped (8)
+Observed: exit 1 with an unhandled stack, but no required SECRET SCAN ERROR prefix
+exit_code: 1
+```
+
+将 local range validation 前移到 inflate 前的首轮回归暴露一个局部变量作用域
+错误：合法 directory entry `word/` 被误报 corrupt，focused 11 项失败。根因是
+第二阶段错误引用了前一循环的 method/size；改为从当前 central entry 解构后，
+同一 focused batch 恢复通过。该错误只发生一次，不是 reviewer hardlink/ZIP
+根因的重复失败。
+
+## Focused GREEN
+
+```text
+Command: vitest run \
+  src/evaluation/benchmark-input.test.ts \
+  scripts/scan-secrets.test.ts \
+  src/evaluation/evaluate-findings.test.ts
+
+Test Files  3 passed (3)
+Tests       30 passed (30)
+exit_code: 0
+```
+
+覆盖 hardlink expected-as-actual、source hardlink reuse、symlink、模拟 inode/
+size/mtime/ctime 变化、独立合法 corpus；以及 CRC zero、corrupt deflate、local/
+central name/CRC/size/offset mismatch、ZIP64、unsupported method/flags、encrypted、
+data descriptor、duplicate、truncated、overlap、single/total compressed、single/
+total uncompressed、ratio、entry flood、whole-file cap 和合法 Packer DOCX。
+
+## Fresh benchmark gates
+
+Passing fixture：
+
+```text
+RELEASE GATE: PASS
+重大事项 precision=100.00%, recall=100.00%
+原子要求 precision=100.00%, recall=100.00%
+事实引用 5/5 (100.00%)
+OCR errors=0, expectedCharacters=51, accuracy=100.00%
+exit_code: 0
+```
+
+Deliberate failing fixture：
+
+```text
+RELEASE GATE: FAIL
+重大事项 recall=75.00%
+原子要求 precision=0.00%, recall=0.00%
+事实引用 4/5 (80.00%)
+OCR accuracy=98.04%
+重大遗漏 EXP-TRANSITION；未标记推导 BAD-UNMARKED-IMPACT
+exit_code: 1
+```
+
+## Fresh full gates
+
+```text
+Command: vitest run --reporter=dot
+Test Files  32 passed (32)
+Tests       313 passed (313)
+Duration    10.09s
+exit_code: 0
+```
+
+```text
+Command: playwright test --reporter=line
+Running 18 tests using 1 worker
+18 passed (25.1s)
+exit_code: 0
+```
+
+```text
+Command: tsc --noEmit
+exit_code: 0
+
+Command: vite build
+749 modules transformed
+built in 4.40s
+exit_code: 0
+```
+
+Vitest 仅保留既有合成 CFF 字体 warning；Vite 仅保留既有大 chunk advisory。
+
+## Privacy / static gates
+
+```text
+Command: node --import tsx scripts/scan-secrets.ts \
+  --needle session-only-secret --needle private-endpoint.example
+SECRET SCAN PASS
+exit_code: 0
+
+Command: prettier --check <affected files>
+All matched files use Prettier code style
+exit_code: 0
+
+Command: git diff --check
+exit_code: 0
+```
+
+凭据形态扫描只命中 scanner 单测中故意构造的 positive fixtures。生产代码、
+benchmark fixtures、dist 与 artifacts 未发现真实 API key、endpoint、客户、个人
+或监管项目数据。本轮不改生产 UI、模型、解析、复核或导出行为。
+
+---
+
 # Task 11 fix round 3/5（2026-08-16）
 
 Base：`96fbfd723dfe01d908543551d3f916298c312376`

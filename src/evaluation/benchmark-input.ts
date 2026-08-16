@@ -1,7 +1,7 @@
 import { createHash } from "node:crypto";
-import { lstat, readFile, realpath } from "node:fs/promises";
+import { constants } from "node:fs";
+import { lstat, open, realpath } from "node:fs/promises";
 import path from "node:path";
-import { inflateRawSync } from "node:zlib";
 
 import { getDocument, OPS } from "pdfjs-dist/legacy/build/pdf.mjs";
 import { z } from "zod";
@@ -9,6 +9,10 @@ import { z } from "zod";
 import type { SourceAnchor } from "../domain/source";
 import { articleFromText } from "../features/parsing/build-anchors";
 import { normalizeText } from "../features/evidence/normalize-text";
+import {
+  MAX_DOCX_FILE_BYTES,
+  readStrictDocxEntries,
+} from "../lib/strict-docx-zip";
 import {
   EvaluationCorpusSchema,
   evaluateFindings,
@@ -109,8 +113,44 @@ const GroundTruthFileSchema = z
     });
   });
 
-const readJson = async (filePath: string): Promise<unknown> =>
-  JSON.parse(await readFile(filePath, "utf8")) as unknown;
+const MAX_BENCHMARK_JSON_BYTES = 16 * 1024 * 1024;
+const MAX_BENCHMARK_ARTIFACT_BYTES = 128 * 1024 * 1024;
+
+export interface FileSnapshot {
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}
+
+const fileSnapshot = (stat: {
+  readonly dev: number;
+  readonly ino: number;
+  readonly size: number;
+  readonly mtimeMs: number;
+  readonly ctimeMs: number;
+}): FileSnapshot => ({
+  dev: stat.dev,
+  ino: stat.ino,
+  size: stat.size,
+  mtimeMs: stat.mtimeMs,
+  ctimeMs: stat.ctimeMs,
+});
+
+export const assertStableFileSnapshots = (
+  before: FileSnapshot,
+  after: FileSnapshot,
+): void => {
+  if (
+    before.dev !== after.dev ||
+    before.ino !== after.ino ||
+    before.size !== after.size ||
+    before.mtimeMs !== after.mtimeMs ||
+    before.ctimeMs !== after.ctimeMs
+  )
+    throw new Error("benchmark file changed during descriptor read (TOCTOU)");
+};
 
 const lexicalInside = (root: string, relativePath: string): string => {
   if (path.isAbsolute(relativePath))
@@ -126,9 +166,8 @@ const lexicalInside = (root: string, relativePath: string): string => {
   return resolved;
 };
 
-const canonicalInside = async (
+const checkedLexicalPath = async (
   root: string,
-  rootCanonical: string,
   relativePath: string,
 ): Promise<string> => {
   const resolved = lexicalInside(root, relativePath);
@@ -142,7 +181,14 @@ const canonicalInside = async (
         `symlink is forbidden in benchmark path: ${relativePath}`,
       );
   }
-  const canonical = await realpath(resolved);
+  return resolved;
+};
+
+const assertCanonicalInside = (
+  rootCanonical: string,
+  canonical: string,
+  relativePath: string,
+): void => {
   const canonicalRelative = path.relative(rootCanonical, canonical);
   if (
     canonicalRelative === "" ||
@@ -152,11 +198,121 @@ const canonicalInside = async (
     throw new Error(
       `real path must remain inside benchmark root: ${relativePath}`,
     );
-  return canonical;
 };
 
 const sha256 = (bytes: Uint8Array): string =>
   createHash("sha256").update(bytes).digest("hex");
+
+interface VerifiedFile {
+  readonly path: string;
+  readonly bytes: Buffer;
+  readonly identity: string;
+  readonly role: string;
+}
+
+const readVerifiedFile = async (input: {
+  readonly root: string;
+  readonly rootCanonical: string;
+  readonly relativePath: string;
+  readonly role: string;
+  readonly expectedSha256?: string;
+  readonly expectedSize?: number;
+  readonly maxBytes: number;
+}): Promise<VerifiedFile> => {
+  const resolved = await checkedLexicalPath(input.root, input.relativePath);
+  const flags = constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0);
+  let handle;
+  try {
+    handle = await open(resolved, flags);
+  } catch (error) {
+    const code =
+      typeof error === "object" && error !== null && "code" in error
+        ? String(error.code)
+        : "";
+    if (code === "ELOOP")
+      throw new Error(
+        `symlink is forbidden in benchmark path: ${input.relativePath}`,
+      );
+    throw error;
+  }
+  try {
+    const beforeStat = await handle.stat();
+    if (!beforeStat.isFile())
+      throw new Error(
+        `benchmark artifact is not a regular file: ${input.role}`,
+      );
+    if (beforeStat.nlink !== 1)
+      throw new Error(
+        `benchmark hardlink artifact is forbidden: ${input.role}`,
+      );
+    const before = fileSnapshot(beforeStat);
+    if (before.size > input.maxBytes)
+      throw new Error(`benchmark artifact size limit exceeded: ${input.role}`);
+    if (input.expectedSize !== undefined && before.size !== input.expectedSize)
+      throw new Error(`size mismatch for ${input.relativePath}`);
+
+    const pathBefore = await lstat(resolved);
+    if (pathBefore.isSymbolicLink())
+      throw new Error(
+        `symlink is forbidden in benchmark path: ${input.relativePath}`,
+      );
+    if (
+      pathBefore.dev !== before.dev ||
+      pathBefore.ino !== before.ino ||
+      !pathBefore.isFile()
+    )
+      throw new Error(
+        `benchmark path identity changed before read: ${input.role}`,
+      );
+    const canonicalBefore = await realpath(resolved);
+    assertCanonicalInside(
+      input.rootCanonical,
+      canonicalBefore,
+      input.relativePath,
+    );
+
+    const bytes = await handle.readFile();
+    const afterStat = await handle.stat();
+    assertStableFileSnapshots(before, fileSnapshot(afterStat));
+    if (bytes.length !== before.size || bytes.length > input.maxBytes)
+      throw new Error(`benchmark descriptor read size changed: ${input.role}`);
+    const pathAfter = await lstat(resolved);
+    if (
+      pathAfter.isSymbolicLink() ||
+      !pathAfter.isFile() ||
+      pathAfter.dev !== before.dev ||
+      pathAfter.ino !== before.ino
+    )
+      throw new Error(
+        `benchmark path identity changed after read: ${input.role}`,
+      );
+    const canonicalAfter = await realpath(resolved);
+    assertCanonicalInside(
+      input.rootCanonical,
+      canonicalAfter,
+      input.relativePath,
+    );
+    if (canonicalAfter !== canonicalBefore)
+      throw new Error(
+        `benchmark canonical path changed during read: ${input.role}`,
+      );
+    const digest = sha256(bytes);
+    if (input.expectedSha256 && digest !== input.expectedSha256)
+      throw new Error(`sha256 mismatch for ${input.relativePath}`);
+    const hasStableInode =
+      Number.isFinite(before.dev) && before.dev >= 0 && before.ino > 0;
+    return {
+      path: canonicalAfter,
+      bytes,
+      identity: hasStableInode
+        ? `dev:${before.dev}:ino:${before.ino}`
+        : `content:${digest}:size:${before.size}`,
+      role: input.role,
+    };
+  } finally {
+    await handle.close();
+  }
+};
 
 const verifyArtifact = async (
   root: string,
@@ -166,40 +322,18 @@ const verifyArtifact = async (
     readonly sha256: string;
     readonly size: number;
   },
-): Promise<{ readonly path: string; readonly bytes: Buffer }> => {
-  const filePath = await canonicalInside(root, rootCanonical, artifact.path);
-  const bytes = await readFile(filePath);
-  if (bytes.length !== artifact.size)
-    throw new Error(`size mismatch for ${artifact.path}`);
-  if (sha256(bytes) !== artifact.sha256)
-    throw new Error(`sha256 mismatch for ${artifact.path}`);
-  return { path: filePath, bytes };
-};
-
-const unzipEntry = (bytes: Buffer, fileName: string): Buffer => {
-  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
-  for (let offset = 0; offset <= bytes.length - 30; offset += 1) {
-    if (view.getUint32(offset, true) !== 0x04034b50) continue;
-    const flags = view.getUint16(offset + 6, true);
-    if ((flags & 0x08) !== 0)
-      throw new Error(
-        "DOCX data descriptors are not supported by benchmark verifier",
-      );
-    const method = view.getUint16(offset + 8, true);
-    const compressedSize = view.getUint32(offset + 18, true);
-    const nameLength = view.getUint16(offset + 26, true);
-    const extraLength = view.getUint16(offset + 28, true);
-    const nameStart = offset + 30;
-    const name = bytes.subarray(nameStart, nameStart + nameLength).toString();
-    if (name !== fileName) continue;
-    const dataStart = nameStart + nameLength + extraLength;
-    const compressed = bytes.subarray(dataStart, dataStart + compressedSize);
-    if (method === 0) return compressed;
-    if (method === 8) return inflateRawSync(compressed);
-    throw new Error(`unsupported DOCX compression method: ${method}`);
-  }
-  throw new Error(`DOCX entry missing: ${fileName}`);
-};
+  role: string,
+  maxBytes = MAX_BENCHMARK_ARTIFACT_BYTES,
+): Promise<VerifiedFile> =>
+  readVerifiedFile({
+    root,
+    rootCanonical,
+    relativePath: artifact.path,
+    role,
+    expectedSha256: artifact.sha256,
+    expectedSize: artifact.size,
+    maxBytes,
+  });
 
 const decodeXml = (value: string): string =>
   value
@@ -223,8 +357,7 @@ const textUnits = (sourceId: string, bytes: Buffer): FixtureUnit[] =>
       text,
     }));
 
-const docxUnits = (sourceId: string, bytes: Buffer): FixtureUnit[] => {
-  const xml = unzipEntry(bytes, "word/document.xml").toString("utf8");
+const docxUnits = (sourceId: string, xml: string): FixtureUnit[] => {
   const paragraphs = [...xml.matchAll(/<w:p(?:\s[^>]*)?>([\s\S]*?)<\/w:p>/gu)]
     .map((match) =>
       [...match[1].matchAll(/<w:t(?:\s[^>]*)?>([\s\S]*?)<\/w:t>/gu)]
@@ -343,8 +476,15 @@ const verifySampleContent = async (
   rootCanonical: string,
   sample: BenchmarkManifest["samples"][number],
   bytes: Buffer,
-  registerCanonical: (filePath: string) => void,
-): Promise<FixtureUnit[]> => {
+  registerArtifact: (artifact: VerifiedFile) => void,
+): Promise<{
+  readonly units: readonly FixtureUnit[];
+  readonly groundTruthExpectedByPage: ReadonlyMap<string, string>;
+}> => {
+  const result = (
+    units: readonly FixtureUnit[],
+    groundTruthExpectedByPage: ReadonlyMap<string, string> = new Map(),
+  ) => ({ units, groundTruthExpectedByPage });
   if (
     sample.fileType.startsWith("pdf") &&
     !bytes.subarray(0, 5).equals(Buffer.from("%PDF-"))
@@ -358,21 +498,24 @@ const verifySampleContent = async (
           `long document is below 24000 characters: ${sample.path}`,
         );
     }
-    return textUnits(sample.sourceId, bytes);
+    return result(textUnits(sample.sourceId, bytes));
   }
   if (sample.fileType === "docx") {
     if (!bytes.subarray(0, 2).equals(Buffer.from("PK")))
       throw new Error(`invalid DOCX magic for ${sample.path}`);
-    const documentXml = unzipEntry(bytes, "word/document.xml").toString("utf8");
+    const documentXml = readStrictDocxEntries(bytes)
+      .get("word/document.xml")
+      ?.toString("utf8");
+    if (!documentXml) throw new Error(`DOCX entry missing: word/document.xml`);
     if (sample.modalities.includes("table") && !/<w:tbl[ >]/u.test(documentXml))
       throw new Error(`DOCX table modality missing for ${sample.path}`);
-    return docxUnits(sample.sourceId, bytes);
+    return result(docxUnits(sample.sourceId, documentXml));
   }
   const inspection = await inspectPdf(sample.sourceId, bytes);
   if (sample.fileType === "pdf_text") {
     if (inspection.textCharacters === 0)
       throw new Error(`text PDF has no extractable text layer: ${sample.path}`);
-    return [...inspection.units];
+    return result([...inspection.units]);
   }
   if (inspection.textCharacters !== 0)
     throw new Error(`scan PDF must have zero text layer: ${sample.path}`);
@@ -388,8 +531,9 @@ const verifySampleContent = async (
     root,
     rootCanonical,
     sample.groundTruth,
+    `ground-truth:${sample.sourceId}`,
   );
-  registerCanonical(truthArtifact.path);
+  registerArtifact(truthArtifact);
   const truth = GroundTruthFileSchema.parse(
     JSON.parse(truthArtifact.bytes.toString("utf8")) as unknown,
   );
@@ -414,7 +558,15 @@ const verifySampleContent = async (
       text: paragraph.text,
     }));
   });
-  return units;
+  return result(
+    units,
+    new Map(
+      truth.pages.map((page) => [
+        `${sample.sourceId}\u0000${page.page}`,
+        page.expectedText,
+      ]),
+    ),
+  );
 };
 
 const corpusAnchors = (corpus: EvaluationCorpus): SourceAnchor[] => [
@@ -588,67 +740,89 @@ export const loadBenchmarkBundle = async (
   manifestPathInput: string,
   actualPathInput?: string,
 ): Promise<BenchmarkBundle> => {
-  const manifestPath = path.resolve(manifestPathInput);
-  const manifestStat = await lstat(manifestPath);
-  if (manifestStat.isSymbolicLink())
-    throw new Error("manifest symlink is forbidden");
-  const root = path.dirname(manifestPath);
+  const manifestPathResolved = path.resolve(manifestPathInput);
+  const root = path.dirname(manifestPathResolved);
   const rootCanonical = await realpath(root);
-  const manifest = BenchmarkManifestSchema.parse(await readJson(manifestPath));
-  verifyManifestPairingLabels(manifest);
-  const expectedPath = await canonicalInside(
+  const artifactIdentities = new Map<string, string>();
+  const registerArtifact = (artifact: VerifiedFile): void => {
+    const priorRole = artifactIdentities.get(artifact.identity);
+    if (priorRole)
+      throw new Error(
+        `duplicate canonical/identity benchmark artifact (hardlink/content fallback): ${priorRole} and ${artifact.role}`,
+      );
+    artifactIdentities.set(artifact.identity, artifact.role);
+  };
+  const manifestArtifact = await readVerifiedFile({
     root,
     rootCanonical,
-    manifest.expectedFile,
+    relativePath: path.basename(manifestPathResolved),
+    role: "manifest",
+    maxBytes: MAX_BENCHMARK_JSON_BYTES,
+  });
+  registerArtifact(manifestArtifact);
+  const manifest = BenchmarkManifestSchema.parse(
+    JSON.parse(manifestArtifact.bytes.toString("utf8")) as unknown,
   );
+  verifyManifestPairingLabels(manifest);
+  const expectedArtifact = await readVerifiedFile({
+    root,
+    rootCanonical,
+    relativePath: manifest.expectedFile,
+    role: "expected",
+    maxBytes: MAX_BENCHMARK_JSON_BYTES,
+  });
+  registerArtifact(expectedArtifact);
   const actualRelative = actualPathInput ?? manifest.actualFile;
-  const actualPath = await canonicalInside(root, rootCanonical, actualRelative);
-  if (expectedPath === actualPath)
-    throw new Error("expected and actual canonical paths must be different");
-  const [expected, actual] = await Promise.all([
-    readJson(expectedPath).then((value) => EvaluationCorpusSchema.parse(value)),
-    readJson(actualPath).then((value) => EvaluationCorpusSchema.parse(value)),
-  ]);
-  const canonicalArtifacts = new Set<string>([
-    await realpath(manifestPath),
-    expectedPath,
-    actualPath,
-  ]);
-  const registerCanonical = (filePath: string): void => {
-    if (canonicalArtifacts.has(filePath))
-      throw new Error(`duplicate canonical benchmark artifact: ${filePath}`);
-    canonicalArtifacts.add(filePath);
-  };
+  const actualArtifact = await readVerifiedFile({
+    root,
+    rootCanonical,
+    relativePath: actualRelative,
+    role: "actual",
+    maxBytes: MAX_BENCHMARK_JSON_BYTES,
+  });
+  if (expectedArtifact.identity === actualArtifact.identity)
+    throw new Error(
+      "expected and actual artifact identities must be different",
+    );
+  registerArtifact(actualArtifact);
+  const expected = EvaluationCorpusSchema.parse(
+    JSON.parse(expectedArtifact.bytes.toString("utf8")) as unknown,
+  );
+  const actual = EvaluationCorpusSchema.parse(
+    JSON.parse(actualArtifact.bytes.toString("utf8")) as unknown,
+  );
   const samples: VerifiedBenchmarkSample[] = [];
   const unitsBySource = new Map<string, readonly FixtureUnit[]>();
   const groundTruthExpectedByPage = new Map<string, string>();
   for (const sample of manifest.samples) {
-    const artifact = await verifyArtifact(root, rootCanonical, sample);
-    registerCanonical(artifact.path);
-    const units = await verifySampleContent(
+    const artifact = await verifyArtifact(
+      root,
+      rootCanonical,
+      sample,
+      `source:${sample.sourceId}`,
+      sample.fileType === "docx"
+        ? MAX_DOCX_FILE_BYTES
+        : MAX_BENCHMARK_ARTIFACT_BYTES,
+    );
+    registerArtifact(artifact);
+    const verifiedContent = await verifySampleContent(
       root,
       rootCanonical,
       sample,
       artifact.bytes,
-      registerCanonical,
+      registerArtifact,
     );
-    unitsBySource.set(sample.sourceId, units);
-    if (sample.fileType === "pdf_scan" && sample.groundTruth) {
-      const truthPath = await canonicalInside(
+    unitsBySource.set(sample.sourceId, verifiedContent.units);
+    for (const [key, value] of verifiedContent.groundTruthExpectedByPage)
+      groundTruthExpectedByPage.set(key, value);
+    for (const [attachmentIndex, attachment] of sample.attachments.entries()) {
+      const verified = await verifyArtifact(
         root,
         rootCanonical,
-        sample.groundTruth.path,
+        attachment,
+        `attachment:${sample.sourceId}:${attachmentIndex}`,
       );
-      const truth = GroundTruthFileSchema.parse(await readJson(truthPath));
-      for (const page of truth.pages)
-        groundTruthExpectedByPage.set(
-          `${sample.sourceId}\u0000${page.page}`,
-          page.expectedText,
-        );
-    }
-    for (const attachment of sample.attachments) {
-      const verified = await verifyArtifact(root, rootCanonical, attachment);
-      registerCanonical(verified.path);
+      registerArtifact(verified);
     }
     samples.push({
       sourceId: sample.sourceId,
@@ -673,9 +847,9 @@ export const loadBenchmarkBundle = async (
     );
   const bundle = deepFreeze({
     manifest,
-    manifestPath,
-    expectedPath,
-    actualPath,
+    manifestPath: manifestArtifact.path,
+    expectedPath: expectedArtifact.path,
+    actualPath: actualArtifact.path,
     expected,
     actual,
     samples,

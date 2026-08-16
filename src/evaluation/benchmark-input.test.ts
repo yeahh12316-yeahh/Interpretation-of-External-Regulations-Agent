@@ -2,6 +2,7 @@ import { createHash } from "node:crypto";
 import {
   copyFile,
   cp,
+  link,
   mkdtemp,
   readFile,
   symlink,
@@ -14,6 +15,7 @@ import path from "node:path";
 import { describe, expect, it } from "vitest";
 
 import {
+  assertStableFileSnapshots,
   buildMachineReportJson,
   evaluateValidatedBenchmark,
   loadBenchmarkBundle,
@@ -141,6 +143,61 @@ describe("benchmark input boundary", () => {
     await expect(loadBenchmarkBundle(manifestPath)).rejects.toThrow(
       /duplicate canonical/u,
     );
+  });
+
+  it("rejects hard-linked expected/actual and source artifacts by descriptor identity", async () => {
+    const corpusRoot = await temporaryBundle();
+    const expectedPath = path.join(corpusRoot, "expected-findings.json");
+    const hardActualPath = path.join(corpusRoot, "actual-hardlink.json");
+    await link(expectedPath, hardActualPath);
+    await expect(
+      loadBenchmarkBundle(
+        path.join(corpusRoot, "manifest.json"),
+        "actual-hardlink.json",
+      ),
+    ).rejects.toThrow(/hard.?link|identity|inode|artifact/u);
+
+    const sourceRoot = await temporaryBundle();
+    const manifestPath = path.join(sourceRoot, "manifest.json");
+    const longPath = path.join(sourceRoot, "sources/regulatory-long.txt");
+    const hardOfficialPath = path.join(
+      sourceRoot,
+      "sources/official-hardlink.txt",
+    );
+    await link(longPath, hardOfficialPath);
+    const longBytes = await readFile(longPath);
+    await rewriteJson(manifestPath, (manifest) => {
+      const official = manifest.samples.find(
+        ({ sourceId }: any) => sourceId === "SYNTH-OFFICIAL",
+      );
+      official.path = "sources/official-hardlink.txt";
+      official.sha256 = digest(longBytes);
+      official.size = longBytes.length;
+    });
+    await expect(loadBenchmarkBundle(manifestPath)).rejects.toThrow(
+      /hard.?link|identity|inode|artifact/u,
+    );
+  });
+
+  it("rejects descriptor snapshots whose inode, size, mtime, or ctime changes", () => {
+    const before = {
+      dev: 1,
+      ino: 2,
+      size: 100,
+      mtimeMs: 10,
+      ctimeMs: 20,
+    };
+    expect(() => assertStableFileSnapshots(before, before)).not.toThrow();
+    for (const changed of [
+      { ...before, ino: 3 },
+      { ...before, size: 101 },
+      { ...before, mtimeMs: 11 },
+      { ...before, ctimeMs: 21 },
+    ]) {
+      expect(() => assertStableFileSnapshots(before, changed)).toThrow(
+        /changed|identity|TOCTOU|stable/u,
+      );
+    }
   });
 
   it("rejects fabricated quotes and wrong page, paragraph, or article locators", async () => {
