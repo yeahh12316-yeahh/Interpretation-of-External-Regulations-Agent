@@ -607,7 +607,6 @@ export function WorkflowShell({
               result={result}
               reviewId={review.unitId}
               reviewer={ocrReviewer}
-              onHydrate={handleParsed}
               onChange={handleParsed}
             />
           ))}

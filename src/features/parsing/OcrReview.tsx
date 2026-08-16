@@ -1,5 +1,4 @@
-import { useEffect, useRef, useState } from "react";
-import { z } from "zod";
+import { useEffect, useState } from "react";
 
 import {
   articleFromText,
@@ -11,91 +10,6 @@ import type { OcrPageResult } from "./ocr/ocr-pipeline";
 
 const storageKey = (unitId: string) =>
   `external-regulation:ocr-review:${unitId}`;
-
-const OCR_REVIEW_STORAGE_VERSION = 2;
-
-const boundingBoxSchema = z
-  .object({
-    x: z.number().finite(),
-    y: z.number().finite(),
-    width: z.number().finite().nonnegative(),
-    height: z.number().finite().nonnegative(),
-  })
-  .strict();
-
-const correctionRecordSchema = z
-  .object({
-    correctedText: z.string().min(1),
-    reviewedBy: z.string().min(1),
-    reviewedAt: z.string().min(1),
-  })
-  .strict();
-
-const ocrPageResultSchema = z
-  .object({
-    unitId: z.string().min(1),
-    sourceId: z.string().min(1),
-    sourceType: z.enum(["regulatory_text", "official_interpretation"]),
-    page: z.number().int().positive(),
-    method: z.literal("ocr"),
-    confidence: z.number().finite().min(0).max(1),
-    text: z.string(),
-    originalOcrText: z.string(),
-    correctedText: z.string().nullable(),
-    reviewStatus: z.enum(["unreviewed", "corrected", "failed"]),
-    reviewedAt: z.string().min(1).nullable(),
-    reviewedBy: z.string().min(1).nullable(),
-    correctionHistory: z.array(correctionRecordSchema),
-    boundingBox: boundingBoxSchema,
-    regions: z.array(
-      z
-        .object({
-          text: z.string(),
-          confidence: z.number().finite().min(0).max(1),
-          boundingBox: boundingBoxSchema,
-          lowConfidence: z.boolean(),
-        })
-        .strict(),
-    ),
-    lowConfidenceCharacters: z.array(
-      z
-        .object({
-          text: z.string(),
-          confidence: z.number().finite().min(0).max(1),
-          boundingBox: boundingBoxSchema,
-        })
-        .strict(),
-    ),
-    error: z.literal("页面 OCR 识别失败").optional(),
-  })
-  .strict()
-  .superRefine((review, context) => {
-    if (
-      review.reviewStatus === "corrected" &&
-      (!review.correctedText || !review.reviewedAt)
-    ) {
-      context.addIssue({
-        code: "custom",
-        message: "corrected review metadata is incomplete",
-      });
-    }
-    if (review.reviewStatus === "failed" && !review.error) {
-      context.addIssue({
-        code: "custom",
-        message: "failed review metadata is incomplete",
-      });
-    }
-  });
-
-const storedReviewSchema = z
-  .object({
-    version: z.literal(OCR_REVIEW_STORAGE_VERSION),
-    review: ocrPageResultSchema,
-  })
-  .strict();
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === "object" && value !== null && !Array.isArray(value);
 
 const reviewRevision = (review: OcrPageResult): string =>
   JSON.stringify([
@@ -118,104 +32,11 @@ const reviewRevision = (review: OcrPageResult): string =>
     review.error ?? null,
   ]);
 
-const writeStoredReview = (page: OcrPageResult): void => {
-  try {
-    localStorage.setItem(
-      storageKey(page.unitId),
-      JSON.stringify({
-        version: OCR_REVIEW_STORAGE_VERSION,
-        review: page,
-      }),
-    );
-  } catch {
-    // The corrected ParseResult remains authoritative when storage is unavailable.
-  }
-};
-
-const readStoredReview = (unitId: string): OcrPageResult | null => {
-  const key = storageKey(unitId);
-  try {
-    const raw = localStorage.getItem(key);
-    if (!raw) return null;
-    const parsed: unknown = JSON.parse(raw);
-    const current = storedReviewSchema.safeParse(parsed);
-    if (current.success && current.data.review.unitId === unitId) {
-      return current.data.review;
-    }
-
-    if (isRecord(parsed) && !("version" in parsed)) {
-      const legacyCandidate = {
-        ...parsed,
-        ...(Object.hasOwn(parsed, "reviewedBy") ? {} : { reviewedBy: null }),
-        ...(Object.hasOwn(parsed, "correctionHistory")
-          ? {}
-          : { correctionHistory: [] }),
-      };
-      const migrated = ocrPageResultSchema.safeParse(legacyCandidate);
-      if (migrated.success && migrated.data.unitId === unitId) {
-        writeStoredReview(migrated.data);
-        return migrated.data;
-      }
-    }
-
-    localStorage.removeItem(key);
-    return null;
-  } catch {
-    try {
-      localStorage.removeItem(key);
-    } catch {
-      // Storage can be unavailable; do not expose persisted OCR text in errors.
-    }
-    return null;
-  }
-};
-
 const contentFromUnits = (units: readonly ParsedSourceUnit[]): string =>
   units
     .map((unit) => unit.text.trim())
     .filter(Boolean)
     .join("\n\n");
-
-const resultWithReviewState = (
-  result: ParseResult,
-  review: OcrPageResult,
-): ParseResult => {
-  const units = result.units.map((unit) =>
-    unit.unitId === review.unitId
-      ? {
-          ...unit,
-          article: articleFromText(review.text) ?? unit.article,
-          text: review.text,
-          originalOcrText: review.originalOcrText,
-          correctedText: review.correctedText,
-          reviewStatus:
-            review.reviewStatus === "corrected"
-              ? ("corrected" as const)
-              : ("unreviewed" as const),
-          reviewedAt: review.reviewedAt,
-          reviewedBy: review.reviewedBy,
-          correctionHistory: review.correctionHistory,
-          ocrRegions: review.regions,
-          lowConfidenceCharacters: review.lowConfidenceCharacters,
-        }
-      : unit,
-  );
-  const content = contentFromUnits(units);
-  return {
-    ...result,
-    source: { ...result.source, content },
-    units,
-    ocrReviews: result.ocrReviews.map((candidate) =>
-      candidate.unitId === review.unitId ? review : candidate,
-    ),
-    anchors: buildAnchors(units),
-    quality: {
-      ...result.quality,
-      totalCharacters: content.length,
-      parsedUnitCount: units.length,
-    },
-  };
-};
 
 export function applyOcrCorrection(
   result: ParseResult,
@@ -286,7 +107,6 @@ export interface OcrReviewProps {
   result: ParseResult;
   reviewId: string;
   reviewer: string;
-  onHydrate: (result: ParseResult) => void;
   onChange?: (result: ParseResult) => void;
 }
 
@@ -294,54 +114,28 @@ export function OcrReview({
   result,
   reviewId,
   reviewer,
-  onHydrate,
   onChange,
 }: OcrReviewProps) {
   const page = result.ocrReviews.find((review) => review.unitId === reviewId);
   if (!page) throw new Error("OCR 审阅页不存在");
-  const restored = () => readStoredReview(page.unitId) ?? page;
-  const [review, setReview] = useState<OcrPageResult>(restored);
+  const [review, setReview] = useState<OcrPageResult>(page);
   const [draft, setDraft] = useState(review.correctedText ?? review.text);
-  const hydratedRevision = useRef<string | null>(null);
-  const latestPage = useRef(page);
-  const latestResult = useRef(result);
-  const latestOnHydrate = useRef(onHydrate);
-  latestPage.current = page;
-  latestResult.current = result;
-  latestOnHydrate.current = onHydrate;
   const reviewIdentity = page.unitId;
   const authoritativeReviewRevision = reviewRevision(page);
 
   useEffect(() => {
-    const currentPage = latestPage.current;
-    const storedReview = readStoredReview(currentPage.unitId);
-    const nextReview = storedReview ?? currentPage;
-    setReview(nextReview);
-    setDraft(nextReview.correctedText ?? nextReview.text);
-    if (!storedReview) {
-      writeStoredReview(currentPage);
-      hydratedRevision.current = null;
-      return;
+    setReview(page);
+    setDraft(page.correctedText ?? page.text);
+    try {
+      // Version 1/2 caches were never authoritative. Remove them without reading
+      // their content so they cannot unlock parsing after a refresh.
+      localStorage.removeItem(storageKey(page.unitId));
+    } catch {
+      // Storage can be unavailable; WorkflowSession remains authoritative.
     }
-
-    const storedCorrectionIsMissingFromResult =
-      storedReview.reviewStatus === "corrected" &&
-      (currentPage.reviewStatus !== "corrected" ||
-        currentPage.text !== storedReview.text ||
-        currentPage.reviewedAt !== storedReview.reviewedAt ||
-        currentPage.correctionHistory.length !==
-          storedReview.correctionHistory.length);
-    if (!storedCorrectionIsMissingFromResult) {
-      hydratedRevision.current = null;
-      return;
-    }
-
-    const revision = reviewRevision(storedReview);
-    if (hydratedRevision.current === revision) return;
-    hydratedRevision.current = revision;
-    latestOnHydrate.current(
-      resultWithReviewState(latestResult.current, storedReview),
-    );
+    // page is represented by the stable authoritative revision below. Depending
+    // on its object identity would discard unsaved drafts on unrelated rerenders.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [authoritativeReviewRevision, reviewIdentity]);
 
   if (review.reviewStatus === "failed") {
@@ -353,15 +147,8 @@ export function OcrReview({
   }
 
   const save = () => {
-    const resultReview = result.ocrReviews.find(
-      (candidate) => candidate.unitId === review.unitId,
-    );
-    const correctionBase =
-      resultReview?.reviewedAt === review.reviewedAt
-        ? result
-        : resultWithReviewState(result, review);
     const correctedResult = applyOcrCorrection(
-      correctionBase,
+      result,
       review.unitId,
       draft,
       reviewer,
@@ -370,7 +157,6 @@ export function OcrReview({
       (candidate) => candidate.unitId === review.unitId,
     );
     if (!correctedReview) throw new Error("OCR 纠错结果缺失");
-    writeStoredReview(correctedReview);
     setReview(correctedReview);
     setDraft(correctedReview.correctedText ?? correctedReview.text);
     onChange?.(correctedResult);

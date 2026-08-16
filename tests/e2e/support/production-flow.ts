@@ -78,7 +78,7 @@ const anchor = (
     );
   return {
     sourceId,
-    sourceType: "regulatory_text" as const,
+    sourceType: locator.sourceType,
     page: locator.page,
     article: locator.article,
     paragraphIndex: locator.paragraphIndex,
@@ -89,6 +89,7 @@ const anchor = (
 export const installSuccessfulModelRoute = async (
   page: Page,
   baseUrl = "https://model.example/v1",
+  options: { readonly includeOfficialIdentity?: boolean } = {},
 ): Promise<void> => {
   await page.route(`${baseUrl}/chat/completions`, async (route) => {
     const body = route.request().postDataJSON() as {
@@ -101,8 +102,52 @@ export const installSuccessfulModelRoute = async (
     if (schemaName === "connection_test") {
       output = { connection: "ok" };
     } else if (schemaName === "analysis_document_identity_v1") {
-      parsedChunk(payload);
-      output = { findings: [], conflicts: [] };
+      const { sourceId, sourceType, authoritativeLocators } =
+        parsedChunk(payload);
+      if (!options.includeOfficialIdentity) {
+        output = { findings: [], conflicts: [] };
+      } else {
+        const locator = authoritativeLocators.find(
+          (candidate) =>
+            candidate.sourceId === sourceId && candidate.text.trim(),
+        );
+        if (!locator)
+          throw new Error(
+            "production document identity request omitted authoritative locator",
+          );
+        const sourceAnchor = anchor(
+          sourceId,
+          locator.text,
+          authoritativeLocators,
+        );
+        output =
+          sourceType === "regulatory_text"
+            ? {
+                findings: [
+                  {
+                    findingId: "DOC-PRIMARY",
+                    kind: "document_title",
+                    extractedValue: locator.text,
+                    sourceAnchors: [sourceAnchor],
+                    confidence: 1,
+                  },
+                ],
+                conflicts: [],
+              }
+            : {
+                findings: [
+                  {
+                    findingId: "OFF-SCAN",
+                    kind: "implementation_guidance",
+                    sourceExcerpt: locator.text,
+                    sourceAnchors: [sourceAnchor],
+                    pairedPrimaryFindingIds: ["DOC-PRIMARY"],
+                    confidence: 1,
+                  },
+                ],
+                conflicts: [],
+              };
+      }
     } else if (schemaName === "analysis_atomic_clauses_v1") {
       const { sourceId, authoritativeLocators } = parsedChunk(payload);
       const sourceAnchor = anchor(
@@ -208,6 +253,7 @@ export const uploadAndAnalyze = async (
     readonly navigate?: boolean;
     readonly regulatoryFile?: FilePayload;
     readonly officialFile?: FilePayload;
+    readonly ocrCorrectedText?: string;
   } = {},
 ): Promise<void> => {
   if (options.navigate !== false) await page.goto("./");
@@ -262,6 +308,10 @@ export const uploadAndAnalyze = async (
     for (let index = 0; index < ocrReviewCount; index += 1) {
       const review = ocrReviews.nth(index);
       await expect(review.getByText("待审阅")).toBeVisible();
+      if (options.ocrCorrectedText)
+        await review
+          .getByRole("textbox", { name: "OCR 纠错文本" })
+          .fill(options.ocrCorrectedText);
       await review.getByRole("button", { name: "保存纠错" }).click();
       await expect(review.getByText("已纠错")).toBeVisible();
     }
@@ -307,6 +357,7 @@ export const reviewAllFindings = async (page: Page): Promise<void> => {
         ),
       }),
     });
+    if (await card.getByText("deleted", { exact: true }).isVisible()) continue;
     await card.getByRole("button", { name: "查看依据" }).click();
     for (let ruleIndex = 0; ruleIndex < 12; ruleIndex += 1) {
       const manualRule = page.getByTestId("manual-rule").first();

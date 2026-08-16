@@ -15,6 +15,8 @@ import {
 } from "./production-flow";
 
 const SYNTHETIC_MODEL_BASE_URL = "https://production-smoke-model.invalid/v1";
+const SYNTHETIC_CORRECTED_OFFICIAL_TEXT =
+  "官方说明：合成扫描件仅用于说明年度实施口径。";
 const OCR_WARNING_PARAMETERS = [
   "language_model_ngram_on",
   "segsearch_max_char_wh_ratio",
@@ -87,7 +89,9 @@ export const runProductionSmokeFlow = async (
     700,
   );
 
-  await installSuccessfulModelRoute(page, SYNTHETIC_MODEL_BASE_URL);
+  await installSuccessfulModelRoute(page, SYNTHETIC_MODEL_BASE_URL, {
+    includeOfficialIdentity: true,
+  });
   await uploadAndAnalyze(
     page,
     "synthetic-production-smoke-key",
@@ -105,6 +109,7 @@ export const runProductionSmokeFlow = async (
         mimeType: "application/pdf",
         buffer: officialScanPdf,
       },
+      ocrCorrectedText: SYNTHETIC_CORRECTED_OFFICIAL_TEXT,
     },
   );
   expect(ocrAssetResponses.length).toBeGreaterThan(2);
@@ -137,6 +142,31 @@ export const runProductionSmokeFlow = async (
   await expect(page.getByTestId("evidence-original")).toContainText(
     "第二条 示例银行不得虚构合规记录。",
   );
+
+  const official = page
+    .getByTestId("review-item")
+    .filter({ hasText: "OFF-SCAN" });
+  await official.getByRole("button", { name: "查看依据" }).click();
+  await expect(page.getByTestId("evidence-original")).toContainText(
+    SYNTHETIC_CORRECTED_OFFICIAL_TEXT,
+  );
+  const officialEvidence = page.getByRole("complementary", {
+    name: "原文证据",
+  });
+  await expect(officialEvidence).toContainText("合成官方解读-扫描.pdf");
+  await expect(officialEvidence).toContainText("第1页");
+  await expect(officialEvidence).toContainText("官方解读");
+
+  // Task 7 document identity is deliberately pending_confirmation. The current
+  // review workflow must therefore resolve it before export; this smoke chooses
+  // the supported soft-delete path after first proving the official OCR finding.
+  await official.getByRole("button", { name: "删除 OFF-SCAN" }).click();
+  const primaryIdentity = page
+    .getByTestId("review-item")
+    .filter({ hasText: "DOC-PRIMARY" });
+  await primaryIdentity
+    .getByRole("button", { name: "删除 DOC-PRIMARY" })
+    .click();
 
   await f1.getByRole("button", { name: "修改 F1" }).click();
   const edit = page.getByRole("dialog", { name: "修改结论 F1" });

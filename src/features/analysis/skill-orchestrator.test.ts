@@ -333,6 +333,100 @@ describe("runAnalysis", () => {
     ).rejects.toThrow(/解析定位.*来源/);
   });
 
+  it("rejects an exact quote attached to a fabricated parsed locator", async () => {
+    const parsedUnit: ParsedSourceUnit = {
+      sourceId: regulatorySource.sourceId,
+      sourceType: regulatorySource.sourceType,
+      page: 7,
+      article: "第一条",
+      paragraphIndex: 3,
+      text: regulatorySource.content,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+    const gateway = new RecordingGateway((request) => {
+      if (request.schemaName !== "analysis_atomic_clauses_v1")
+        return emptyResponse(request);
+      const fabricated = { ...anchor(), page: 99, paragraphIndex: 0 };
+      return {
+        findings: [
+          {
+            ...baseFinding,
+            findingId: "REQ-WRONG-LOCATOR",
+            category: "atomic_requirement",
+            statement: "商业银行应当建立数据治理机制",
+            claimType: "regulatory_fact",
+            sourceAnchors: [fabricated],
+          },
+        ],
+        atomicRequirements: [
+          {
+            requirementId: "AR-WRONG-LOCATOR",
+            findingId: "REQ-WRONG-LOCATOR",
+            subject: "商业银行",
+            action: "建立",
+            object: "数据治理机制",
+            condition: null,
+            frequency: null,
+            deadline: null,
+            strength: "应当",
+            responsibility: null,
+            exceptions: null,
+            sharedContext: "第一条",
+            missingFacts: [],
+            sourceAnchors: [fabricated],
+            confidence: 1,
+            manualVerificationRequired: false,
+          },
+        ],
+      };
+    });
+
+    await expect(
+      runAnalysis({
+        sourceUnits: [regulatorySource],
+        parsedUnits: [parsedUnit],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+      }),
+    ).rejects.toThrow(/定位|locator|授权/u);
+  });
+
+  it("accepts output bound to the exact authoritative PDF locator", async () => {
+    const parsedUnit: ParsedSourceUnit = {
+      sourceId: regulatorySource.sourceId,
+      sourceType: regulatorySource.sourceType,
+      page: 1,
+      article: "第一条",
+      paragraphIndex: 0,
+      text: regulatorySource.content,
+      extractionMethod: "text_layer",
+      confidence: 1,
+    };
+
+    const result = await runAnalysis({
+      sourceUnits: [regulatorySource],
+      parsedUnits: [parsedUnit],
+      gateway: new RecordingGateway(successfulResponse),
+      model: "user-model",
+      hasOfficialInterpretation: false,
+    });
+
+    expect(
+      result.findings.find(({ findingId }) => findingId === "REQ-1"),
+    ).toMatchObject({
+      sourceAnchors: [
+        {
+          sourceId: "REG-1",
+          page: 1,
+          article: "第一条",
+          paragraphIndex: 0,
+        },
+      ],
+    });
+  });
+
   it("accepts the closed institution impact dimension and emits its exact category", async () => {
     const gateway = new RecordingGateway((request) => {
       if (request.schemaName === "analysis_institution_impact_v1") {

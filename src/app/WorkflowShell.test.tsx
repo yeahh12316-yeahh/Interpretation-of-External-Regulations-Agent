@@ -260,6 +260,27 @@ it("renders OCR review in the production parsing step and unlocks only after cor
     parsedUnits: [unit],
     parseResults: [parseResult],
   };
+  localStorage.setItem(
+    `external-regulation:ocr-review:${review.unitId}`,
+    JSON.stringify({
+      version: 2,
+      review: {
+        ...review,
+        text: "伪造的本地纠错文本",
+        correctedText: "伪造的本地纠错文本",
+        reviewStatus: "corrected",
+        reviewedAt: "2026-08-14T09:00:00.000Z",
+        reviewedBy: "伪造复核人",
+        correctionHistory: [
+          {
+            correctedText: "伪造的本地纠错文本",
+            reviewedBy: "伪造复核人",
+            reviewedAt: "2026-08-14T09:00:00.000Z",
+          },
+        ],
+      },
+    }),
+  );
   render(
     <WorkflowShell
       initialSession={ocrSession}
@@ -268,6 +289,10 @@ it("renders OCR review in the production parsing step and unlocks only after cor
   );
 
   expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
+  expect(screen.queryByText("伪造的本地纠错文本")).not.toBeInTheDocument();
+  expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
+    text,
+  );
   await user.type(screen.getByLabelText("OCR复核人"), "复核员甲");
   await user.click(screen.getByRole("button", { name: "保存纠错" }));
   expect(await screen.findByText("已纠错")).toBeVisible();

@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { lstat, readdir, readFile, realpath } from "node:fs/promises";
 import path from "node:path";
 import { pathToFileURL } from "node:url";
@@ -6,6 +7,25 @@ import { brotliDecompressSync, gunzipSync } from "node:zlib";
 const DEFAULT_MAX_FILE_BYTES = 32 * 1024 * 1024;
 const DEFAULT_MAX_TOTAL_BYTES = 128 * 1024 * 1024;
 const MAX_EXPANDED_JSON_BYTES = 8 * 1024 * 1024;
+
+const OPAQUE_OCR_ASSETS = new Map([
+  [
+    "ocr/tesseract-7.0.0-data-1.0.0/lang/chi_sim.traineddata.gz",
+    {
+      size: 20_159_757,
+      sha256:
+        "59388039851e4d1293d729c183fd8c1fa9bbbb959eed996e945024671e68c1d6",
+    },
+  ],
+  [
+    "ocr/tesseract-7.0.0-data-1.0.0/lang/eng.traineddata.gz",
+    {
+      size: 10_923_060,
+      sha256:
+        "ed350f3752f81ee8f38769edc14d92d997dababe23b565c59879372cc46a2468",
+    },
+  ],
+]);
 
 const PATTERNS = [
   {
@@ -88,12 +108,16 @@ const structuredArtifactTypes = (value) => {
 };
 
 const structuredFindings = (file, jsonBytes) => {
-  if (!/\.json$/iu.test(file)) return [];
+  const text = jsonBytes.toString("utf8");
+  const looksLikeJson = /^[\s\uFEFF]*[\[{]/u.test(text);
+  if (!/\.json$/iu.test(file) && !looksLikeJson) return [];
   let parsed;
   try {
-    parsed = JSON.parse(jsonBytes.toString("utf8"));
+    parsed = JSON.parse(text);
   } catch {
-    throw new Error(`JSON build artifact is invalid: ${file}`);
+    if (/\.json$/iu.test(file))
+      throw new Error(`JSON build artifact is invalid: ${file}`);
+    return [];
   }
   return structuredArtifactTypes(parsed);
 };
@@ -112,44 +136,104 @@ const isUnsupportedContainer = (file, bytes) =>
     [0x42, 0x5a, 0x68],
   ].some((signature) => startsWith(bytes, signature));
 
-const expandedArtifact = (file, bytes) => {
+const isGzip = (file, bytes) =>
+  /\.gz$/iu.test(file) || startsWith(bytes, [0x1f, 0x8b]);
+
+const expandedArtifacts = (file, bytes) => {
   if (isUnsupportedContainer(file, bytes))
     throw new Error(`unsupported compressed build artifact: ${file}`);
-  if (
-    /^ocr\/tesseract-7\.0\.0-data-1\.0\.0\/lang\/(?:chi_sim|eng)\.traineddata\.gz$/u.test(
-      file,
+  const opaqueOcrAsset = OPAQUE_OCR_ASSETS.get(file);
+  if (opaqueOcrAsset) {
+    const digest = createHash("sha256").update(bytes).digest("hex");
+    if (
+      bytes.length !== opaqueOcrAsset.size ||
+      digest !== opaqueOcrAsset.sha256
     )
-  )
-    return { logicalFile: file, bytes };
-  if (/\.gz$/iu.test(file)) {
-    try {
-      return {
-        logicalFile: file.replace(/\.gz$/iu, ""),
-        bytes: gunzipSync(bytes, { maxOutputLength: MAX_EXPANDED_JSON_BYTES }),
-      };
-    } catch {
-      throw new Error(`gzip build artifact is invalid or too large: ${file}`);
-    }
+      throw new Error(`OCR traineddata integrity check failed: ${file}`);
+    return [{ logicalFile: file, bytes }];
   }
-  if (/\.br$/iu.test(file)) {
-    try {
-      return {
-        logicalFile: file.replace(/\.br$/iu, ""),
-        bytes: brotliDecompressSync(bytes, {
+  const artifacts = [{ logicalFile: file, bytes }];
+  let currentFile = file;
+  let currentBytes = bytes;
+  let expandedBytes = 0;
+  for (let depth = 0; depth < 4; depth += 1) {
+    let nextBytes = null;
+    let nextFile = currentFile;
+    if (isGzip(currentFile, currentBytes)) {
+      try {
+        nextBytes = gunzipSync(currentBytes, {
           maxOutputLength: MAX_EXPANDED_JSON_BYTES,
-        }),
-      };
-    } catch {
-      throw new Error(`Brotli build artifact is invalid or too large: ${file}`);
+        });
+      } catch {
+        throw new Error(`gzip build artifact is invalid or too large: ${file}`);
+      }
+      nextFile = currentFile.replace(/\.gz$/iu, "");
+    } else {
+      const declaredBrotli = /\.br$/iu.test(currentFile);
+      if (declaredBrotli || currentBytes.length <= MAX_EXPANDED_JSON_BYTES) {
+        try {
+          nextBytes = brotliDecompressSync(currentBytes, {
+            maxOutputLength: MAX_EXPANDED_JSON_BYTES,
+          });
+          nextFile = currentFile.replace(/\.br$/iu, "");
+        } catch {
+          if (declaredBrotli)
+            throw new Error(
+              `Brotli build artifact is invalid or too large: ${file}`,
+            );
+        }
+      }
     }
+    if (!nextBytes) return artifacts;
+    expandedBytes += nextBytes.length;
+    if (expandedBytes > MAX_EXPANDED_JSON_BYTES)
+      throw new Error(`compressed build artifact expands too large: ${file}`);
+    currentBytes = nextBytes;
+    currentFile = nextFile;
+    artifacts.push({ logicalFile: currentFile, bytes: currentBytes });
+    if (isUnsupportedContainer(currentFile, currentBytes))
+      throw new Error(`unsupported compressed build artifact: ${file}`);
   }
-  return { logicalFile: file, bytes };
+  if (isGzip(currentFile, currentBytes) || /\.br$/iu.test(currentFile))
+    throw new Error(`compressed build artifact nesting is too deep: ${file}`);
+  return artifacts;
+};
+
+const decodeUtf16Be = (bytes) => {
+  const evenLength = bytes.length - (bytes.length % 2);
+  const swapped = Buffer.allocUnsafe(evenLength);
+  for (let index = 0; index < evenLength; index += 2) {
+    swapped[index] = bytes[index + 1];
+    swapped[index + 1] = bytes[index];
+  }
+  return swapped.toString("utf16le");
+};
+
+const probableUtf16Endian = (bytes) => {
+  const pairCount = Math.min(Math.floor(bytes.length / 2), 4_096);
+  if (pairCount < 8) return null;
+  let evenNul = 0;
+  let oddNul = 0;
+  for (let pair = 0; pair < pairCount; pair += 1) {
+    if (bytes[pair * 2] === 0) evenNul += 1;
+    if (bytes[pair * 2 + 1] === 0) oddNul += 1;
+  }
+  if (oddNul / pairCount >= 0.4 && evenNul / pairCount <= 0.1) return "le";
+  if (evenNul / pairCount >= 0.4 && oddNul / pairCount <= 0.1) return "be";
+  return null;
 };
 
 const textSurfaces = (bytes) => {
   const surfaces = [bytes.toString("utf8")];
-  if (bytes[0] === 0xff && bytes[1] === 0xfe)
+  if (bytes[0] === 0xff && bytes[1] === 0xfe) {
     surfaces.push(bytes.subarray(2).toString("utf16le"));
+  } else if (bytes[0] === 0xfe && bytes[1] === 0xff) {
+    surfaces.push(decodeUtf16Be(bytes.subarray(2)));
+  } else {
+    const endian = probableUtf16Endian(bytes);
+    if (endian === "le") surfaces.push(bytes.toString("utf16le"));
+    if (endian === "be") surfaces.push(decodeUtf16Be(bytes));
+  }
   return surfaces;
 };
 
@@ -228,7 +312,7 @@ export const scanDirectory = async (directory, options = {}) => {
       .relative(rootRealPath, file)
       .split(path.sep)
       .join("/");
-    const expanded = expandedArtifact(relativeFile, bytes);
+    const expanded = expandedArtifacts(relativeFile, bytes);
     if (FORBIDDEN_BUILD_PATH.test(relativeFile))
       findings.push({
         file: relativeFile,
@@ -236,7 +320,7 @@ export const scanDirectory = async (directory, options = {}) => {
         type: "forbidden-build-artifact",
       });
     findings.push(
-      ...[bytes, expanded.bytes].flatMap((surfaceBytes) =>
+      ...expanded.flatMap(({ bytes: surfaceBytes }) =>
         textSurfaces(surfaceBytes).flatMap((text) =>
           scanText(text).map((finding) => ({
             ...finding,
@@ -244,12 +328,12 @@ export const scanDirectory = async (directory, options = {}) => {
           })),
         ),
       ),
-      ...structuredFindings(expanded.logicalFile, expanded.bytes).map(
-        (type) => ({
+      ...expanded.flatMap(({ logicalFile, bytes: expandedBytes }) =>
+        structuredFindings(logicalFile, expandedBytes).map((type) => ({
           file: relativeFile,
           line: 1,
           type,
-        }),
+        })),
       ),
     );
   }

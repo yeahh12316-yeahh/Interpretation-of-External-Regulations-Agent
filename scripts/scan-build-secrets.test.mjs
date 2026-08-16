@@ -1,5 +1,12 @@
 import { brotliCompressSync, gzipSync } from "node:zlib";
-import { mkdtemp, mkdir, symlink, writeFile } from "node:fs/promises";
+import {
+  copyFile,
+  mkdtemp,
+  mkdir,
+  readFile,
+  symlink,
+  writeFile,
+} from "node:fs/promises";
 import os from "node:os";
 import path from "node:path";
 
@@ -124,6 +131,36 @@ describe("build secret scanner", () => {
     ]);
   });
 
+  it("detects renamed and recursively nested gzip or Brotli model responses", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-nested-scan-"));
+    const response = Buffer.from(
+      JSON.stringify({
+        envelope: {
+          choices: [{ message: { content: "nested model response" } }],
+        },
+      }),
+    );
+    await writeFile(path.join(root, "gzip.bin"), gzipSync(response));
+    await writeFile(
+      path.join(root, "brotli.bin"),
+      brotliCompressSync(response),
+    );
+    await writeFile(
+      path.join(root, "nested.json.gz.br"),
+      brotliCompressSync(gzipSync(response)),
+    );
+    await writeFile(
+      path.join(root, "nested.json.br.gz"),
+      gzipSync(brotliCompressSync(response)),
+    );
+
+    await expect(scanDirectory(root)).resolves.toEqual(
+      ["brotli.bin", "gzip.bin", "nested.json.br.gz", "nested.json.gz.br"].map(
+        (file) => ({ file, line: 1, type: "test-response-content" }),
+      ),
+    );
+  });
+
   it("detects nested uploaded source records without relying on names", async () => {
     const root = await mkdtemp(path.join(os.tmpdir(), "build-upload-scan-"));
     await writeFile(
@@ -175,6 +212,61 @@ describe("build secret scanner", () => {
         type: "test-response-content",
       },
     ]);
+  });
+
+  it("detects no-BOM UTF-16LE and UTF-16BE secrets without blindly decoding binary", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-utf16-scan-"));
+    const littleEndian = Buffer.from(
+      "prefix sk-no-bom-little-secret",
+      "utf16le",
+    );
+    const bigEndian = Buffer.from(littleEndian);
+    for (let index = 0; index < bigEndian.length; index += 2) {
+      const first = bigEndian[index];
+      bigEndian[index] = bigEndian[index + 1];
+      bigEndian[index + 1] = first;
+    }
+    await writeFile(path.join(root, "little.bin"), littleEndian);
+    await writeFile(path.join(root, "big.bin"), bigEndian);
+    await writeFile(
+      path.join(root, "ordinary.bin"),
+      Buffer.from([0, 255, 17, 0, 203, 41, 0, 7, 128, 0, 99, 12]),
+    );
+
+    await expect(scanDirectory(root)).resolves.toEqual([
+      {
+        file: "big.bin",
+        line: 1,
+        type: "api-key-pattern",
+      },
+      {
+        file: "little.bin",
+        line: 1,
+        type: "api-key-pattern",
+      },
+    ]);
+  });
+
+  it("accepts only the exact locked OCR traineddata bytes and rejects same-path tampering", async () => {
+    const root = await mkdtemp(path.join(os.tmpdir(), "build-ocr-assets-"));
+    const relative = path.join("ocr", "tesseract-7.0.0-data-1.0.0", "lang");
+    const target = path.join(root, relative);
+    await mkdir(target, { recursive: true });
+    for (const language of ["chi_sim", "eng"]) {
+      await copyFile(
+        path.resolve("dist", relative, `${language}.traineddata.gz`),
+        path.join(target, `${language}.traineddata.gz`),
+      );
+    }
+    await expect(scanDirectory(root)).resolves.toEqual([]);
+
+    const englishPath = path.join(target, "eng.traineddata.gz");
+    const tampered = await readFile(englishPath);
+    tampered[tampered.length - 1] ^= 0xff;
+    await writeFile(englishPath, tampered);
+    await expect(scanDirectory(root)).rejects.toThrow(
+      /OCR traineddata integrity/u,
+    );
   });
 
   it("fails closed on an unsupported compressed container", async () => {

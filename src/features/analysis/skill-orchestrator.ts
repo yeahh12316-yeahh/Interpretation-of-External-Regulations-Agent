@@ -1265,6 +1265,7 @@ const promptPayload = (
 interface AuthorizedSourceEvidence {
   sourceType: SourceType;
   texts: string[];
+  parsedLocators: ParsedSourceUnit[] | null;
 }
 
 type AuthorizedSourceScope = ReadonlyMap<string, AuthorizedSourceEvidence>;
@@ -1294,6 +1295,7 @@ const normalizeParsedUnits = (
 
 const scopeForChunk = (
   chunk: DocumentChunk,
+  parsedUnits: readonly ParsedSourceUnit[] | undefined,
 ): Map<string, AuthorizedSourceEvidence> => {
   const scope = new Map<string, AuthorizedSourceEvidence>();
   for (const unit of chunk.units) {
@@ -1304,6 +1306,12 @@ const scopeForChunk = (
       scope.set(unit.sourceId, {
         sourceType: unit.sourceType,
         texts: [unit.content],
+        parsedLocators:
+          parsedUnits === undefined
+            ? null
+            : parsedUnits.filter(
+                (parsedUnit) => parsedUnit.sourceId === unit.sourceId,
+              ),
       });
     }
   }
@@ -1318,8 +1326,9 @@ const scopeForChunk = (
 const scopeWithPrimaryFindings = (
   chunk: DocumentChunk,
   primaryFindings: readonly Finding[],
+  parsedUnits: readonly ParsedSourceUnit[] | undefined,
 ): Map<string, AuthorizedSourceEvidence> => {
-  const scope = scopeForChunk(chunk);
+  const scope = scopeForChunk(chunk, parsedUnits);
   for (const anchor of primaryFindings.flatMap(
     (finding) => finding.sourceAnchors,
   )) {
@@ -1330,6 +1339,12 @@ const scopeWithPrimaryFindings = (
       scope.set(anchor.sourceId, {
         sourceType: anchor.sourceType,
         texts: [anchor.quote],
+        parsedLocators:
+          parsedUnits === undefined
+            ? null
+            : parsedUnits.filter(
+                (parsedUnit) => parsedUnit.sourceId === anchor.sourceId,
+              ),
       });
     }
   }
@@ -1346,10 +1361,11 @@ const requestContextForNode = (
   node: AnalysisNode,
   priorFindings: readonly Finding[],
   officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
+  parsedUnits: readonly ParsedSourceUnit[] | undefined,
 ): NodeRequestContext => {
   if (node.chunk.sourceType !== "official_interpretation") {
     return {
-      scope: scopeForChunk(node.chunk),
+      scope: scopeForChunk(node.chunk, parsedUnits),
       inputSourceIds: node.chunk.inputSourceIds,
       primaryFindings: [],
     };
@@ -1370,7 +1386,11 @@ const requestContextForNode = (
         pairedRegulatorySourceIds.has(anchor.sourceId),
       ),
   );
-  const scope = scopeWithPrimaryFindings(node.chunk, primaryFindings);
+  const scope = scopeWithPrimaryFindings(
+    node.chunk,
+    primaryFindings,
+    parsedUnits,
+  );
   return { scope, inputSourceIds: [...scope.keys()], primaryFindings };
 };
 
@@ -1393,6 +1413,7 @@ const hashAuthorizedScope = (scope: AuthorizedSourceScope): Promise<string> =>
           sourceId,
           sourceType: evidence.sourceType,
           texts: evidence.texts,
+          parsedLocators: evidence.parsedLocators,
         })),
     ),
   );
@@ -1404,11 +1425,21 @@ const anchorIsAuthorized = (
   const authorized = scope.get(anchor.sourceId);
   if (!authorized || authorized.sourceType !== anchor.sourceType) return false;
   const quote = normalizedEvidenceText(anchor.quote);
-  return (
+  const quoteMatchesAuthorizedText =
     quote.length > 0 &&
     authorized.texts.some((text) =>
       normalizedEvidenceText(text).includes(quote),
-    )
+    );
+  if (!quoteMatchesAuthorizedText) return false;
+  if (authorized.parsedLocators === null) return true;
+  return authorized.parsedLocators.some(
+    (unit) =>
+      unit.sourceId === anchor.sourceId &&
+      unit.sourceType === anchor.sourceType &&
+      unit.page === anchor.page &&
+      unit.article === anchor.article &&
+      unit.paragraphIndex === anchor.paragraphIndex &&
+      normalizedEvidenceText(unit.text).includes(quote),
   );
 };
 
@@ -2391,6 +2422,7 @@ const validateResume = async (
   inputFingerprint: string,
   input: AnalysisInput,
   officialPrimaryContext: Readonly<Record<string, readonly string[]>>,
+  parsedUnits: readonly ParsedSourceUnit[] | undefined,
 ): Promise<void> => {
   const normalizedResumeDirective = input.reanalysisDirective
     ? ReanalysisDirectiveSchema.parse(input.reanalysisDirective)
@@ -2439,6 +2471,7 @@ const validateResume = async (
       node,
       priorFindings,
       officialPrimaryContext,
+      parsedUnits,
     );
     if (
       run.model !== input.model.trim() ||
@@ -2561,6 +2594,8 @@ export async function runAnalysis(
     throw new Error("官方解读存在标志与输入来源不一致");
   }
   const parsedUnits = normalizeParsedUnits(input.parsedUnits, sourceById);
+  const strictParsedUnits =
+    input.parsedUnits === undefined ? undefined : parsedUnits;
 
   const chunkOptions = resolveChunkPolicy(input.chunkOptions);
   const officialPrimaryContext = normalizeOfficialPrimaryContext(
@@ -2601,6 +2636,7 @@ export async function runAnalysis(
       inputFingerprint,
       input,
       officialPrimaryContext,
+      strictParsedUnits,
     );
 
   for (
@@ -2619,6 +2655,7 @@ export async function runAnalysis(
       node,
       checkpoint.findings,
       officialPrimaryContext,
+      strictParsedUnits,
     );
     const requestInputSourceIds = nodeContext.inputSourceIds;
     const requestScope = nodeContext.scope;
