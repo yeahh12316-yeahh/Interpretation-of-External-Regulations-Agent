@@ -1,5 +1,9 @@
 import { z } from "zod";
 
+import {
+  HumanJudgmentPurposeSchema,
+  resolveHumanJudgmentPurpose,
+} from "../domain/closed-categories";
 import type { Project } from "../domain/project";
 import { FindingSchema, ProjectSchema } from "../domain/schemas";
 import {
@@ -31,6 +35,7 @@ import {
   analysisVersionHash,
   replayReviewedFindings,
   reanalysisDirectiveHash,
+  reviewActionId,
   reviewStateSubstantiveHash,
   validateAnalysisArtifacts,
 } from "../features/review/review-actions";
@@ -200,35 +205,80 @@ const ReviewAuditSchema = z
     reviewedAt: z.string().datetime(),
   })
   .strict();
-const ReviewActionSchema = z.discriminatedUnion("action", [
-  z
-    .object({
-      actionId: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
-      action: z.enum(["confirm", "soft_delete"]),
-      findingId: z.string().min(1),
-      beforeSnapshot: FindingSchema,
-      beforeHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
-      afterSnapshot: FindingSchema,
-      afterHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
-      reviewer: z.string().min(1),
-      reason: z.string().min(1),
-      actedAt: z.string().datetime(),
-    })
-    .strict(),
-  z
-    .object({
-      actionId: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
-      action: z.literal("add_human"),
-      findingId: z.string().min(1),
-      beforeHash: z.null(),
-      afterSnapshot: FindingSchema,
-      afterHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
-      reviewer: z.string().min(1),
-      reason: z.string().min(1),
-      actedAt: z.string().datetime(),
-    })
-    .strict(),
-]);
+const ReviewDecisionActionSchema = z
+  .object({
+    actionId: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+    action: z.enum(["confirm", "soft_delete"]),
+    findingId: z.string().min(1),
+    beforeSnapshot: FindingSchema,
+    beforeHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+    afterSnapshot: FindingSchema,
+    afterHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+    reviewer: z.string().min(1),
+    reason: z.string().min(1),
+    actedAt: z.string().datetime(),
+  })
+  .strict();
+const AddHumanReviewActionSchema = z
+  .object({
+    actionId: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+    action: z.literal("add_human"),
+    findingId: z.string().min(1),
+    beforeHash: z.null(),
+    afterSnapshot: FindingSchema,
+    afterHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+    reviewer: z.string().min(1),
+    reason: z.string().min(1),
+    actedAt: z.string().datetime(),
+    purpose: HumanJudgmentPurposeSchema,
+  })
+  .strict();
+const LegacyAddHumanReviewActionSchema = AddHumanReviewActionSchema.omit({
+  purpose: true,
+});
+
+const ReviewActionSchema = z
+  .discriminatedUnion("action", [
+    ReviewDecisionActionSchema,
+    AddHumanReviewActionSchema,
+  ])
+  .superRefine((action, context) => {
+    if (action.action !== "add_human") return;
+    try {
+      resolveHumanJudgmentPurpose({
+        claimType: action.afterSnapshot.claimType,
+        category: action.afterSnapshot.category,
+        purpose: action.purpose,
+      });
+    } catch {
+      context.addIssue({
+        code: "custom",
+        path: ["afterSnapshot", "category"],
+        message: "人工判断用途、类别或 claimType 不在闭合映射内",
+      });
+    }
+  });
+const LegacyReviewActionSchema = z
+  .discriminatedUnion("action", [
+    ReviewDecisionActionSchema,
+    LegacyAddHumanReviewActionSchema,
+  ])
+  .superRefine((action, context) => {
+    if (action.action !== "add_human") return;
+    try {
+      resolveHumanJudgmentPurpose({
+        claimType: action.afterSnapshot.claimType,
+        category: action.afterSnapshot.category,
+        allowLegacyMissingPurpose: true,
+      });
+    } catch {
+      context.addIssue({
+        code: "custom",
+        path: ["afterSnapshot", "category"],
+        message: "旧版人工判断类别或 claimType 不在闭合映射内",
+      });
+    }
+  });
 const AnalysisStageSchema = z.enum([
   "document_identity",
   "atomic_clauses",
@@ -328,28 +378,38 @@ const OfficialPrimarySourceIdsSchema = z.record(
   z.array(z.string().min(1)).min(1),
 );
 
+const workflowSessionShape = {
+  contentHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
+  revision: z.number().int().nonnegative(),
+  project: ProjectSchema,
+  parseResults: z.array(ParseResultSchema),
+  parsedUnits: z.array(ParsedUnitSchema),
+  atomicRequirements: z.array(AtomicRequirementSchema),
+  reviewAudits: z.array(ReviewAuditSchema),
+  ruleReviewAttestations: RuleReviewAttestationsSchema,
+  analysisVersions: z.array(AnalysisVersionSchema),
+  pendingReanalysis: ReanalysisRequestSchema.nullable(),
+  officialPrimarySourceIds: OfficialPrimarySourceIdsSchema,
+  selectedFindingId: z.string().nullable(),
+  lastSavedAt: z.string().datetime().nullable(),
+};
 const WorkflowSessionSchema = z
   .object({
-    sessionVersion: z.literal(1),
-    contentHash: z.string().regex(/^fnv1a64:[0-9a-f]{16}$/u),
-    revision: z.number().int().nonnegative(),
-    project: ProjectSchema,
-    parseResults: z.array(ParseResultSchema),
-    parsedUnits: z.array(ParsedUnitSchema),
-    atomicRequirements: z.array(AtomicRequirementSchema),
-    reviewAudits: z.array(ReviewAuditSchema),
+    ...workflowSessionShape,
+    sessionVersion: z.literal(2),
     reviewActions: z.array(ReviewActionSchema),
-    ruleReviewAttestations: RuleReviewAttestationsSchema,
-    analysisVersions: z.array(AnalysisVersionSchema),
-    pendingReanalysis: ReanalysisRequestSchema.nullable(),
-    officialPrimarySourceIds: OfficialPrimarySourceIdsSchema,
-    selectedFindingId: z.string().nullable(),
-    lastSavedAt: z.string().datetime().nullable(),
+  })
+  .strict();
+const LegacyWorkflowSessionSchema = z
+  .object({
+    ...workflowSessionShape,
+    sessionVersion: z.literal(1),
+    reviewActions: z.array(LegacyReviewActionSchema),
   })
   .strict();
 
 export interface WorkflowSession extends ReviewWorkflowState {
-  sessionVersion: 1;
+  sessionVersion: 2;
   contentHash: string;
   revision: number;
   project: Project;
@@ -364,7 +424,7 @@ export const createEmptyWorkflowSession = (
   projectName = "未命名外规项目",
 ): WorkflowSession =>
   sealWorkflowSession({
-    sessionVersion: 1,
+    sessionVersion: 2,
     contentHash: "fnv1a64:0000000000000000",
     revision: 0,
     project: {
@@ -395,9 +455,9 @@ export const createEmptyWorkflowSession = (
     lastSavedAt: null,
   });
 
-const workflowContent = (
-  session: WorkflowSession,
-): Omit<WorkflowSession, "contentHash"> => {
+const workflowContent = <T extends { readonly contentHash: string }>(
+  session: T,
+): Omit<T, "contentHash"> => {
   const { contentHash: _contentHash, ...content } = session;
   return content;
 };
@@ -413,13 +473,55 @@ export const sealWorkflowSession = (
   contentHash: workflowSessionContentHash(session),
 });
 
+const migrateLegacySession = (
+  legacy: z.infer<typeof LegacyWorkflowSessionSchema>,
+): WorkflowSession => {
+  const reviewActions = legacy.reviewActions.map((action) => {
+    if (action.action !== "add_human") return action;
+    const purpose = resolveHumanJudgmentPurpose({
+      claimType: action.afterSnapshot.claimType,
+      category: action.afterSnapshot.category,
+      allowLegacyMissingPurpose: true,
+    });
+    const migrated = { ...action, purpose };
+    return { ...migrated, actionId: reviewActionId(migrated) };
+  });
+  const migrated = {
+    ...legacy,
+    sessionVersion: 2 as const,
+    reviewActions,
+  };
+  return WorkflowSessionSchema.parse({
+    ...migrated,
+    contentHash: evidenceDigest(workflowContent(migrated)),
+  }) as WorkflowSession;
+};
+
 const parseSession = (value: unknown): WorkflowSession => {
-  const result = WorkflowSessionSchema.safeParse(value);
-  if (!result.success)
-    throw new Error("工作流恢复数据格式无效或包含未授权字段");
-  const session = result.data as WorkflowSession;
-  if (session.contentHash !== workflowSessionContentHash(session))
-    throw new Error("工作流内容哈希不一致；该哈希仅用于一致性检查，不代表认证");
+  const currentResult = WorkflowSessionSchema.safeParse(value);
+  let session: WorkflowSession;
+  if (currentResult.success) {
+    if (
+      currentResult.data.contentHash !==
+      evidenceDigest(workflowContent(currentResult.data))
+    )
+      throw new Error(
+        "工作流内容哈希不一致；该哈希仅用于一致性检查，不代表认证",
+      );
+    session = currentResult.data as WorkflowSession;
+  } else {
+    const legacyResult = LegacyWorkflowSessionSchema.safeParse(value);
+    if (!legacyResult.success)
+      throw new Error("工作流恢复数据格式无效或包含未授权字段");
+    if (
+      legacyResult.data.contentHash !==
+      evidenceDigest(workflowContent(legacyResult.data))
+    )
+      throw new Error(
+        "工作流内容哈希不一致；该哈希仅用于一致性检查，不代表认证",
+      );
+    session = migrateLegacySession(legacyResult.data);
+  }
   const sourceIds = new Set(
     session.project.sourceUnits.map(({ sourceId }) => sourceId),
   );

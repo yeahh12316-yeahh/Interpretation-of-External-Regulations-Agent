@@ -463,3 +463,162 @@ values: no matches
 No report/media/logo assets were added. Builders still do not call the model,
 and no API key, endpoint, credential, session secret, unsafe HTML, or model log
 was introduced into report models, exports, or the production build.
+
+---
+
+## Fix round 2/5 — closed replay and checkpoint taxonomies
+
+Fix base: `df8437c4089f73c8a809a38dc4b1c44f0d69dd91`
+
+### RED evidence
+
+The first focused run reproduced the human-purpose boundary before production
+changes. It showed five replay/action failures, one resealed workflow-store
+acceptance, and one report substring-routing acceptance. The initial impact
+fixture also exposed a test-helper syntax error; no production conclusion was
+drawn from that helper error.
+
+```text
+vitest run review-actions workflow-store skill-orchestrator report-builders
+Test Files  4 failed (4)
+Tests       8 failed | 74 passed (82)
+P1-A behavior failures: 7
+P1-B test-helper transform error: 1
+```
+
+After correcting the helper to recompute every run's canonical output hash,
+the adversarial checkpoint test was valid. All four resealed categories
+resumed with zero gateway requests, while all seven exact legal dimensions
+were accepted:
+
+```text
+vitest run skill-orchestrator -t 'closed impact category|resealed checkpoint impact category'
+Test Files  1 failed (1)
+Tests       4 failed | 1 passed | 42 skipped (47)
+Resolved values: institution_impact:other, institution_impact:,
+institution_impact:System, institution_impact:governances
+Gateway calls before resolution: 0
+```
+
+A final compatibility RED distinguished current missing-purpose records from
+real pre-purpose records. Before the migration was added, loading the exact
+legacy fixture returned version 1 without a typed purpose instead of the
+required normalized version 2:
+
+```text
+vitest run workflow-store.test.ts -t 'restores current findings'
+Test Files  1 failed (1)
+Tests       1 failed | 5 skipped (6)
+expected sessionVersion 2 and migrated purpose; received version 1
+```
+
+### Implemented fixes
+
+1. Closed human-purpose binding
+   - A single domain module now owns the two legal purpose/category pairs:
+     `generic` → `human_review` and `recommended_action` →
+     `recommended_action:priority`.
+   - Controlled creation records the structured purpose in the immutable
+     `add_human` action and binds it into the action ID.
+   - Pure replay and the deep workflow-store schema independently reject an
+     illegal category, missing/invalid typed values, purpose/category mismatch,
+     and claim-type mismatch before accepting current state.
+   - Exact pre-purpose legal actions remain loadable through a deliberately
+     narrow version-1 compatibility path: the exact legal category and
+     `human_judgment` claimType deterministically recover the purpose, the
+     legacy action-ID/content hash is revalidated, and the loaded session is
+     normalized to version 2 with a new action ID/content hash.
+   - Version 2 requires purpose structurally. Removing it from a current action
+     fails closed. A resealed version downgrade with an illegal category or
+     claimType also fails in the strict legacy schema; only the two exact legal
+     pairs can migrate.
+   - Full and quick report action sections use exact typed equality. They no
+     longer route by `includes("recommended_action")` or another substring.
+
+2. Closed institutional-impact taxonomy
+   - The same domain module owns the seven dimensions, exact prefixed Finding
+     categories, and display labels.
+   - Live response parsing, prompt text/version, deterministic Finding and
+     relationship display generation, checkpoint resume, historical artifact
+     validation, stage/quality routing, and both report builders consume that
+     shared taxonomy.
+   - Resume validation now requires the exact category plus its deterministically
+     matching statement/rationale, one current relationship, identical Finding
+     and relationship anchors, authorized parents, and manual-review binding.
+   - Resealing only the category/output hashes can no longer restore an unknown,
+     empty, case-varied, or lookalike dimension; rejection occurs before a model
+     gateway request.
+   - The exact historical compatibility value `institution_impact` remains
+     supported only in the existing historical-artifact validator. The generic
+     `FindingSchema` was not widened.
+
+### Focused GREEN evidence
+
+```text
+vitest run src/features/review/review-actions.test.ts \
+  src/app/workflow-store.test.ts \
+  src/features/analysis/skill-orchestrator.test.ts \
+  src/features/reports/report-builders.test.ts
+
+Test Files  4 passed (4)
+Tests       82 passed (82)
+```
+
+Additional affected production UI and evidence regression batch:
+
+```text
+vitest run src/features/evidence/calculate-quality.test.ts \
+  src/features/review/ReviewPage.test.tsx \
+  src/app/WorkflowShell.test.tsx \
+  src/features/reports/ReportPage.test.tsx
+
+Test Files  4 passed (4)
+Tests       45 passed (45)
+```
+
+### Fresh final gates
+
+Full Vitest:
+
+```text
+Test Files  28 passed (28)
+Tests       272 passed (272)
+Duration    11.72s
+```
+
+Full Playwright (production workflow, persistence, OCR, evidence and report
+downloads):
+
+```text
+8 passed (11.7s)
+```
+
+Type/build:
+
+```text
+./node_modules/.bin/tsc --noEmit
+exit 0
+
+./node_modules/.bin/vite build
+749 modules transformed
+built in 4.67s
+```
+
+The existing advisory for chunks above 500 kB remains. Export PDF/DOCX and the
+CJK font are still separate on-demand assets. This round did not change either
+exporter or the rendered report structure, so the explicitly scoped instruction
+did not require regenerating the four visual-QA files.
+
+Final hygiene:
+
+```text
+production fuzzy-category scan: no startsWith/includes routing matches
+exact test credential scan over dist/: no matches
+new-line scan for console/localStorage/sessionStorage/API key/endpoint/
+unsafe HTML/authorization: no matches
+git diff --check: exit 0
+```
+
+No API key, endpoint, credential, session secret, model call, export asset,
+unsafe HTML, or logging path was added. Client hashes remain integrity
+consistency bindings, not authentication or digital signatures.

@@ -1,5 +1,12 @@
 import { z } from "zod";
 
+import {
+  INSTITUTION_IMPACT_DIMENSIONS,
+  INSTITUTION_IMPACT_LABELS,
+  InstitutionImpactCategorySchema,
+  InstitutionImpactDimensionSchema,
+  institutionImpactCategoryForDimension,
+} from "../../domain/closed-categories";
 import type { Finding } from "../../domain/finding";
 import { FindingSchema } from "../../domain/schemas";
 import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
@@ -261,21 +268,13 @@ const KeyMattersResponseSchema = z
   })
   .strict();
 
-export const INSTITUTION_IMPACT_DIMENSIONS = [
-  "governance",
-  "institution",
-  "process",
-  "system",
-  "data",
-  "people",
-  "reporting",
-] as const;
+export { INSTITUTION_IMPACT_DIMENSIONS } from "../../domain/closed-categories";
 
 const InstitutionImpactItemSchema = z
   .object({
     findingId: z.string().min(1),
     relationshipId: z.string().min(1),
-    category: z.enum(INSTITUTION_IMPACT_DIMENSIONS),
+    category: InstitutionImpactDimensionSchema,
     possibility: z.enum(["potential", "not_established"]),
     inferenceParents: z.array(z.string().min(1)).min(1),
     sourceAnchors: z.array(SourceAnchorSchema).min(1),
@@ -620,9 +619,7 @@ export const AnalysisArtifactsSchema = z
       if (
         finding.claimType === "ai_inference" &&
         finding.category !== "institution_impact" &&
-        !INSTITUTION_IMPACT_DIMENSIONS.some(
-          (dimension) => finding.category === `institution_impact:${dimension}`,
-        )
+        !InstitutionImpactCategorySchema.safeParse(finding.category).success
       ) {
         context.addIssue({
           code: "custom",
@@ -1031,7 +1028,8 @@ export const analysisStageForFinding = (
     return "document_identity";
   if (
     finding.claimType === "ai_inference" ||
-    finding.category.startsWith("institution_impact")
+    finding.category === "institution_impact" ||
+    InstitutionImpactCategorySchema.safeParse(finding.category).success
   )
     return "institution_impact";
   return "key_matters";
@@ -1723,19 +1721,6 @@ const validateAtomicResponse = (
   }
 };
 
-const IMPACT_LABELS: Record<
-  (typeof INSTITUTION_IMPACT_DIMENSIONS)[number],
-  string
-> = {
-  governance: "治理",
-  institution: "制度",
-  process: "流程",
-  system: "系统",
-  data: "数据",
-  people: "人员",
-  reporting: "报告",
-} as const;
-
 const buildStructuredImpacts = (
   response: z.infer<typeof InstitutionImpactResponseSchema>,
   upstreamFindings: readonly Finding[],
@@ -1779,16 +1764,12 @@ const buildStructuredImpacts = (
         "机构影响锚点必须是所选父 Finding 授权锚点并集的相等或子集",
       );
     }
-    const label = IMPACT_LABELS[impact.category];
-    const statement =
-      impact.possibility === "potential"
-        ? `可能需要评估${label}维度的相关影响（AI推导，尚未建立机构实际情况）。`
-        : `尚无法建立${label}维度的具体机构影响，需补充机构材料并人工确认。`;
+    const display = storedImpactDisplay(impact.category, impact.possibility);
     findings.push(
       FindingSchema.parse({
         findingId: impact.findingId,
-        category: `institution_impact:${impact.category}`,
-        statement,
+        category: institutionImpactCategoryForDimension(impact.category),
+        statement: display.statement,
         claimType: "ai_inference",
         sourceAnchors: impact.sourceAnchors,
         inferenceParents: impact.inferenceParents,
@@ -1804,10 +1785,7 @@ const buildStructuredImpacts = (
         toFindingId: impact.findingId,
         relationshipType: impact.possibility,
         sourceAnchors: impact.sourceAnchors,
-        rationale:
-          impact.possibility === "potential"
-            ? `监管要求与${label}维度可能相关，具体机构影响尚待核实。`
-            : `现有材料不足以建立监管要求与${label}维度的具体机构影响。`,
+        rationale: display.rationale,
         confidence: impact.confidence,
         manualVerificationRequired: true,
       }),
@@ -1815,6 +1793,22 @@ const buildStructuredImpacts = (
   }
   validateFindings(findings, scope);
   return { findings, relationships };
+};
+
+const storedImpactDisplay = (
+  dimension: (typeof INSTITUTION_IMPACT_DIMENSIONS)[number],
+  possibility: InferenceRelationship["relationshipType"],
+): { readonly statement: string; readonly rationale: string } => {
+  const label = INSTITUTION_IMPACT_LABELS[dimension];
+  return possibility === "potential"
+    ? {
+        statement: `可能需要评估${label}维度的相关影响（AI推导，尚未建立机构实际情况）。`,
+        rationale: `监管要求与${label}维度可能相关，具体机构影响尚待核实。`,
+      }
+    : {
+        statement: `尚无法建立${label}维度的具体机构影响，需补充机构材料并人工确认。`,
+        rationale: `现有材料不足以建立监管要求与${label}维度的具体机构影响。`,
+      };
 };
 
 const validateStoredImpactOutput = (
@@ -1830,9 +1824,12 @@ const validateStoredImpactOutput = (
     throw new Error("checkpoint 机构影响节点包含了非本阶段输出");
   }
   for (const finding of output.findings) {
+    const parsedCategory = InstitutionImpactCategorySchema.safeParse(
+      finding.category,
+    );
     if (
       finding.claimType !== "ai_inference" ||
-      !finding.category.startsWith("institution_impact:") ||
+      !parsedCategory.success ||
       !finding.requiredReview
     ) {
       throw new Error("checkpoint 机构影响 Finding 结构无效");
@@ -1858,10 +1855,25 @@ const validateStoredImpactOutput = (
     const relationship = output.inferenceRelationships.find(
       (item) => item.toFindingId === finding.findingId,
     );
+    const dimension = parsedCategory.success
+      ? InstitutionImpactDimensionSchema.parse(
+          parsedCategory.data.slice("institution_impact:".length),
+        )
+      : undefined;
+    const expectedDisplay =
+      relationship && dimension
+        ? storedImpactDisplay(dimension, relationship.relationshipType)
+        : undefined;
     if (
       !relationship ||
+      !expectedDisplay ||
+      finding.statement !== expectedDisplay.statement ||
+      relationship.rationale !== expectedDisplay.rationale ||
+      !relationship.manualVerificationRequired ||
       relationship.fromFindingIds.join("\u0000") !==
         finding.inferenceParents.join("\u0000") ||
+      relationship.sourceAnchors.map(anchorIdentity).join("\u0000") !==
+        finding.sourceAnchors.map(anchorIdentity).join("\u0000") ||
       relationship.sourceAnchors.some(
         (item) => !parentAnchors.has(anchorIdentity(item)),
       )

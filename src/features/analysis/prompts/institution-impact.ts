@@ -1,17 +1,18 @@
 import type { ModelMessage } from "../../model/model-gateway";
+import { INSTITUTION_IMPACT_DIMENSIONS } from "../../../domain/closed-categories";
 import {
   SHARED_GUARDRAILS,
   SHARED_GUARDRAILS_VERSION,
 } from "./shared-guardrails";
 
-export const INSTITUTION_IMPACT_PROMPT_VERSION = `institution-impact-v2+${SHARED_GUARDRAILS_VERSION}`;
+export const INSTITUTION_IMPACT_PROMPT_VERSION = `institution-impact-v3+${SHARED_GUARDRAILS_VERSION}`;
 
 export const buildInstitutionImpactMessages = (
   payload: string,
 ): ModelMessage[] => [
   {
     role: "system",
-    content: `${SHARED_GUARDRAILS}\n任务：在没有机构内部画像、制度、流程、系统、控制和数据的前提下，仅返回 impacts 结构。每项只填写 findingId、relationshipId、category、possibility、inferenceParents、sourceAnchors、confidence；禁止提供 statement、rationale、实际差距、控制失效、制度不合规或整改结论。category 仅限 governance/institution/process/system/data/people/reporting，possibility 仅限 potential/not_established。展示文字由系统确定性生成。`,
+    content: `${SHARED_GUARDRAILS}\n任务：在没有机构内部画像、制度、流程、系统、控制和数据的前提下，仅返回 impacts 结构。每项只填写 findingId、relationshipId、category、possibility、inferenceParents、sourceAnchors、confidence；禁止提供 statement、rationale、实际差距、控制失效、制度不合规或整改结论。category 仅限 ${INSTITUTION_IMPACT_DIMENSIONS.join("/")}，possibility 仅限 potential/not_established。展示文字由系统确定性生成。`,
   },
   {
     role: "user",

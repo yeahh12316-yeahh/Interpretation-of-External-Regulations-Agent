@@ -1,5 +1,9 @@
 import type { Finding } from "../../domain/finding";
 import {
+  humanJudgmentCategoryForPurpose,
+  InstitutionImpactCategorySchema,
+} from "../../domain/closed-categories";
+import {
   createReportContext,
   IMPACT_DIMENSIONS,
   itemsMatching,
@@ -17,10 +21,10 @@ export const buildFullReport = (
   options: ReportBuildOptions = {},
 ): ReportModel => {
   const context = createReportContext(session, options);
-  const impactItems = itemsMatching(context, (finding) =>
-    IMPACT_DIMENSIONS.some(
-      ({ dimension }) => finding.category === `institution_impact:${dimension}`,
-    ),
+  const impactItems = itemsMatching(
+    context,
+    (finding) =>
+      InstitutionImpactCategorySchema.safeParse(finding.category).success,
   );
   const sections: ReportSection[] = [
     {
@@ -98,8 +102,11 @@ export const buildFullReport = (
     {
       key: "recommended_actions",
       title: "建议行动及优先级",
-      items: itemsMatching(context, (finding) =>
-        has(finding, "recommended_action"),
+      items: itemsMatching(
+        context,
+        (finding) =>
+          finding.category ===
+          humanJudgmentCategoryForPurpose("recommended_action"),
       ),
     },
     {

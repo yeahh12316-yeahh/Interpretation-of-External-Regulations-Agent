@@ -9,6 +9,8 @@ import {
 import { reportExportBlockReason, type ReportModel } from "./report-model";
 import { addHumanJudgment } from "../review/review-actions";
 import type { WorkflowSession } from "../../app/workflow-store";
+import { reviewSnapshotHash } from "../evidence/calculate-quality";
+import { evidenceDigest } from "../evidence/evidence-hash";
 
 it("builds distinct 11-section and exact 8-key reports from one allow-listed model", () => {
   const session = reviewedReportSession();
@@ -230,4 +232,65 @@ it("routes only the closed recommended-action human purpose into action sections
       expect.objectContaining({ findingId: "H-GENERIC" }),
     ]),
   );
+});
+
+it("fails closed instead of substring-routing a resealed human action category", () => {
+  const original = reviewedReportSession();
+  const created = addHumanJudgment(original, {
+    findingId: "H-SMUGGLED",
+    statement: "不应进入行动章节",
+    purpose: "recommended_action",
+    anchor: original.project.findings[0].sourceAnchors[0],
+    reviewer: "复核人",
+    reason: "攻击夹具",
+    reviewedAt: "2026-08-16T02:45:00.000Z",
+  }) as WorkflowSession;
+  const action = created.reviewActions.at(-1);
+  if (action?.action !== "add_human") throw new Error("fixture action");
+  const afterSnapshot = {
+    ...action.afterSnapshot,
+    category: "foo_recommended_action",
+  };
+  const afterHash = reviewSnapshotHash(afterSnapshot);
+  const actionContent = {
+    action: "add_human" as const,
+    findingId: action.findingId,
+    afterHash,
+    reviewer: action.reviewer,
+    reason: action.reason,
+    actedAt: action.actedAt,
+    purpose: action.purpose,
+  };
+  const tampered = {
+    ...created,
+    project: {
+      ...created.project,
+      findings: created.project.findings.map((finding) =>
+        finding.findingId === action.findingId ? afterSnapshot : finding,
+      ),
+    },
+    reviewActions: created.reviewActions.map((item) =>
+      item === action
+        ? {
+            ...action,
+            actionId: evidenceDigest(actionContent),
+            afterSnapshot,
+            afterHash,
+          }
+        : item,
+    ),
+  } as WorkflowSession;
+
+  expect(() => buildFullReport(tampered)).toThrow(/人工判断|用途|类别/);
+  expect(() => buildQuickCommentary(tampered)).toThrow(/人工判断|用途|类别/);
+
+  const { purpose: _purpose, ...missingPurposeAction } = action;
+  const missingPurpose = {
+    ...created,
+    reviewActions: created.reviewActions.map((item) =>
+      item === action ? missingPurposeAction : item,
+    ),
+  } as WorkflowSession;
+  expect(() => buildFullReport(missingPurpose)).toThrow(/用途|缺少/);
+  expect(() => buildQuickCommentary(missingPurpose)).toThrow(/用途|缺少/);
 });

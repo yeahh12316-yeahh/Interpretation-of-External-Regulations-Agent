@@ -1,5 +1,9 @@
 import { describe, expect, it } from "vitest";
 
+import {
+  INSTITUTION_IMPACT_LABELS,
+  institutionImpactDimensionForCategory,
+} from "../../domain/closed-categories";
 import { FindingSchema } from "../../domain/schemas";
 import type { SourceAnchor, SourceUnit } from "../../domain/source";
 import { evidenceDigest } from "../evidence/evidence-hash";
@@ -15,6 +19,7 @@ import {
   AnalysisArtifactsSchema,
   AtomicRequirementSchema,
   runAnalysis,
+  type AnalysisCheckpoint,
   type AnalysisProgress,
 } from "./skill-orchestrator";
 
@@ -82,6 +87,83 @@ class RecordingGateway implements ModelGateway {
     ) as T;
   }
 }
+
+const sha256Json = async (value: unknown): Promise<string> => {
+  const bytes = new TextEncoder().encode(JSON.stringify(value));
+  const digest = await globalThis.crypto.subtle.digest("SHA-256", bytes);
+  return [...new Uint8Array(digest)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join("");
+};
+
+const resealImpactCategory = async (
+  checkpoint: AnalysisCheckpoint,
+  category: string,
+): Promise<AnalysisCheckpoint> => {
+  const runIndex = checkpoint.runs.findIndex(
+    (run) => run.stage === "institution_impact",
+  );
+  if (runIndex < 0) throw new Error("fixture impact run");
+  const run = checkpoint.runs[runIndex];
+  const targetId = run.findingIds[0];
+  const dimension = institutionImpactDimensionForCategory(category);
+  const findings = checkpoint.findings.map((finding) =>
+    finding.findingId === targetId
+      ? {
+          ...finding,
+          category,
+          statement: dimension
+            ? `可能需要评估${INSTITUTION_IMPACT_LABELS[dimension]}维度的相关影响（AI推导，尚未建立机构实际情况）。`
+            : finding.statement,
+        }
+      : finding,
+  );
+  const inferenceRelationships = checkpoint.inferenceRelationships.map(
+    (relationship) =>
+      relationship.toFindingId === targetId && dimension
+        ? {
+            ...relationship,
+            rationale: `监管要求与${INSTITUTION_IMPACT_LABELS[dimension]}维度可能相关，具体机构影响尚待核实。`,
+          }
+        : relationship,
+  );
+  let nextFindingOffset = 0;
+  let atomicOffset = 0;
+  let relationshipOffset = 0;
+  let conflictOffset = 0;
+  const runs = [];
+  for (const item of checkpoint.runs) {
+    const output = {
+      findings: findings.slice(
+        nextFindingOffset,
+        nextFindingOffset + item.findingIds.length,
+      ),
+      atomicRequirements: checkpoint.atomicRequirements.slice(
+        atomicOffset,
+        atomicOffset + item.atomicRequirementIds.length,
+      ),
+      inferenceRelationships: inferenceRelationships.slice(
+        relationshipOffset,
+        relationshipOffset + item.inferenceRelationshipIds.length,
+      ),
+      conflicts: checkpoint.conflicts.slice(
+        conflictOffset,
+        conflictOffset + item.conflictIds.length,
+      ),
+    };
+    runs.push({ ...item, outputHash: await sha256Json(output) });
+    nextFindingOffset += item.findingIds.length;
+    atomicOffset += item.atomicRequirementIds.length;
+    relationshipOffset += item.inferenceRelationshipIds.length;
+    conflictOffset += item.conflictIds.length;
+  }
+  return {
+    ...checkpoint,
+    findings,
+    inferenceRelationships,
+    runs,
+  };
+};
 
 const successfulResponse = (
   request: StructuredModelRequest<unknown>,
@@ -158,6 +240,30 @@ const emptyResponse = (request: StructuredModelRequest<unknown>): unknown => {
   }
 };
 
+const completedImpactCheckpoint = async (): Promise<AnalysisCheckpoint> => {
+  const controller = new AbortController();
+  let checkpoint: AnalysisCheckpoint | undefined;
+  await expect(
+    runAnalysis(
+      {
+        sourceUnits: [regulatorySource],
+        gateway: new RecordingGateway(successfulResponse),
+        model: "user-model",
+        hasOfficialInterpretation: false,
+      },
+      controller.signal,
+      (event) => {
+        if (event.stage === "institution_impact") {
+          checkpoint = event.checkpoint;
+          controller.abort();
+        }
+      },
+    ),
+  ).rejects.toMatchObject({ name: "AbortError" });
+  if (!checkpoint) throw new Error("fixture checkpoint");
+  return checkpoint;
+};
+
 describe("runAnalysis", () => {
   it("accepts the closed institution impact dimension and emits its exact category", async () => {
     const gateway = new RecordingGateway((request) => {
@@ -192,6 +298,60 @@ describe("runAnalysis", () => {
         }),
       ]),
     );
+  });
+
+  it.each([
+    "institution_impact:other",
+    "institution_impact:",
+    "institution_impact:System",
+    "institution_impact:governances",
+  ])(
+    "rejects resealed checkpoint impact category %s before any gateway call",
+    async (category) => {
+      const tampered = await resealImpactCategory(
+        await completedImpactCheckpoint(),
+        category,
+      );
+      const gateway = new RecordingGateway(emptyResponse);
+      await expect(
+        runAnalysis({
+          sourceUnits: [regulatorySource],
+          gateway,
+          model: "user-model",
+          hasOfficialInterpretation: false,
+          resumeFrom: tampered,
+        }),
+      ).rejects.toThrow(/checkpoint|机构影响|类别|七维/);
+      expect(gateway.requests).toHaveLength(0);
+    },
+  );
+
+  it("accepts every exact closed impact category during zero-gateway resume", async () => {
+    for (const category of [
+      "institution_impact:governance",
+      "institution_impact:institution",
+      "institution_impact:process",
+      "institution_impact:system",
+      "institution_impact:data",
+      "institution_impact:people",
+      "institution_impact:reporting",
+    ]) {
+      const checkpoint = await completedImpactCheckpoint();
+      const resealed = await resealImpactCategory(checkpoint, category);
+      const gateway = new RecordingGateway(emptyResponse);
+      const resumed = await runAnalysis({
+        sourceUnits: [regulatorySource],
+        gateway,
+        model: "user-model",
+        hasOfficialInterpretation: false,
+        resumeFrom: resealed,
+      });
+      expect(gateway.requests).toHaveLength(0);
+      expect(
+        resumed.findings.find(({ findingId }) => findingId === "IMP-1")
+          ?.category,
+      ).toBe(category);
+    }
   });
 
   it("rejects a resealed historical impact outside the closed seven dimensions", () => {

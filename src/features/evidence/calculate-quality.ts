@@ -1,6 +1,7 @@
 import { z } from "zod";
 
 import type { Finding } from "../../domain/finding";
+import { InstitutionImpactCategorySchema } from "../../domain/closed-categories";
 import type { Project } from "../../domain/project";
 import type { SourceAnchor, SourceType, SourceUnit } from "../../domain/source";
 import {
@@ -350,7 +351,7 @@ export function calculateQuality(
   const inferenceCandidates = activeFindings.filter(
     (finding) =>
       finding.claimType === "ai_inference" ||
-      finding.category.startsWith("institution_impact:"),
+      InstitutionImpactCategorySchema.safeParse(finding.category).success,
   );
   const markedInferences = inferenceCandidates.filter(
     (finding) =>

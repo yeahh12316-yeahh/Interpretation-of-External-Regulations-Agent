@@ -1,8 +1,11 @@
 import type { Finding } from "../../domain/finding";
 import type { WorkflowSession } from "../../app/workflow-store";
 import {
+  humanJudgmentCategoryForPurpose,
+  InstitutionImpactCategorySchema,
+} from "../../domain/closed-categories";
+import {
   createReportContext,
-  IMPACT_DIMENSIONS,
   itemsMatching,
   type ReportBuildOptions,
   type ReportModel,
@@ -78,10 +81,7 @@ export const buildQuickCommentary = (
         context,
         (finding) =>
           has(finding, "applicability") ||
-          IMPACT_DIMENSIONS.some(
-            ({ dimension }) =>
-              finding.category === `institution_impact:${dimension}`,
-          ),
+          InstitutionImpactCategorySchema.safeParse(finding.category).success,
         3,
       ),
     },
@@ -90,7 +90,9 @@ export const buildQuickCommentary = (
       title: "近期行动清单",
       items: itemsMatching(
         context,
-        (finding) => has(finding, "recommended_action"),
+        (finding) =>
+          finding.category ===
+          humanJudgmentCategoryForPurpose("recommended_action"),
         5,
       ),
     },

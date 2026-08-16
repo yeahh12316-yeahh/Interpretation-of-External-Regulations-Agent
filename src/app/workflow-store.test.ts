@@ -6,6 +6,7 @@ import { evidenceDigest } from "../features/evidence/evidence-hash";
 import { reviewSnapshotHash } from "../features/evidence/calculate-quality";
 import {
   analysisVersionHash,
+  addHumanJudgment,
   attestValidationRule,
   confirmFinding,
   createAnalysisVersion,
@@ -363,6 +364,7 @@ it("restores current findings with append-only audit and attestation records and
     reviewer: "伪造人",
     reason: "仅伪造 action 与 session hash",
     actedAt: "2026-08-15T03:30:00.000Z",
+    purpose: "generic" as const,
   };
   const fakeAction = {
     ...fakeActionContent,
@@ -944,6 +946,170 @@ it("restores current findings with append-only audit and attestation records and
       saved.revision,
     ),
   ).rejects.toThrow(/人工规则确认|原子工件|派生/);
+
+  const humanState = addHumanJudgment(saved, {
+    findingId: "H-RESEALED-CATEGORY",
+    statement: "优先完善制度",
+    purpose: "recommended_action",
+    anchor,
+    reviewer: "复核人",
+    reason: "验证用途闭合",
+    reviewedAt: "2026-08-15T04:30:00.000Z",
+  });
+  const humanAction = humanState.reviewActions.at(-1);
+  if (humanAction?.action !== "add_human") throw new Error("fixture action");
+  const illegalHuman = {
+    ...humanAction.afterSnapshot,
+    category: "recommended_action:unapproved",
+  };
+  const illegalHash = reviewSnapshotHash(illegalHuman);
+  const illegalActionContent = {
+    action: "add_human" as const,
+    findingId: humanAction.findingId,
+    afterHash: illegalHash,
+    reviewer: humanAction.reviewer,
+    reason: humanAction.reason,
+    actedAt: humanAction.actedAt,
+    purpose: humanAction.purpose,
+  };
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        ...humanState,
+        revision: saved.revision,
+        project: {
+          ...humanState.project,
+          findings: humanState.project.findings.map((finding) =>
+            finding.findingId === humanAction.findingId
+              ? illegalHuman
+              : finding,
+          ),
+        },
+        reviewActions: humanState.reviewActions.map((action) =>
+          action === humanAction
+            ? {
+                ...humanAction,
+                actionId: evidenceDigest(illegalActionContent),
+                afterSnapshot: illegalHuman,
+                afterHash: illegalHash,
+              }
+            : action,
+        ),
+      }),
+      saved.revision,
+    ),
+  ).rejects.toThrow();
+
+  const legacyActionId = evidenceDigest({
+    action: "add_human",
+    findingId: humanAction.findingId,
+    afterHash: humanAction.afterHash,
+    reviewer: humanAction.reviewer,
+    reason: humanAction.reason,
+    actedAt: humanAction.actedAt,
+  });
+  await expect(
+    workflowSessionRepository.save(
+      sealWorkflowSession({
+        ...saved,
+        ...humanState,
+        revision: saved.revision,
+        reviewActions: humanState.reviewActions.map((action) => {
+          if (action !== humanAction) return action;
+          const { purpose: _purpose, ...missingPurposeAction } = humanAction;
+          return { ...missingPurposeAction, actionId: legacyActionId };
+        }),
+      } as never),
+      saved.revision,
+    ),
+  ).rejects.toThrow(/工作流|用途|字段/);
+
+  const legacyUnsealed = {
+    ...saved,
+    ...humanState,
+    sessionVersion: 1 as const,
+    revision: saved.revision,
+    reviewActions: humanState.reviewActions.map((action) => {
+      if (action !== humanAction) return action;
+      const { purpose: _purpose, ...legacyAction } = humanAction;
+      return { ...legacyAction, actionId: legacyActionId };
+    }),
+  };
+  const { contentHash: _legacyHash, ...legacyContent } = legacyUnsealed;
+  const legacySession = {
+    ...legacyUnsealed,
+    contentHash: evidenceDigest(legacyContent),
+  };
+  const downgradedIllegalActionContent = {
+    action: "add_human" as const,
+    findingId: humanAction.findingId,
+    afterHash: illegalHash,
+    reviewer: humanAction.reviewer,
+    reason: humanAction.reason,
+    actedAt: humanAction.actedAt,
+  };
+  const downgradedIllegalUnsealed = {
+    ...legacyUnsealed,
+    project: {
+      ...legacyUnsealed.project,
+      findings: legacyUnsealed.project.findings.map((finding) =>
+        finding.findingId === humanAction.findingId ? illegalHuman : finding,
+      ),
+    },
+    reviewActions: legacyUnsealed.reviewActions.map((action) =>
+      action.findingId === humanAction.findingId
+        ? {
+            ...action,
+            actionId: evidenceDigest(downgradedIllegalActionContent),
+            afterSnapshot: illegalHuman,
+            afterHash: illegalHash,
+          }
+        : action,
+    ),
+  };
+  const { contentHash: _downgradedIllegalHash, ...downgradedIllegalContent } =
+    downgradedIllegalUnsealed;
+  await projectDatabase.workflowSessions.put({
+    projectId: legacySession.project.projectId,
+    session: {
+      ...downgradedIllegalUnsealed,
+      contentHash: evidenceDigest(downgradedIllegalContent),
+    },
+    revision: legacySession.revision,
+    updatedAt: "2026-08-15T04:30:30.000Z",
+  });
+  await expect(
+    workflowSessionRepository.load(legacySession.project.projectId),
+  ).rejects.toThrow(/工作流|人工判断|类别|字段/);
+
+  await projectDatabase.workflowSessions.put({
+    projectId: legacySession.project.projectId,
+    session: legacySession,
+    revision: legacySession.revision,
+    updatedAt: "2026-08-15T04:31:00.000Z",
+  });
+  await expect(
+    workflowSessionRepository.load(legacySession.project.projectId),
+  ).resolves.toMatchObject({
+    sessionVersion: 2,
+    project: {
+      findings: expect.arrayContaining([
+        expect.objectContaining({
+          findingId: humanAction.findingId,
+          category: "recommended_action:priority",
+          claimType: "human_judgment",
+        }),
+      ]),
+    },
+    reviewActions: expect.arrayContaining([
+      expect.objectContaining({
+        action: "add_human",
+        findingId: humanAction.findingId,
+        purpose: "recommended_action",
+      }),
+    ]),
+  });
 });
 
 it("uses compare-and-swap revisions and rejects stale concurrent saves", async () => {

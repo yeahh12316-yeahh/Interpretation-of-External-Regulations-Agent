@@ -2,6 +2,13 @@ import type { ClaimType, Finding, ReviewStatus } from "../../domain/finding";
 import type { SourceAnchor, SourceType } from "../../domain/source";
 import type { WorkflowSession } from "../../app/workflow-store";
 import {
+  INSTITUTION_IMPACT_DIMENSIONS,
+  INSTITUTION_IMPACT_LABELS,
+  institutionImpactDimensionForCategory,
+  resolveHumanJudgmentPurpose,
+  type InstitutionImpactDimension,
+} from "../../domain/closed-categories";
+import {
   canFinalizeSession,
   hasAuthoritativeParsingEvidence,
   reviewSnapshotHash,
@@ -15,14 +22,7 @@ import {
 
 export type ReportType = "full_report" | "quick_commentary";
 export type ReportReviewStatus = "human_finalized" | "ai_draft";
-export type ImpactDimension =
-  | "governance"
-  | "institution"
-  | "process"
-  | "system"
-  | "data"
-  | "people"
-  | "reporting";
+export type ImpactDimension = InstitutionImpactDimension;
 
 export interface ReportEvidence {
   readonly sourceId: string;
@@ -70,21 +70,13 @@ export interface ReportSection {
 export const IMPACT_DIMENSIONS: readonly {
   readonly dimension: ImpactDimension;
   readonly title: string;
-}[] = [
-  { dimension: "governance", title: "治理" },
-  { dimension: "institution", title: "制度" },
-  { dimension: "process", title: "流程" },
-  { dimension: "system", title: "系统" },
-  { dimension: "data", title: "数据" },
-  { dimension: "people", title: "人员" },
-  { dimension: "reporting", title: "报告" },
-] as const;
+}[] = INSTITUTION_IMPACT_DIMENSIONS.map((dimension) => ({
+  dimension,
+  title: INSTITUTION_IMPACT_LABELS[dimension],
+}));
 
 const impactDimension = (category: string): ImpactDimension | null => {
-  const match = IMPACT_DIMENSIONS.find(
-    ({ dimension }) => category === `institution_impact:${dimension}`,
-  );
-  return match?.dimension ?? null;
+  return institutionImpactDimensionForCategory(category) ?? null;
 };
 
 export const impactDimensionTitle = (
@@ -148,12 +140,27 @@ const isControlledCurrentFinding = (
 ): boolean => {
   if (finding.reviewStatus === "unreviewed") return true;
   if (finding.claimType === "human_judgment") {
+    resolveHumanJudgmentPurpose({
+      claimType: finding.claimType,
+      category: finding.category,
+      allowLegacyMissingPurpose: true,
+    });
     return session.reviewActions.some(
       (action) =>
         action.action === "add_human" &&
         action.findingId === finding.findingId &&
         action.afterHash === reviewSnapshotHash(finding) &&
-        stableValue(action.afterSnapshot) === stableValue(finding),
+        stableValue(action.afterSnapshot) === stableValue(finding) &&
+        resolveHumanJudgmentPurpose({
+          claimType: action.afterSnapshot.claimType,
+          category: action.afterSnapshot.category,
+          purpose: action.purpose,
+        }) ===
+          resolveHumanJudgmentPurpose({
+            claimType: finding.claimType,
+            category: finding.category,
+            allowLegacyMissingPurpose: true,
+          }),
     );
   }
   if (finding.reviewStatus === "modified") {

@@ -2,6 +2,11 @@ import type { Finding } from "../../domain/finding";
 import type { Project, WorkflowStep } from "../../domain/project";
 import { FindingSchema, ProjectSchema } from "../../domain/schemas";
 import type { SourceAnchor } from "../../domain/source";
+import {
+  humanJudgmentCategoryForPurpose,
+  resolveHumanJudgmentPurpose,
+  type HumanJudgmentPurpose,
+} from "../../domain/closed-categories";
 import type {
   AnalysisStage,
   AtomicRequirement,
@@ -261,6 +266,8 @@ export interface AddHumanReviewAction {
   readonly reviewer: string;
   readonly reason: string;
   readonly actedAt: string;
+  /** Added in Task 10; absent only on exact legacy legal records. */
+  readonly purpose?: HumanJudgmentPurpose;
 }
 
 export type ReviewAction = ReviewDecisionAction | AddHumanReviewAction;
@@ -461,7 +468,7 @@ export const deleteFinding = (
     "soft_delete",
   );
 
-export type HumanJudgmentPurpose = "generic" | "recommended_action";
+export type { HumanJudgmentPurpose } from "../../domain/closed-categories";
 
 export interface HumanJudgmentInput extends ReviewMeta {
   readonly findingId: string;
@@ -474,14 +481,7 @@ export const addHumanJudgment = (
   state: ReviewWorkflowState,
   input: HumanJudgmentInput,
 ): ReviewWorkflowState => {
-  const category =
-    input.purpose === "recommended_action"
-      ? "recommended_action:priority"
-      : input.purpose === "generic"
-        ? "human_review"
-        : (() => {
-            throw new Error("人工判断用途不在允许范围内");
-          })();
+  const category = humanJudgmentCategoryForPurpose(input.purpose);
   const reviewer = required(input.reviewer, "复核人");
   const reason = required(input.reason, "判断理由");
   const reviewedAt = utc(input.reviewedAt);
@@ -542,6 +542,7 @@ export const addHumanJudgment = (
           reviewer,
           reason,
           actedAt: reviewedAt,
+          purpose: input.purpose,
         }),
         action: "add_human",
         findingId: finding.findingId,
@@ -551,22 +552,33 @@ export const addHumanJudgment = (
         reviewer,
         reason,
         actedAt: reviewedAt,
+        purpose: input.purpose,
       },
     ],
   };
 };
 
-const actionIdFor = (action: ReviewAction): string =>
+export const reviewActionId = (action: ReviewAction): string =>
   evidenceDigest(
     action.action === "add_human"
-      ? {
-          action: action.action,
-          findingId: action.findingId,
-          afterHash: action.afterHash,
-          reviewer: action.reviewer,
-          reason: action.reason,
-          actedAt: action.actedAt,
-        }
+      ? action.purpose === undefined
+        ? {
+            action: action.action,
+            findingId: action.findingId,
+            afterHash: action.afterHash,
+            reviewer: action.reviewer,
+            reason: action.reason,
+            actedAt: action.actedAt,
+          }
+        : {
+            action: action.action,
+            findingId: action.findingId,
+            afterHash: action.afterHash,
+            reviewer: action.reviewer,
+            reason: action.reason,
+            actedAt: action.actedAt,
+            purpose: action.purpose,
+          }
       : {
           action: action.action,
           findingId: action.findingId,
@@ -584,6 +596,7 @@ export const replayReviewedFindings = (
   reviewAudits: readonly ReviewAudit[],
   reviewActions: readonly ReviewAction[],
   evidenceIndex: SourceIndex,
+  options: { readonly allowLegacyMissingHumanPurpose?: boolean } = {},
 ): Finding[] => {
   if (!latestVersion) {
     if (reviewAudits.length || reviewActions.length)
@@ -603,12 +616,19 @@ export const replayReviewedFindings = (
   for (const action of reviewActions) {
     if (
       actionIds.has(action.actionId) ||
-      action.actionId !== actionIdFor(action) ||
+      action.actionId !== reviewActionId(action) ||
       action.afterHash !== reviewSnapshotHash(action.afterSnapshot)
     )
       throw new Error("复核动作 ID、快照或哈希无效");
     actionIds.add(action.actionId);
     if (action.action === "add_human") {
+      resolveHumanJudgmentPurpose({
+        claimType: action.afterSnapshot.claimType,
+        category: action.afterSnapshot.category,
+        purpose: action.purpose,
+        allowLegacyMissingPurpose:
+          options.allowLegacyMissingHumanPurpose === true,
+      });
       if (
         action.beforeHash !== null ||
         current.has(action.findingId) ||

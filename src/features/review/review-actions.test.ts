@@ -2,6 +2,8 @@ import { describe, expect, it } from "vitest";
 
 import type { Project } from "../../domain/project";
 import type { AtomicRequirement } from "../analysis/skill-orchestrator";
+import { evidenceDigest } from "../evidence/evidence-hash";
+import { reviewSnapshotHash } from "../evidence/calculate-quality";
 import { resolveValidationResults } from "../evidence/review-attestation";
 import {
   createSourceIndex,
@@ -17,6 +19,7 @@ import {
   createAnalysisVersion,
   deleteFinding,
   modifyFinding,
+  replayReviewedFindings,
   returnForReanalysis,
   type ReviewWorkflowState,
 } from "./review-actions";
@@ -235,7 +238,11 @@ describe("immutable review actions", () => {
       sourceAnchors: [anchor],
     });
     expect(updated.reviewActions).toEqual([
-      expect.objectContaining({ action: "add_human", findingId: "H1" }),
+      expect.objectContaining({
+        action: "add_human",
+        findingId: "H1",
+        purpose: "generic",
+      }),
     ]);
     const action = addHumanJudgment(state(), {
       findingId: "H-ACTION",
@@ -249,6 +256,9 @@ describe("immutable review actions", () => {
     expect(action.project.findings.at(-1)?.category).toBe(
       "recommended_action:priority",
     );
+    expect(action.reviewActions[0]).toMatchObject({
+      purpose: "recommended_action",
+    });
     expect(() =>
       addHumanJudgment(state(), {
         findingId: "H2",
@@ -260,6 +270,146 @@ describe("immutable review actions", () => {
         reviewedAt: meta.reviewedAt,
       }),
     ).toThrow(/依据/);
+  });
+
+  it.each([
+    "recommended_action:unapproved",
+    "recommended_action:",
+    "foo_recommended_action",
+  ])(
+    "rejects resealed add_human category %s during pure replay",
+    (category) => {
+      const approved = addHumanJudgment(state(), {
+        findingId: "H-ATTACK",
+        statement: "优先完成制度修订",
+        purpose: "recommended_action",
+        anchor,
+        reviewer: meta.reviewer,
+        reason: "依据监管要求安排优先级",
+        reviewedAt: meta.reviewedAt,
+      });
+      const original = approved.reviewActions[0];
+      if (original.action !== "add_human") throw new Error("fixture action");
+      const afterSnapshot = { ...original.afterSnapshot, category };
+      const afterHash = reviewSnapshotHash(afterSnapshot);
+      const actionContent = {
+        action: "add_human" as const,
+        findingId: original.findingId,
+        afterHash,
+        reviewer: original.reviewer,
+        reason: original.reason,
+        actedAt: original.actedAt,
+        purpose: original.purpose,
+      };
+      const tampered = {
+        ...original,
+        actionId: evidenceDigest(actionContent),
+        afterSnapshot,
+        afterHash,
+      };
+      const base = state();
+      expect(() =>
+        replayReviewedFindings(
+          base.analysisVersions[0],
+          [],
+          [tampered],
+          createSourceIndex({
+            sources: base.project.sourceUnits,
+            parsedUnits: base.parsedUnits,
+            findings: base.analysisVersions[0].findings,
+            atomicRequirements: base.atomicRequirements,
+          }),
+        ),
+      ).toThrow(/人工判断|用途|类别/);
+    },
+  );
+
+  it("rejects a purpose/category mismatch and accepts exact legacy legal actions", () => {
+    const approved = addHumanJudgment(state(), {
+      findingId: "H-BINDING",
+      statement: "优先完成制度修订",
+      purpose: "recommended_action",
+      anchor,
+      reviewer: meta.reviewer,
+      reason: "依据监管要求安排优先级",
+      reviewedAt: meta.reviewedAt,
+    });
+    const original = approved.reviewActions[0];
+    if (original.action !== "add_human") throw new Error("fixture action");
+    const base = state();
+    const index = createSourceIndex({
+      sources: base.project.sourceUnits,
+      parsedUnits: base.parsedUnits,
+      findings: base.analysisVersions[0].findings,
+      atomicRequirements: base.atomicRequirements,
+    });
+    const mismatch = {
+      ...original,
+      purpose: "generic" as const,
+      actionId: evidenceDigest({
+        action: "add_human",
+        findingId: original.findingId,
+        afterHash: original.afterHash,
+        reviewer: original.reviewer,
+        reason: original.reason,
+        actedAt: original.actedAt,
+        purpose: "generic",
+      }),
+    };
+    expect(() =>
+      replayReviewedFindings(base.analysisVersions[0], [], [mismatch], index),
+    ).toThrow(/人工判断|用途|类别/);
+
+    const { purpose: _purpose, ...withoutPurpose } =
+      original as typeof original & {
+        purpose?: "recommended_action";
+      };
+    const legacy = {
+      ...withoutPurpose,
+      actionId: evidenceDigest({
+        action: "add_human",
+        findingId: original.findingId,
+        afterHash: original.afterHash,
+        reviewer: original.reviewer,
+        reason: original.reason,
+        actedAt: original.actedAt,
+      }),
+    };
+    expect(() =>
+      replayReviewedFindings(base.analysisVersions[0], [], [legacy], index),
+    ).toThrow(/用途|缺少/);
+    expect(
+      replayReviewedFindings(base.analysisVersions[0], [], [legacy], index, {
+        allowLegacyMissingHumanPurpose: true,
+      }).at(-1),
+    ).toMatchObject({
+      findingId: "H-BINDING",
+      category: "recommended_action:priority",
+      claimType: "human_judgment",
+    });
+
+    const wrongClaimSnapshot = {
+      ...original.afterSnapshot,
+      claimType: "regulatory_fact" as const,
+    };
+    const wrongClaimHash = reviewSnapshotHash(wrongClaimSnapshot);
+    const wrongClaim = {
+      ...original,
+      afterSnapshot: wrongClaimSnapshot,
+      afterHash: wrongClaimHash,
+      actionId: evidenceDigest({
+        action: "add_human",
+        findingId: original.findingId,
+        afterHash: wrongClaimHash,
+        reviewer: original.reviewer,
+        reason: original.reason,
+        actedAt: original.actedAt,
+        purpose: original.purpose,
+      }),
+    };
+    expect(() =>
+      replayReviewedFindings(base.analysisVersions[0], [], [wrongClaim], index),
+    ).toThrow(/人工判断|用途|claimType/);
   });
 });
 
