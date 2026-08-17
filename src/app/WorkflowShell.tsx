@@ -546,6 +546,18 @@ export function WorkflowShell({
       persist({ ...current, ...cancelReanalysis(current) });
     }
   };
+  const restore = async () => {
+    try {
+      const restored = await repository.load(session.project.projectId);
+      if (!restored) throw new Error("missing");
+      persistedRevision.current = restored.revision;
+      sessionRef.current = restored;
+      setSession(restored);
+      setMessage({ kind: "status", text: "已恢复最近保存" });
+    } catch {
+      setMessage({ kind: "error", text: "恢复失败：本地记录不存在或格式无效" });
+    }
+  };
   const prior = workflowSteps[currentIndex - 1];
   const next = workflowSteps[currentIndex + 1];
   const nextGate = next
@@ -702,6 +714,14 @@ export function WorkflowShell({
               模型接口设置
             </button>
             <button
+              className="btn btn-secondary"
+              disabled={running || recovering}
+              type="button"
+              onClick={() => void restore()}
+            >
+              恢复最近保存
+            </button>
+            <button
               className="btn btn-primary"
               type="button"
               disabled={running || recovering}
@@ -721,7 +741,7 @@ export function WorkflowShell({
         >
           <nav aria-label="外规解读工作流" className="side workflow-sidebar">
             <div className="logo">Deloitte<i>.</i></div>
-            <div className="agent">外规解读agent</div>
+            <h1 className="agent">外规解读agent</h1>
             <div className="side-label">工作流程</div>
             <ol>
               {workflowSteps.map(({ key, label }, index) => {

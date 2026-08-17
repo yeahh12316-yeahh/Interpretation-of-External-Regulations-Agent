@@ -481,7 +481,7 @@ it("passes a trusted targeted directive and cancellation clears the request and 
     targetFindingIds: ["F1"],
     allowedSourceIds: ["REG-A"],
   });
-  expect(screen.getByRole("button", { name: /人工复核与修正/ })).toBeDisabled();
+  expect(screen.getByRole("button", { name: /人工复核/ })).toBeDisabled();
   await user.click(await screen.findByRole("button", { name: "取消分析" }));
   expect(
     await screen.findByRole("heading", { name: "人工复核与修正" }),

@@ -48,7 +48,7 @@ body {
 .agent {
   font-size: 17px;
   font-weight: 760;
-  margin-top: 7px;
+  margin: 7px 0 0;
   padding-bottom: 18px;
   border-bottom: 1px solid #363636;
   line-height: 1.22;

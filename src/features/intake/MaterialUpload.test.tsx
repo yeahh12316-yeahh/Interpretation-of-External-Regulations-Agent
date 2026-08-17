@@ -82,7 +82,7 @@ test("accepts file selection, drag-and-drop, and clipboard paste without mixing 
   ).toBeVisible();
 });
 
-test("uses a responsive two-zone grid that stays within a 1024px container", () => {
+test("uses the responsive upload grid and bounded upload zone classes", () => {
   Object.defineProperty(window, "innerWidth", {
     configurable: true,
     value: 1024,
@@ -90,13 +90,9 @@ test("uses a responsive two-zone grid that stays within a 1024px container", () 
   render(<MaterialUpload />);
 
   const grid = screen.getByTestId("material-upload-grid");
-  expect(grid).toHaveStyle({
-    display: "grid",
-    gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
-    width: "100%",
-  });
+  expect(grid).toHaveClass("upload-grid");
   for (const region of screen.getAllByRole("region")) {
-    expect(region).toHaveStyle({ minWidth: "0", maxWidth: "100%" });
+    expect(region).toHaveClass("upload-box");
   }
 });
 

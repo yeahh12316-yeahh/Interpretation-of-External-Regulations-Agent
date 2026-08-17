@@ -3,7 +3,13 @@ import { defineConfig } from "@playwright/test";
 export default defineConfig({
   testDir: ".",
   testMatch: ["src/**/*.e2e.ts", "tests/e2e/**/*.spec.ts"],
-  testIgnore: ["tests/e2e/production-smoke.spec.ts"],
+  testIgnore: [
+    "tests/e2e/production-smoke.spec.ts",
+    "**/.worktrees/**",
+    "**/.pnpm-store/**",
+    "src/features/projects/src/**",
+    "src/features/projects/changed-files/**",
+  ],
   fullyParallel: false,
   workers: 1,
   reporter: "line",

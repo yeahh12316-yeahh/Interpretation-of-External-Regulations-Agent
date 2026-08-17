@@ -10,7 +10,7 @@ it("renders the product identity and five workflow steps", async () => {
     "材料上传",
     "解析与OCR",
     "监管分析",
-    "人工复核与修正",
+    "人工复核",
     "报告导出",
   ]) {
     expect(
