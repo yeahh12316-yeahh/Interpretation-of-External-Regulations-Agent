@@ -667,12 +667,19 @@ export function WorkflowShell({
     <WorkflowErrorBoundary onBack={() => prior && move(prior.key)}>
       <div className="workflow-shell">
         <header className="app-header">
-          <div>
-            <p className="eyebrow">Deloitte Regulatory Intelligence</p>
-            <h1>外规解读agent</h1>
+          <div className="brand-block">
+            <span className="brand-badge" aria-hidden="true">
+              <span />
+              <span />
+            </span>
+            <div>
+              <p className="brand-subtitle">Deloitte Regulatory Intelligence</p>
+              <h1>外规解读agent</h1>
+            </div>
           </div>
-          <div>
+          <div className="app-header-actions">
             <button
+              className="btn btn-secondary"
               disabled={running || recovering}
               type="button"
               onClick={() => setSettingsOpen(true)}
@@ -680,6 +687,7 @@ export function WorkflowShell({
               模型接口设置
             </button>
             <button
+              className="btn btn-secondary"
               disabled={running || recovering}
               type="button"
               onClick={() => void restore()}
@@ -730,6 +738,7 @@ export function WorkflowShell({
               draftReportAvailable &&
               !draftReportOpen ? (
                 <button
+                  className="btn btn-primary"
                   type="button"
                   disabled={running || recovering}
                   onClick={() => setDraftReportOpen(true)}
@@ -738,6 +747,7 @@ export function WorkflowShell({
                 </button>
               ) : null}
               <button
+                className="btn btn-secondary"
                 disabled={!prior || running || recovering}
                 type="button"
                 onClick={() => prior && move(prior.key)}
@@ -745,6 +755,7 @@ export function WorkflowShell({
                 上一步
               </button>
               <button
+                className="btn btn-primary"
                 disabled={!next || !nextGate.allowed || running || recovering}
                 type="button"
                 onClick={() => next && move(next.key)}
