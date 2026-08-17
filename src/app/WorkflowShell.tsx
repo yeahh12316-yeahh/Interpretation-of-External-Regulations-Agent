@@ -88,13 +88,18 @@ export class WorkflowErrorBoundary extends Component<
   render(): ReactNode {
     if (!this.state.error) return this.props.children;
     return (
-      <section role="alert">
-        <h1>页面发生错误</h1>
+      <section role="alert" className="workflow-dialog">
+        <h1 className="dialog-title">页面发生错误</h1>
         <p>最近已保存的数据仍然保留。</p>
-        <button type="button" onClick={() => this.setState({ error: null })}>
+        <button
+          className="btn btn-secondary"
+          type="button"
+          onClick={() => this.setState({ error: null })}
+        >
           重试
         </button>
         <button
+          className="btn btn-primary"
           type="button"
           onClick={() => {
             this.setState({ error: null });
@@ -566,24 +571,28 @@ export function WorkflowShell({
   const page = draftReportOpen ? (
     <>
       <ReportPage session={session} />
-      <button type="button" onClick={() => setDraftReportOpen(false)}>
+      <button
+        className="btn btn-secondary"
+        type="button"
+        onClick={() => setDraftReportOpen(false)}
+      >
         返回人工复核
       </button>
     </>
   ) : recovering ? (
-    <section aria-live="polite">
-      <h1>正在恢复最近保存</h1>
+    <section className="workflow-step-page" aria-live="polite">
+      <h1 className="workflow-section-title">正在恢复最近保存</h1>
       <p>正在校验本地工作流版本、解析证据与复核链。</p>
     </section>
   ) : session.project.workflowStep === "intake" ? (
-    <section>
-      <h1>材料上传</h1>
+    <section className="workflow-step-page">
+      <h1 className="workflow-section-title">材料上传</h1>
       <p>监管文件必填，官方解读选填；文件仅在浏览器本地解析。</p>
       <MaterialUpload parseFile={parseFile} onParsed={handleParsed} />
     </section>
   ) : session.project.workflowStep === "parsing" ? (
-    <section>
-      <h1>解析与OCR</h1>
+    <section className="workflow-step-page">
+      <h1 className="workflow-section-title">解析与OCR</h1>
       {hasOcrReviews ? (
         <label>
           OCR复核人
@@ -605,7 +614,7 @@ export function WorkflowShell({
       ) : null}
       {session.parseResults.map((result) => (
         <article key={result.source.sourceId}>
-          <h2>{result.source.title}</h2>
+          <h2 className="analysis-subtitle">{result.source.title}</h2>
           <p>
             {result.quality.finalizationBlocked
               ? "解析或 OCR 质量未通过"
@@ -642,6 +651,7 @@ export function WorkflowShell({
       />
       {session.pendingReanalysis && !running ? (
         <button
+          className="btn btn-secondary"
           type="button"
           onClick={() => {
             const current = sessionRef.current;
@@ -674,7 +684,7 @@ export function WorkflowShell({
             </span>
             <div>
               <p className="brand-subtitle">Deloitte Regulatory Intelligence</p>
-              <h1>外规解读agent</h1>
+              <h1 className="app-title">外规解读agent</h1>
             </div>
           </div>
           <div className="app-header-actions">

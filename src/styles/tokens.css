@@ -1,7 +1,12 @@
 :root {
   --green: #86bc25;
+  --green-900: #4c7d12;
   --black: #111111;
+  --black-soft: #242424;
   --white: #ffffff;
+  --panel: #f5f6f3;
+  --line: #d2d2cb;
+  --warn: #c13f2a;
   --font-size-body: 0.95rem;
   --font-size-title: 1.45rem;
   --space-1: 0.5rem;
@@ -9,4 +14,7 @@
   --space-3: 1.5rem;
   --space-4: 2rem;
   --space-5: 2.5rem;
+  --radius-xl: 0.8rem;
+  --radius-md: 0.4rem;
+  --max-content-width: 1280px;
 }

@@ -4,6 +4,12 @@
   "description": "静态外规解读工作流前端",
   "scripts": {
     "dev": "vite",
+    "dev:local": "vite --host 127.0.0.1 --port 4173 --strictPort",
+    "dev:alt": "vite --host 127.0.0.1 --port 4174 --strictPort",
+    "dev:auto": "vite --host 127.0.0.1 --port 4173",
+    "preview": "vite preview",
+    "preview:local": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
+    "preview:auto": "vite preview --host 127.0.0.1 --port 4173",
     "build": "tsc --noEmit && vite build",
     "benchmark": "tsx scripts/run-benchmark.ts",
     "scan:build": "node scripts/scan-build-secrets.mjs dist",

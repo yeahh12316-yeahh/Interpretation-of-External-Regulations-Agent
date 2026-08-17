@@ -11,9 +11,26 @@
 需要 Node.js 24 和 pnpm 11.19.x。
 
 ```bash
+PATH=/Users/yeahh/.cache/codex-runtimes/codex-primary-runtime/dependencies/node/bin:$PATH
 pnpm install --frozen-lockfile
-pnpm dev
+
+# 推荐（稳定端口）
+pnpm dev:local
+
+# 如果 4173 被占用或有权限问题，改 4174
+pnpm dev:alt
+
+# 一键自动选端口启动（适配本地被占用场景）
+pnpm dev:auto
 ```
+
+> 如果你在本机直接运行 `pnpm dev:local` 提示端口/权限问题（如 `EPERM`），通常是环境绑定限制，不是应用本身问题。  
+> 你可以先用 `pnpm dev:auto` 自动寻找可用端口，或切换到 `pnpm dev:alt`（4174）。
+
+打开稳定链接为：  
+- 本地开发：`http://127.0.0.1:4173/`
+- 本地预览：`http://127.0.0.1:4173/`（或 `:4174`）
+- 公开稳定链接：`https://yeahh12316-yeahh.github.io/Interpretation-of-External-Regulations-Agent/`
 
 浏览器中填写的模型 API Key 只用于当前浏览器会话。仓库、构建过程和部署平台均不配置共享模型密钥。
 
