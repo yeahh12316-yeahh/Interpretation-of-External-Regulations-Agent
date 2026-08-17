@@ -144,31 +144,22 @@ export function MaterialUpload({
     const label = SOURCE_LABEL[sourceType];
     return (
       <section
+        className="upload-box"
         aria-label={`${label}上传`}
         data-testid={`${sourceType}-upload-state`}
         data-finalization-ready={state.status === "complete"}
         onPaste={pasted(sourceType)}
-        style={{
-          minWidth: 0,
-          maxWidth: "100%",
-          border: "1px solid #111",
-          padding: "1rem",
-        }}
       >
-        <h2>
-          {label} <small>{required ? "必填" : "选填"}</small>
+        <h2 className="upload-box-title">
+          {label} <small className={required ? "required" : "optional"}>{required ? "必填" : "选填"}</small>
         </h2>
         <div
+          className="upload-drop-zone"
           data-testid="drop-zone"
           onDragOver={(event) => event.preventDefault()}
           onDrop={dropped(sourceType)}
-          style={{
-            border: "1px dashed #444",
-            padding: "1rem",
-            overflowWrap: "anywhere",
-          }}
         >
-          <label>
+          <label className="upload-control-label">
             {`选择${label}`}
             <input
               accept=".pdf,.docx,.txt,application/pdf,application/vnd.openxmlformats-officedocument.wordprocessingml.document,text/plain"
@@ -182,7 +173,7 @@ export function MaterialUpload({
         </div>
 
         {state.file ? (
-          <dl>
+          <dl className="upload-meta">
             <dt>文件名</dt>
             <dd>{state.file.name}</dd>
             <dt>类型</dt>
@@ -203,17 +194,29 @@ export function MaterialUpload({
         ) : null}
 
         {state.status === "parsing" ? (
-          <div role="status">
+          <div className="upload-status" role="status">
             正在浏览器内解析…
-            <button onClick={() => cancel(sourceType)} type="button">
+            <button
+              className="btn btn-small"
+              onClick={() => cancel(sourceType)}
+              type="button"
+            >
               {`取消解析 ${state.file?.name ?? label}`}
             </button>
           </div>
         ) : null}
-        {state.status === "cancelled" ? <p role="status">已取消解析</p> : null}
-        {state.status === "complete" ? <p role="status">解析完成</p> : null}
+        {state.status === "cancelled" ? (
+          <p className="upload-notice" role="status">
+            已取消解析
+          </p>
+        ) : null}
+        {state.status === "complete" ? (
+          <p className="upload-notice success" role="status">
+            解析完成
+          </p>
+        ) : null}
         {state.status === "blocked" && state.result ? (
-          <div role="alert">
+          <div className="upload-alert" role="alert">
             <p>解析质量未通过，禁止进入定稿</p>
             <p>
               OCR 失败页：
@@ -229,21 +232,19 @@ export function MaterialUpload({
             </p>
           </div>
         ) : null}
-        {state.status === "error" ? <p role="alert">{state.error}</p> : null}
+        {state.status === "error" ? (
+          <p className="upload-alert" role="alert">
+            {state.error}
+          </p>
+        ) : null}
       </section>
     );
   };
 
   return (
     <div
+      className="upload-grid"
       data-testid="material-upload-grid"
-      style={{
-        display: "grid",
-        gridTemplateColumns: "repeat(auto-fit, minmax(min(100%, 280px), 1fr))",
-        gap: "1rem",
-        width: "100%",
-        maxWidth: "100%",
-      }}
     >
       {uploadRegion("regulatory_text", true)}
       {uploadRegion("official_interpretation", false)}

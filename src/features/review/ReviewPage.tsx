@@ -119,6 +119,7 @@ export function ReviewPage({
           <h1 id="review-title">人工复核与修正</h1>
         </div>
         <button
+          className="btn btn-small btn-primary"
           type="button"
           onClick={() => setHumanOpen(true)}
           disabled={!selected?.sourceAnchors[0]}
@@ -141,8 +142,8 @@ export function ReviewPage({
             <article
               className={
                 finding.findingId === selectedId
-                  ? "review-card is-selected"
-                  : "review-card"
+                  ? "review-card review-row is-selected"
+                  : "review-card review-row"
               }
               data-testid="review-item"
               key={finding.findingId}
@@ -167,13 +168,22 @@ export function ReviewPage({
                 </dl>
               ) : null}
               <div className="card-actions">
-                <button type="button" onClick={() => select(finding.findingId)}>
+                <button
+                  className="btn btn-small"
+                  type="button"
+                  onClick={() => select(finding.findingId)}
+                >
                   查看原文
                 </button>
-                <button type="button" onClick={() => select(finding.findingId)}>
+                <button
+                  className="btn btn-small"
+                  type="button"
+                  onClick={() => select(finding.findingId)}
+                >
                   查看依据
                 </button>
                 <button
+                  className="btn btn-small"
                   type="button"
                   onClick={() => {
                     select(finding.findingId);
@@ -187,6 +197,7 @@ export function ReviewPage({
                   查看详情
                 </button>
                 <button
+                  className="btn btn-small btn-primary"
                   aria-label={`确认 ${finding.findingId}`}
                   disabled={
                     !reviewer.trim() || finding.reviewStatus === "deleted"
@@ -205,6 +216,7 @@ export function ReviewPage({
                   确认
                 </button>
                 <button
+                  className="btn btn-small"
                   aria-label={`修改 ${finding.findingId}`}
                   disabled={finding.reviewStatus === "deleted"}
                   type="button"
@@ -216,6 +228,7 @@ export function ReviewPage({
                   修改
                 </button>
                 <button
+                  className="btn btn-small btn-danger"
                   aria-label={`删除 ${finding.findingId}`}
                   disabled={
                     !reviewer.trim() || finding.reviewStatus === "deleted"
@@ -236,7 +249,11 @@ export function ReviewPage({
               </div>
             </article>
           ))}
-          <button type="button" onClick={() => setReturnOpen(true)}>
+          <button
+            className="btn btn-small"
+            type="button"
+            onClick={() => setReturnOpen(true)}
+          >
             退回重新分析
           </button>
         </div>
@@ -280,6 +297,7 @@ export function ReviewPage({
                       />
                     </label>
                     <button
+                      className="btn btn-small btn-primary"
                       type="button"
                       disabled={
                         !reviewer.trim() || !(ruleReasons[key] ?? "").trim()
@@ -300,6 +318,7 @@ export function ReviewPage({
                       确认该规则
                     </button>
                     <button
+                      className="btn btn-small btn-danger"
                       type="button"
                       disabled={
                         !reviewer.trim() || !(ruleReasons[key] ?? "").trim()

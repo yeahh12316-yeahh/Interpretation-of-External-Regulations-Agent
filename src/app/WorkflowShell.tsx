@@ -63,7 +63,7 @@ export const workflowSteps: readonly { key: WorkflowStep; label: string }[] = [
   { key: "intake", label: "材料上传" },
   { key: "parsing", label: "解析与OCR" },
   { key: "analysis", label: "监管分析" },
-  { key: "review", label: "人工复核与修正" },
+  { key: "review", label: "人工复核" },
   { key: "report", label: "报告导出" },
 ];
 
@@ -546,23 +546,21 @@ export function WorkflowShell({
       persist({ ...current, ...cancelReanalysis(current) });
     }
   };
-  const restore = async () => {
-    try {
-      const restored = await repository.load(session.project.projectId);
-      if (!restored) throw new Error("missing");
-      persistedRevision.current = restored.revision;
-      sessionRef.current = restored;
-      setSession(restored);
-      setMessage({ kind: "status", text: "已恢复最近保存" });
-    } catch {
-      setMessage({ kind: "error", text: "恢复失败：本地记录不存在或格式无效" });
-    }
-  };
   const prior = workflowSteps[currentIndex - 1];
   const next = workflowSteps[currentIndex + 1];
   const nextGate = next
     ? canTransition(session.project, next.key, transitionContext)
     : { allowed: false as const, reason: "已是最后一步" };
+  const workflowStateLabel =
+    session.project.workflowStep === "intake"
+      ? "等待上传材料"
+      : session.project.workflowStep === "parsing"
+        ? "解析与OCR校验中"
+        : session.project.workflowStep === "analysis"
+          ? "AI监管分析草稿"
+          : session.project.workflowStep === "review"
+            ? "待合规复核"
+            : "报告导出";
   const selectFinding = (id: string | null) => {
     if (running) return;
     const current = sessionRef.current;
@@ -580,21 +578,31 @@ export function WorkflowShell({
       </button>
     </>
   ) : recovering ? (
-    <section className="workflow-step-page" aria-live="polite">
-      <h1 className="workflow-section-title">正在恢复最近保存</h1>
-      <p>正在校验本地工作流版本、解析证据与复核链。</p>
+    <section className="workflow-step-page screen active" aria-live="polite">
+      <div className="title">
+        <h1 className="workflow-section-title">正在恢复最近保存</h1>
+        <p className="analysis-subtitle">
+          正在校验本地工作流版本、解析证据与复核链。
+        </p>
+      </div>
     </section>
   ) : session.project.workflowStep === "intake" ? (
-    <section className="workflow-step-page">
-      <h1 className="workflow-section-title">材料上传</h1>
-      <p>监管文件必填，官方解读选填；文件仅在浏览器本地解析。</p>
+    <section className="workflow-step-page screen active">
+      <div className="title">
+        <h1 className="workflow-section-title">材料上传</h1>
+        <p className="analysis-subtitle">监管文件必填，官方解读选填；文件仅在浏览器本地解析。</p>
+      </div>
+      <p className="helper-text">材料版本、效力与重大判断需合规复核。</p>
       <MaterialUpload parseFile={parseFile} onParsed={handleParsed} />
     </section>
   ) : session.project.workflowStep === "parsing" ? (
-    <section className="workflow-step-page">
-      <h1 className="workflow-section-title">解析与OCR</h1>
+    <section className="workflow-step-page screen active">
+      <div className="title">
+        <h1 className="workflow-section-title">解析与OCR</h1>
+        <p className="analysis-subtitle">确认解析质量后，再进入监管分析。</p>
+      </div>
       {hasOcrReviews ? (
-        <label>
+        <label className="ocr-reviewer">
           OCR复核人
           <input
             aria-label="OCR复核人"
@@ -675,17 +683,14 @@ export function WorkflowShell({
   );
   return (
     <WorkflowErrorBoundary onBack={() => prior && move(prior.key)}>
-      <div className="workflow-shell">
-        <header className="app-header">
-          <div className="brand-block">
-            <span className="brand-badge" aria-hidden="true">
-              <span />
-              <span />
-            </span>
-            <div>
-              <p className="brand-subtitle">Deloitte Regulatory Intelligence</p>
-              <h1 className="app-title">外规解读agent</h1>
-            </div>
+        <div className="workflow-shell">
+        <header className="top app-header">
+          <div className="app-header-meta">
+              <div className="app-project">{session.project.projectName}</div>
+            <p className="app-project-subtitle">
+              本地文件处理 · 用户自带模型接口
+            </p>
+            <span className="state-pill state">{workflowStateLabel}</span>
           </div>
           <div className="app-header-actions">
             <button
@@ -697,17 +702,27 @@ export function WorkflowShell({
               模型接口设置
             </button>
             <button
-              className="btn btn-secondary"
-              disabled={running || recovering}
+              className="btn btn-primary"
               type="button"
-              onClick={() => void restore()}
+              disabled={running || recovering}
+              onClick={() => move("report")}
             >
-              恢复最近保存
+              查看报告
             </button>
           </div>
         </header>
-        <div className="workflow-frame">
-          <nav aria-label="外规解读工作流" className="workflow-sidebar">
+        <div
+          className={
+            session.project.workflowStep === "analysis" ||
+            session.project.workflowStep === "review"
+              ? "shell workflow-frame with-evidence"
+              : "shell workflow-frame"
+          }
+        >
+          <nav aria-label="外规解读工作流" className="side workflow-sidebar">
+            <div className="logo">Deloitte<i>.</i></div>
+            <div className="agent">外规解读agent</div>
+            <div className="side-label">工作流程</div>
             <ol>
               {workflowSteps.map(({ key, label }, index) => {
                 const gate = canTransition(
@@ -718,6 +733,7 @@ export function WorkflowShell({
                 return (
                   <li key={key}>
                     <button
+                      className={`nav ${key === session.project.workflowStep ? "active" : ""}`}
                       aria-current={
                         key === session.project.workflowStep
                           ? "step"
@@ -728,7 +744,7 @@ export function WorkflowShell({
                       type="button"
                       onClick={() => move(key)}
                     >
-                      <span>{index + 1}</span>
+                      <span className="n">{index + 1}</span>
                       {label}
                     </button>
                   </li>
@@ -736,7 +752,7 @@ export function WorkflowShell({
               })}
             </ol>
           </nav>
-          <main className="app-content">
+          <main className="main app-content">
             {message ? (
               <p role={message.kind === "error" ? "alert" : "status"}>
                 {message.text}

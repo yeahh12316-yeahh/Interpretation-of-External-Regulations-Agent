@@ -179,7 +179,7 @@ export function EvidencePanel({
       </section>
 
       <button
-        className="evidence-details-button"
+        className="btn btn-link"
         onClick={() => setDetailsOpen(true)}
         type="button"
       >

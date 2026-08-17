@@ -117,6 +117,9 @@ export const ReportPage = ({
       <div className="report-toolbar">
         <div role="tablist" aria-label="成果类型">
           <button
+            className={
+              reportType === "full_report" ? "btn btn-primary" : "btn btn-secondary"
+            }
             ref={fullTabRef}
             type="button"
             role="tab"
@@ -128,6 +131,11 @@ export const ReportPage = ({
             外规解读报告
           </button>
           <button
+            className={
+              reportType === "quick_commentary"
+                ? "btn btn-primary"
+                : "btn btn-secondary"
+            }
             ref={quickTabRef}
             type="button"
             role="tab"
@@ -142,6 +150,13 @@ export const ReportPage = ({
         <div className="report-download-actions">
           {(["docx", "pdf"] as const).map((format) => (
             <button
+              className={
+                failedFormat === format
+                  ? "btn btn-danger"
+                  : format === "pdf"
+                    ? "btn btn-primary"
+                    : "btn btn-secondary"
+              }
               key={format}
               type="button"
               disabled={!canExport || exporting !== null}

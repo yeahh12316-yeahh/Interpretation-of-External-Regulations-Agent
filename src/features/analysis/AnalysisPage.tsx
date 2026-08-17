@@ -34,17 +34,17 @@ export function AnalysisPage({
           <h1 id="analysis-title">监管分析</h1>
         </div>
         {running ? (
-          <button type="button" onClick={onCancel}>
+          <button className="btn btn-secondary" type="button" onClick={onCancel}>
             取消分析
           </button>
         ) : (
-          <button type="button" onClick={onRun}>
+          <button className="btn btn-primary" type="button" onClick={onRun}>
             {state.pendingReanalysis ? "执行定向重分析" : "开始监管分析"}
           </button>
         )}
       </header>
       {running && progress ? (
-        <div role="status">
+        <div role="status" className="notice">
           <p>阶段：{progress.stage}</p>
           <progress max={progress.total} value={progress.completed} />{" "}
           <span>
