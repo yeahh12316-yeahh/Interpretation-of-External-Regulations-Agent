@@ -11,6 +11,9 @@ import { hashFile } from "../intake/hash-file";
 import { buildAnchors, type ParsedSourceUnit } from "./build-anchors";
 import { parseText } from "./parse-text";
 import type { OcrPageResult } from "./ocr/ocr-pipeline";
+import type { ParseProgress, ParseProgressCallback } from "./parse-progress";
+
+export type { ParseProgress, ParseProgressCallback } from "./parse-progress";
 
 export interface ParseQuality {
   totalCharacters: number;
@@ -56,10 +59,38 @@ export async function parseDocument(
   file: File,
   sourceType: SourceType,
   signal: AbortSignal,
+  onProgress: ParseProgressCallback = () => undefined,
 ): Promise<ParseResult> {
   throwIfAborted(signal);
+  const report = (progress: ParseProgress) => {
+    if (!signal.aborted) onProgress(progress);
+  };
+  report({
+    stage: "validating",
+    completed: 0,
+    total: 1,
+    detail: "正在检查文件格式与大小",
+  });
   const kind = await validateFile(file, {}, signal);
+  report({
+    stage: "validating",
+    completed: 1,
+    total: 1,
+    detail: "文件校验完成",
+  });
+  report({
+    stage: "hashing",
+    completed: 0,
+    total: 1,
+    detail: "正在计算文件指纹",
+  });
   const fileHash = await hashFile(file, signal);
+  report({
+    stage: "hashing",
+    completed: 1,
+    total: 1,
+    detail: "文件指纹完成",
+  });
   const sourceId = `SRC-${sourceType}-${fileHash.slice(0, 20)}`;
   const bytes = await readBytes(file, signal);
 
@@ -72,8 +103,14 @@ export async function parseDocument(
   let ocrReviews: OcrPageResult[] = [];
 
   if (kind === "pdf") {
+    report({
+      stage: "loading",
+      completed: 0,
+      total: 1,
+      detail: "正在加载 PDF 页面",
+    });
     const { parsePdf } = await raceWithAbort(import("./parse-pdf"), signal);
-    const parsed = await parsePdf(bytes, sourceId, sourceType, signal);
+    const parsed = await parsePdf(bytes, sourceId, sourceType, signal, report);
     units = parsed.units;
     pageCount = parsed.pageCount;
     successfulPages = parsed.successfulPages;
@@ -82,10 +119,34 @@ export async function parseDocument(
     ocrFailedPages = parsed.ocrFailedPages;
     ocrReviews = parsed.ocrReviews;
   } else if (kind === "docx") {
+    report({
+      stage: "extracting",
+      completed: 0,
+      total: 1,
+      detail: "正在提取 DOCX 文本",
+    });
     const { parseDocx } = await raceWithAbort(import("./parse-docx"), signal);
     units = await parseDocx(bytes, sourceId, sourceType, signal);
+    report({
+      stage: "extracting",
+      completed: 1,
+      total: 1,
+      detail: "DOCX 文本提取完成",
+    });
   } else {
+    report({
+      stage: "extracting",
+      completed: 0,
+      total: 1,
+      detail: "正在读取 TXT 文本",
+    });
     units = parseText(bytes, sourceId, sourceType, signal);
+    report({
+      stage: "extracting",
+      completed: 1,
+      total: 1,
+      detail: "TXT 文本读取完成",
+    });
   }
 
   const content = units
@@ -104,7 +165,13 @@ export async function parseDocument(
       ? 1
       : 0;
 
-  return {
+  report({
+    stage: "finalizing",
+    completed: 0,
+    total: 1,
+    detail: "正在整理来源锚点与质量结果",
+  });
+  const result = {
     fileHash,
     source,
     pageCount,
@@ -123,4 +190,11 @@ export async function parseDocument(
       finalizationBlocked: failedPages.length > 0,
     },
   };
+  report({
+    stage: "finalizing",
+    completed: 1,
+    total: 1,
+    detail: "解析结果已生成",
+  });
+  return result;
 }

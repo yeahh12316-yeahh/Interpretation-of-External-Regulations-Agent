@@ -8,6 +8,12 @@ import {
 import type { BoundingBox } from "../build-anchors";
 import { createLocalOcrWorker, type OcrWorkerProgress } from "./ocr-worker";
 
+// OCR runs entirely in the browser and may need to download the Chinese model
+// on first use. It must still fail visibly instead of leaving an upload in an
+// indefinite "解析中" state when a CDN, worker, or WASM asset is unavailable.
+export const OCR_WORKER_START_TIMEOUT_MS = 90_000;
+export const OCR_PAGE_TIMEOUT_MS = 90_000;
+
 export type OcrImage =
   | string
   | HTMLImageElement
@@ -64,6 +70,23 @@ export interface OcrWorkerLike {
 export type OcrWorkerFactory = (
   onProgress: (progress: OcrWorkerProgress) => void,
 ) => Promise<OcrWorkerLike>;
+
+const raceWithTimeout = async <T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  timeoutMs: number,
+  message: string,
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([raceWithAbort(promise, signal), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 
 export interface OcrRegion {
   text: string;
@@ -190,7 +213,12 @@ export async function ocrPages(
   });
 
   try {
-    worker = await raceWithAbort(assignWorker, signal);
+    worker = await raceWithTimeout(
+      assignWorker,
+      signal,
+      OCR_WORKER_START_TIMEOUT_MS,
+      "OCR 模型加载超时",
+    );
     throwIfAborted(signal);
 
     const results: OcrPageResult[] = [];
@@ -210,9 +238,11 @@ export async function ocrPages(
         progress: 0,
       });
       try {
-        const recognition = await raceWithAbort(
+        const recognition = await raceWithTimeout(
           worker.recognize(page.image, {}, { text: true, blocks: true }),
           signal,
+          OCR_PAGE_TIMEOUT_MS,
+          "OCR 页面识别超时",
         );
         const text = recognition.data.text.trim();
         if (!text) {
@@ -269,7 +299,7 @@ export async function ocrPages(
     throw error;
   } finally {
     signal.removeEventListener("abort", abortWorker);
-    if (signal.aborted && !worker) {
+    if (!worker) {
       await Promise.race([
         assignWorker.then(
           () => terminate(),

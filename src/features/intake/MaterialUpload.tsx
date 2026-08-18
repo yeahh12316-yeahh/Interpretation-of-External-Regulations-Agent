@@ -9,7 +9,11 @@ import {
 } from "react";
 
 import type { SourceType } from "../../domain/source";
-import { parseDocument, type ParseResult } from "../parsing/parse-document";
+import {
+  parseDocument,
+  type ParseProgress,
+  type ParseResult,
+} from "../parsing/parse-document";
 
 type UploadStatus =
   "idle" | "parsing" | "complete" | "blocked" | "cancelled" | "error";
@@ -19,6 +23,7 @@ interface UploadState {
   file?: File;
   result?: ParseResult;
   error?: string;
+  progress?: ParseProgress;
 }
 
 const EMPTY_STATE: UploadState = { status: "idle" };
@@ -74,10 +79,31 @@ export function MaterialUpload({
     controllers.current[sourceType]?.abort();
     const controller = new AbortController();
     controllers.current[sourceType] = controller;
-    update(sourceType, { status: "parsing", file });
+    update(sourceType, {
+      status: "parsing",
+      file,
+      progress: {
+        stage: "validating",
+        completed: 0,
+        total: 1,
+        detail: "准备检查文件",
+      },
+    });
 
     try {
-      const result = await parseFile(file, sourceType, controller.signal);
+      const result = await parseFile(
+        file,
+        sourceType,
+        controller.signal,
+        (progress) => {
+          if (
+            !controller.signal.aborted &&
+            controllers.current[sourceType] === controller
+          ) {
+            update(sourceType, { status: "parsing", file, progress });
+          }
+        },
+      );
       if (
         !controller.signal.aborted &&
         controllers.current[sourceType] === controller
@@ -86,6 +112,7 @@ export function MaterialUpload({
           status: result.quality.finalizationBlocked ? "blocked" : "complete",
           file,
           result,
+          progress: undefined,
         });
         onParsed?.(result);
       }
@@ -102,6 +129,7 @@ export function MaterialUpload({
           status: "error",
           file,
           error: error instanceof Error ? error.message : "文件处理失败",
+          progress: undefined,
         });
       }
     }
@@ -151,7 +179,10 @@ export function MaterialUpload({
         onPaste={pasted(sourceType)}
       >
         <h2 className="upload-box-title">
-          {label} <small className={required ? "required" : "optional"}>{required ? "必填" : "选填"}</small>
+          {label}{" "}
+          <small className={required ? "required" : "optional"}>
+            {required ? "必填" : "选填"}
+          </small>
         </h2>
         <div
           className="upload-drop-zone"
@@ -194,8 +225,28 @@ export function MaterialUpload({
         ) : null}
 
         {state.status === "parsing" ? (
-          <div className="upload-status" role="status">
-            正在浏览器内解析…
+          <div
+            className="upload-status upload-progress"
+            role="status"
+            aria-live="polite"
+          >
+            <div className="upload-progress-heading">
+              <strong>{state.progress?.detail ?? "正在浏览器内解析…"}</strong>
+              <span>
+                {state.progress && state.progress.total > 0
+                  ? `${Math.min(100, Math.round((state.progress.completed / state.progress.total) * 100))}%`
+                  : "处理中"}
+              </span>
+            </div>
+            <progress
+              max={Math.max(1, state.progress?.total ?? 1)}
+              value={Math.max(0, state.progress?.completed ?? 0)}
+            />
+            <p className="upload-progress-note">
+              {state.progress?.stage === "ocr"
+                ? "扫描页正在本地 OCR；首次使用会加载中文识别模型，期间可以取消。"
+                : "文件只在当前浏览器内处理，不会上传到本平台。"}
+            </p>
             <button
               className="btn btn-small"
               onClick={() => cancel(sourceType)}
@@ -242,10 +293,7 @@ export function MaterialUpload({
   };
 
   return (
-    <div
-      className="upload-grid"
-      data-testid="material-upload-grid"
-    >
+    <div className="upload-grid" data-testid="material-upload-grid">
       {uploadRegion("regulatory_text", true)}
       {uploadRegion("official_interpretation", false)}
     </div>

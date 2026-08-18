@@ -1,6 +1,7 @@
 import "@testing-library/jest-dom/vitest";
 
 import {
+  act,
   fireEvent,
   render,
   screen,
@@ -111,6 +112,53 @@ test("exposes cancellation and reports it without leaking file content", async (
 
   expect(await screen.findByRole("status")).toHaveTextContent("已取消");
   expect(screen.queryByText(/敏感正文/)).not.toBeInTheDocument();
+});
+
+test("shows parser stage and progress while a file is being processed", async () => {
+  let reportProgress:
+    | ((progress: {
+        stage: "ocr";
+        completed: number;
+        total: number;
+        page: number;
+        detail: string;
+      }) => void)
+    | undefined;
+  const parseFile = vi.fn(
+    (
+      _file: File,
+      _sourceType: unknown,
+      _signal: AbortSignal,
+      onProgress?: typeof reportProgress,
+    ) => {
+      reportProgress = onProgress;
+      return new Promise<ParseResult>(() => undefined);
+    },
+  );
+  render(<MaterialUpload parseFile={parseFile} />);
+
+  await userEvent
+    .setup()
+    .upload(
+      screen.getByLabelText("选择监管文件"),
+      textFile("slow.txt", "合成测试"),
+    );
+  await waitFor(() => expect(reportProgress).toBeDefined());
+
+  await act(async () => {
+    reportProgress?.({
+      stage: "ocr",
+      completed: 1,
+      total: 2,
+      page: 2,
+      detail: "recognizing page",
+    });
+  });
+
+  const status = await screen.findByRole("status");
+  expect(status).toHaveTextContent("recognizing page");
+  expect(status).toHaveTextContent("50%");
+  expect(status).toHaveTextContent("扫描页正在本地 OCR");
 });
 
 test("shows a blocked state and affected OCR pages instead of complete", async () => {
