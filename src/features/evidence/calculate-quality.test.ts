@@ -616,7 +616,14 @@ describe("calculateQuality", () => {
     ).toBe(true);
     for (const changed of [
       { ocrReviews: [] },
-      { quality: { ...ocrResult.quality, lowTextPages: [] } },
+      {
+        units: [
+          {
+            ...ocrUnit,
+            extractionMethod: "text_layer" as const,
+          },
+        ],
+      },
       {
         ocrReviews: [{ ...ocrReview, page: 2 }],
       },
