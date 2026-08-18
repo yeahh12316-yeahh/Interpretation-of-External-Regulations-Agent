@@ -202,7 +202,9 @@ body {
 .shell.with-evidence,
 .workflow-frame.with-evidence {
   display: grid;
-  grid-template-columns: minmax(0, 1fr) 330px;
+  /* EvidencePanel is rendered inside the page content. Keep the outer shell
+     single-column so the fixed sidebar never steals the main content track. */
+  grid-template-columns: minmax(0, 1fr);
 }
 
 .shell .screen,
