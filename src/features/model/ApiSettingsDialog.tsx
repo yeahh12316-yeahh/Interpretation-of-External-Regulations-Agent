@@ -99,7 +99,12 @@ export function ApiSettingsDialog({
   };
 
   return (
-    <div aria-labelledby="api-settings-title" aria-modal="true" role="dialog">
+    <div
+      aria-labelledby="api-settings-title"
+      aria-modal="true"
+      className="workflow-dialog"
+      role="dialog"
+    >
       <form onSubmit={(event) => void save(event)}>
         <h2 id="api-settings-title">模型接口设置</h2>
         <p>API Key 仅保存在当前浏览器会话，不写入项目、备份或长期存储。</p>
@@ -219,7 +224,12 @@ export function ThirdPartyDataFlowDialog({
   };
 
   return (
-    <div aria-labelledby="data-flow-title" aria-modal="true" role="dialog">
+    <div
+      aria-labelledby="data-flow-title"
+      aria-modal="true"
+      className="workflow-dialog"
+      role="dialog"
+    >
       <h2 id="data-flow-title">第三方模型数据流告知</h2>
       <p>
         本次操作会将监管文本及相关提示词发送至 {provider} 的模型{" "}
