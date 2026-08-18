@@ -110,7 +110,9 @@ it("opens a production draft report with watermark before required review comple
   );
   expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
   await user.click(screen.getByRole("button", { name: "预览/导出 AI 草稿" }));
-  expect(screen.getByRole("heading", { name: "报告导出" })).toBeVisible();
+  expect(
+    await screen.findByRole("heading", { name: "报告导出" }),
+  ).toBeVisible();
   expect(screen.getAllByText("AI草稿，未经人工复核").length).toBeGreaterThan(0);
   expect(screen.getByRole("button", { name: "返回人工复核" })).toBeVisible();
 });
@@ -173,7 +175,7 @@ it("uses the authoritative Task 8 parse gate and blocks stale source content", a
   expect(screen.getByRole("alert")).toHaveTextContent(/解析|OCR/);
 });
 
-it("auto-passes successful OCR pages without requiring a reviewer", () => {
+it("auto-passes successful OCR pages without requiring a reviewer", async () => {
   const session = emptySession();
   const text = "第一条 不得泄露合成信息。";
   const source = {
@@ -293,7 +295,9 @@ it("auto-passes successful OCR pages without requiring a reviewer", () => {
   expect(
     screen.queryByRole("button", { name: "保存纠错" }),
   ).not.toBeInTheDocument();
-  expect(screen.getByText("OCR 已自动通过，未要求填写复核人。")).toBeVisible();
+  expect(
+    await screen.findByText("OCR 已自动通过，未要求填写复核人。"),
+  ).toBeVisible();
 });
 
 it("automatically restores the latest valid session on production mount", async () => {
@@ -331,7 +335,7 @@ it("does not call the model before configuration and explicit data-flow consent"
   const { rerender } = render(
     <WorkflowShell initialSession={analysisSession()} runAnalysisImpl={run} />,
   );
-  await user.click(screen.getByRole("button", { name: "开始监管分析" }));
+  await user.click(await screen.findByRole("button", { name: "开始监管分析" }));
   expect(run).not.toHaveBeenCalled();
   expect(screen.getByRole("dialog", { name: "模型接口设置" })).toBeVisible();
   await user.click(screen.getByRole("button", { name: "取消" }));
@@ -344,7 +348,7 @@ it("does not call the model before configuration and explicit data-flow consent"
   rerender(
     <WorkflowShell initialSession={analysisSession()} runAnalysisImpl={run} />,
   );
-  await user.click(screen.getByRole("button", { name: "开始监管分析" }));
+  await user.click(await screen.findByRole("button", { name: "开始监管分析" }));
   expect(run).not.toHaveBeenCalled();
   expect(
     screen.getByRole("dialog", { name: "第三方模型数据流确认" }),
@@ -375,7 +379,7 @@ it("cancels a running analysis and preserves the saved version", async () => {
       runAnalysisImpl={run as never}
     />,
   );
-  await user.click(screen.getByRole("button", { name: "开始监管分析" }));
+  await user.click(await screen.findByRole("button", { name: "开始监管分析" }));
   await user.click(await screen.findByRole("button", { name: "取消分析" }));
   expect(await screen.findByRole("status")).toHaveTextContent("分析已取消");
 });
@@ -458,7 +462,9 @@ it("passes a trusted targeted directive and cancellation clears the request and 
       runAnalysisImpl={run as never}
     />,
   );
-  await user.click(screen.getByRole("button", { name: "执行定向重分析" }));
+  await user.click(
+    await screen.findByRole("button", { name: "执行定向重分析" }),
+  );
   expect(run.mock.calls[0][0].reanalysisDirective).toMatchObject({
     targetFindingIds: ["F1"],
     allowedSourceIds: ["REG-A"],
@@ -487,7 +493,7 @@ it("redacts arbitrary analysis failures from the DOM", async () => {
   render(
     <WorkflowShell initialSession={analysisSession()} runAnalysisImpl={run} />,
   );
-  await user.click(screen.getByRole("button", { name: "开始监管分析" }));
+  await user.click(await screen.findByRole("button", { name: "开始监管分析" }));
   expect(await screen.findByRole("alert")).toHaveTextContent("监管分析失败");
   expect(document.body.textContent).not.toContain("session-only-secret");
   expect(screen.getByRole("alert")).not.toHaveTextContent("第一条 原文");
