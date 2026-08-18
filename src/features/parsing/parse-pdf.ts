@@ -28,6 +28,9 @@ import {
   type OcrPageResult,
   type OcrProgress,
 } from "./ocr/ocr-pipeline";
+import type { ParseProgressCallback } from "./parse-progress";
+
+export const PDF_OPERATION_TIMEOUT_MS = 60_000;
 
 const testProcess = globalThis as typeof globalThis & {
   process?: { cwd(): string };
@@ -42,6 +45,23 @@ const testWorkerUrl = testProcess.process
 // fake worker in Node, where the equivalent file URL is required instead.
 GlobalWorkerOptions.workerSrc =
   import.meta.env.MODE === "test" && testWorkerUrl ? testWorkerUrl : workerUrl;
+
+const raceWithTimeout = async <T>(
+  promise: Promise<T>,
+  signal: AbortSignal,
+  timeoutMs: number,
+  message: string,
+): Promise<T> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<never>((_, reject) => {
+    timer = setTimeout(() => reject(new Error(message)), timeoutMs);
+  });
+  try {
+    return await Promise.race([raceWithAbort(promise, signal), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
 
 interface PdfTextItem {
   str: string;
@@ -87,6 +107,7 @@ export interface PdfOcrDependencies {
   ) => Promise<OcrPageResult[]>;
   onOcrProgress?: (progress: OcrProgress) => void;
   releasePageBitmap?: (page: OcrPageBitmap) => void;
+  onProgress?: ParseProgressCallback;
 }
 
 const canRenderPage = (
@@ -112,7 +133,12 @@ const renderPageBitmap = async ({
   const canvasContext = canvas.getContext("2d", { willReadFrequently: true });
   if (!canvasContext) throw new Error("PDF 页面位图创建失败");
   const rendering = page.render({ canvas, canvasContext, viewport });
-  await raceWithAbort(rendering.promise, signal);
+  await raceWithTimeout(
+    rendering.promise,
+    signal,
+    PDF_OPERATION_TIMEOUT_MS,
+    "PDF 页面渲染超时",
+  );
   return {
     pageNumber,
     sourceId,
@@ -310,9 +336,26 @@ export async function parsePdfPages(
 
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     throwIfAborted(signal);
+    ocrDependencies.onProgress?.({
+      stage: "extracting",
+      completed: pageNumber - 1,
+      total: pdf.numPages,
+      page: pageNumber,
+      detail: `正在提取第 ${pageNumber}/${pdf.numPages} 页文本`,
+    });
     try {
-      const page = await raceWithAbort(pdf.getPage(pageNumber), signal);
-      const textContent = await raceWithAbort(page.getTextContent(), signal);
+      const page = await raceWithTimeout(
+        pdf.getPage(pageNumber),
+        signal,
+        PDF_OPERATION_TIMEOUT_MS,
+        "PDF 页面加载超时",
+      );
+      const textContent = await raceWithTimeout(
+        page.getTextContent(),
+        signal,
+        PDF_OPERATION_TIMEOUT_MS,
+        "PDF 文本提取超时",
+      );
       const items = textContent.items.filter(isTextItem);
       const lines = textLines(items).filter((line) => lineText(line.items));
       result.successfulPages.push(pageNumber);
@@ -356,11 +399,16 @@ export async function parsePdfPages(
           const runOcr = ocrDependencies.runOcr ?? ocrPages;
           let pageResults: OcrPageResult[];
           try {
-            pageResults = await runOcr(
-              [bitmap],
-              signal,
-              ocrDependencies.onOcrProgress ?? (() => undefined),
-            );
+            pageResults = await runOcr([bitmap], signal, (progress) => {
+              ocrDependencies.onOcrProgress?.(progress);
+              ocrDependencies.onProgress?.({
+                stage: "ocr",
+                completed: pageNumber - 1 + progress.progress,
+                total: pdf.numPages,
+                page: pageNumber,
+                detail: progress.status,
+              });
+            });
           } catch (error) {
             if (signal.aborted || isAbortError(error)) throw abortError();
             pageResults = [failedOcrResult(bitmap)];
@@ -389,6 +437,13 @@ export async function parsePdfPages(
             (ocrDependencies.releasePageBitmap ?? releasePageBitmap)(bitmap);
         }
       }
+      ocrDependencies.onProgress?.({
+        stage: "extracting",
+        completed: pageNumber,
+        total: pdf.numPages,
+        page: pageNumber,
+        detail: `第 ${pageNumber}/${pdf.numPages} 页处理完成`,
+      });
     } catch (error) {
       if (signal.aborted || isAbortError(error)) {
         throw abortError();
@@ -411,6 +466,7 @@ export async function parsePdf(
   sourceId: string,
   sourceType: SourceType,
   signal: AbortSignal,
+  onProgress: ParseProgressCallback = () => undefined,
 ): Promise<PdfPageParseResult & { pageCount: number }> {
   throwIfAborted(signal);
   const loadingTask = getDocument({ data: new Uint8Array(bytes) });
@@ -420,8 +476,21 @@ export async function parsePdf(
   signal.addEventListener("abort", cancelLoading, { once: true });
 
   try {
-    const pdf = await raceWithAbort(loadingTask.promise, signal);
-    const pages = await parsePdfPages(pdf, sourceId, sourceType, signal);
+    const pdf = await raceWithTimeout(
+      loadingTask.promise,
+      signal,
+      PDF_OPERATION_TIMEOUT_MS,
+      "PDF 加载超时",
+    );
+    onProgress({
+      stage: "extracting",
+      completed: 0,
+      total: pdf.numPages,
+      detail: `共 ${pdf.numPages} 页，开始提取文本`,
+    });
+    const pages = await parsePdfPages(pdf, sourceId, sourceType, signal, {
+      onProgress,
+    });
     return { ...pages, pageCount: pdf.numPages };
   } catch (error) {
     if (signal.aborted) throw abortError();
@@ -445,12 +514,27 @@ export async function inspectPdfTextLayer(
   };
   signal.addEventListener("abort", cancelLoading, { once: true });
   try {
-    const pdf = await raceWithAbort(loadingTask.promise, signal);
+    const pdf = await raceWithTimeout(
+      loadingTask.promise,
+      signal,
+      PDF_OPERATION_TIMEOUT_MS,
+      "PDF 加载超时",
+    );
     const pages: Array<{ page: number; itemCount: number; text: string }> = [];
     for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
       throwIfAborted(signal);
-      const page = await raceWithAbort(pdf.getPage(pageNumber), signal);
-      const content = await raceWithAbort(page.getTextContent(), signal);
+      const page = await raceWithTimeout(
+        pdf.getPage(pageNumber),
+        signal,
+        PDF_OPERATION_TIMEOUT_MS,
+        "PDF 页面加载超时",
+      );
+      const content = await raceWithTimeout(
+        page.getTextContent(),
+        signal,
+        PDF_OPERATION_TIMEOUT_MS,
+        "PDF 文本提取超时",
+      );
       const items = content.items.filter(isTextItem) as PdfTextItem[];
       pages.push({
         page: pageNumber,

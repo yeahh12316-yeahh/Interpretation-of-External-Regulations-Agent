@@ -8,8 +8,9 @@ body {
   margin: 0;
   background: #fff;
   color: #111;
-  font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC", "Microsoft YaHei", Arial,
-    sans-serif;
+  font-family:
+    -apple-system, BlinkMacSystemFont, "Segoe UI", "PingFang SC",
+    "Microsoft YaHei", Arial, sans-serif;
   font-size: 13px;
   line-height: 1.5;
 }
@@ -34,8 +35,11 @@ body {
 }
 
 .logo {
-  font: 800 21px Arial, sans-serif;
+  font:
+    800 21px Arial,
+    sans-serif;
   letter-spacing: -1px;
+  margin: 0 8px 8px;
 }
 
 .logo i,
@@ -48,24 +52,23 @@ body {
 .agent {
   font-size: 17px;
   font-weight: 760;
-  margin: 7px 0 0;
-  padding-bottom: 18px;
+  margin: 0 8px;
+  padding-bottom: 15px;
   border-bottom: 1px solid #363636;
   line-height: 1.22;
 }
 
 .side-label,
 .workflow-sidebar-label {
-  font-size: 10px;
+  font-size: 11px;
   letter-spacing: 1.4px;
   color: #999;
-  margin: 20px 9px 10px;
+  margin: 17px 8px 9px;
 }
 
-.workflow-sidebar ol,
-.side {
+.workflow-sidebar ol {
   display: grid;
-  gap: 2px;
+  gap: 3px;
   margin: 0;
   padding: 0;
   list-style: none;
@@ -396,8 +399,6 @@ select {
   margin-left: auto;
 }
 
-
-
 .eyebrow {
   margin: 0 0 0.25rem;
   color: #4a4a4a;
@@ -413,7 +414,6 @@ select {
   font-size: 1.2rem;
 }
 
-
 .btn-secondary {
   border-color: #8e8e8e;
 }
@@ -421,7 +421,6 @@ select {
 .btn-link:hover {
   border-color: var(--green);
 }
-
 
 .btn:focus-visible,
 .btn-secondary:focus-visible,
@@ -782,6 +781,44 @@ select {
   background: #fff8e5;
   font-size: 11px;
   line-height: 1.6;
+}
+
+.upload-progress {
+  display: grid;
+  gap: 6px;
+}
+
+.upload-progress-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+.upload-progress-heading strong {
+  min-width: 0;
+  overflow-wrap: anywhere;
+  font-size: 11px;
+}
+
+.upload-progress-heading span {
+  flex: 0 0 auto;
+  color: #527b10;
+  font-size: 10px;
+  font-weight: 800;
+}
+
+.upload-progress progress {
+  width: 100%;
+  height: 7px;
+  accent-color: var(--green);
+}
+
+.upload-progress-note {
+  margin: 0;
+  color: #777;
+  font-size: 10px;
+  line-height: 1.45;
 }
 
 .upload-notice.success {
