@@ -274,6 +274,19 @@ export function WorkflowShell({
       active = false;
     };
   }, [initialSession, repository]);
+  useEffect(() => {
+    if (recovering || session.project.parsingCompleted) return;
+    if (session.parseResults.length === 0) return;
+    const candidate = {
+      ...session,
+      project: { ...session.project, parsingCompleted: true },
+    };
+    if (!hasAuthoritativeParsingEvidence(candidate)) return;
+    // Repair only the derived workflow flag. Source bytes and parse evidence
+    // remain unchanged; this is a compatibility migration for sessions saved
+    // before OCR fallback pages were recorded in lowTextPages.
+    persist(candidate);
+  }, [recovering, session.project.parsingCompleted, session.parseResults.length]);
   const handleParsed = (result: ParseResult) => {
     const current = sessionRef.current;
     if (

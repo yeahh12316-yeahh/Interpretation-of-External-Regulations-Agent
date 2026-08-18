@@ -153,26 +153,43 @@ export const orderedUnitDigest = (units: readonly ParsedSourceUnit[]): string =>
 
 export const parseOutcomeFromResult = (
   result: ParseResult,
-): SourceParseOutcome => ({
-  fileHash: result.fileHash,
-  source: result.source,
-  sourceId: result.source.sourceId,
-  sourceType: result.source.sourceType,
-  pageCount: result.pageCount,
-  successfulPages: result.successfulPages,
-  failedPages: result.failedPages,
-  failedPageCount: result.quality.failedPageCount,
-  parsedUnitCount: result.quality.parsedUnitCount,
-  totalCharacters: result.quality.totalCharacters,
-  orderedUnitDigest: orderedUnitDigest(result.units),
-  ocrFailedPages: result.quality.ocrFailedPages,
-  lowTextPages: result.quality.lowTextPages,
-  ocrReviews: result.ocrReviews,
-  anchors: result.anchors,
-  finalizationBlocked: result.quality.finalizationBlocked,
-  extractionCoverage: result.quality.extractionCoverage,
-  units: result.units,
-});
+): SourceParseOutcome => {
+  // Older sessions created before the text-layer fallback fix contain OCR
+  // units but omit those pages from lowTextPages. Derive the missing marker
+  // from the authoritative OCR units so restoring that session does not leave
+  // a successful parse permanently blocked at the next-step gate.
+  const inferredOcrPages = result.units
+    .filter(
+      (unit) =>
+        unit.extractionMethod === "ocr" &&
+        Number.isInteger(unit.page) &&
+        (unit.page ?? 0) > 0,
+    )
+    .map((unit) => unit.page as number);
+  const lowTextPages = Array.from(
+    new Set([...result.quality.lowTextPages, ...inferredOcrPages]),
+  ).sort((left, right) => left - right);
+  return {
+    fileHash: result.fileHash,
+    source: result.source,
+    sourceId: result.source.sourceId,
+    sourceType: result.source.sourceType,
+    pageCount: result.pageCount,
+    successfulPages: result.successfulPages,
+    failedPages: result.failedPages,
+    failedPageCount: result.quality.failedPageCount,
+    parsedUnitCount: result.quality.parsedUnitCount,
+    totalCharacters: result.quality.totalCharacters,
+    orderedUnitDigest: orderedUnitDigest(result.units),
+    ocrFailedPages: result.quality.ocrFailedPages,
+    lowTextPages,
+    ocrReviews: result.ocrReviews,
+    anchors: result.anchors,
+    finalizationBlocked: result.quality.finalizationBlocked,
+    extractionCoverage: result.quality.extractionCoverage,
+    units: result.units,
+  };
+};
 
 const ratio = (
   numerator: number,
