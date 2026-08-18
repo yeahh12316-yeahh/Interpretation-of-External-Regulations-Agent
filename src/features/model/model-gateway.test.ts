@@ -12,6 +12,7 @@ import {
 import {
   createModelGateway,
   modelDataFlowConsent,
+  modelRequestTimeoutMs,
   testConnection,
 } from "./model-gateway";
 
@@ -306,6 +307,18 @@ describe("OpenAI-compatible model gateway", () => {
         secret,
       ).requestStructured(request),
     ).rejects.toMatchObject({ kind: "timeout" });
+  });
+
+  test("gives analysis requests the longer production timeout floor", () => {
+    expect(
+      modelRequestTimeoutMs(
+        { ...config, timeoutMs: 10 },
+        "analysis_document_identity_v1",
+      ),
+    ).toBe(120_000);
+    expect(
+      modelRequestTimeoutMs({ ...config, timeoutMs: 10 }, "connection_test"),
+    ).toBe(10);
   });
 
   test("honors caller cancellation separately from timeout", async () => {

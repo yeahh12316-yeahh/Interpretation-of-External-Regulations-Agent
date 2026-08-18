@@ -108,6 +108,7 @@ export function ApiSettingsDialog({
       <form onSubmit={(event) => void save(event)}>
         <h2 id="api-settings-title">模型接口设置</h2>
         <p>API Key 仅保存在当前浏览器会话，不写入项目、备份或长期存储。</p>
+        <p>正式监管分析单次模型请求最长等待 120 秒，可随时取消分析。</p>
 
         <label>
           Base URL
@@ -289,11 +290,19 @@ export function ThirdPartyDataFlowDialog({
         </label>
         <div className="dialog-actions">
           {onEditSettings ? (
-            <button className="btn btn-link" type="button" onClick={onEditSettings}>
+            <button
+              className="btn btn-link"
+              type="button"
+              onClick={onEditSettings}
+            >
               返回修改接口
             </button>
           ) : null}
-          <button className="btn btn-secondary" type="button" onClick={onCancel}>
+          <button
+            className="btn btn-secondary"
+            type="button"
+            onClick={onCancel}
+          >
             取消
           </button>
           <button
