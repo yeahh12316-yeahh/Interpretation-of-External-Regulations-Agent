@@ -12,6 +12,7 @@ import {
 import {
   createModelGateway,
   modelDataFlowConsent,
+  modelRequestMaxOutputTokens,
   modelRequestTimeoutMs,
   testConnection,
 } from "./model-gateway";
@@ -364,6 +365,36 @@ describe("OpenAI-compatible model gateway", () => {
     expect(
       modelRequestTimeoutMs({ ...config, timeoutMs: 10 }, "connection_test"),
     ).toBe(10);
+  });
+
+  test("gives analysis JSON enough output budget to avoid truncated responses", async () => {
+    expect(
+      modelRequestMaxOutputTokens(
+        { ...config, maxOutputTokens: 2_000 },
+        "analysis_atomic_clauses_v1",
+      ),
+    ).toBe(8_000);
+    expect(modelRequestMaxOutputTokens(config, "connection_test")).toBe(800);
+
+    let body: Record<string, unknown> = {};
+    server.use(
+      http.post(MODEL_CHAT_URL, async ({ request: incoming }) => {
+        body = (await incoming.json()) as Record<string, unknown>;
+        return HttpResponse.json({
+          choices: [{ message: { content: '{"findings":[]}' } }],
+        });
+      }),
+    );
+    await expect(
+      createModelGateway(
+        { ...config, maxOutputTokens: 2_000 },
+        secret,
+      ).requestStructured({
+        ...request,
+        schemaName: "analysis_document_identity_v1",
+      }),
+    ).resolves.toEqual({ findings: [] });
+    expect(body.max_tokens).toBe(8_000);
   });
 
   test("honors caller cancellation separately from timeout", async () => {

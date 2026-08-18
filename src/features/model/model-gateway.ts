@@ -214,6 +214,14 @@ export const modelRequestTimeoutMs = (
     ? Math.max(config.timeoutMs ?? 60_000, 120_000)
     : (config.timeoutMs ?? 60_000);
 
+export const modelRequestMaxOutputTokens = (
+  config: ModelConfig,
+  schemaName?: string,
+): number =>
+  schemaName?.startsWith("analysis_")
+    ? Math.max(config.maxOutputTokens, 8_000)
+    : config.maxOutputTokens;
+
 function createGateway(
   config: ModelConfig,
   apiKey: string,
@@ -242,6 +250,10 @@ function createGateway(
       const endpoint = proxyEndpoint || upstreamEndpoint;
       const responseSchema = schemaDefinition(request.schema);
       const requestTimeoutMs = modelRequestTimeoutMs(
+        config,
+        request.schemaName,
+      );
+      const requestMaxOutputTokens = modelRequestMaxOutputTokens(
         config,
         request.schemaName,
       );
@@ -280,7 +292,7 @@ function createGateway(
             model: config.model.trim(),
             messages,
             temperature: config.temperature,
-            max_tokens: config.maxOutputTokens,
+            max_tokens: requestMaxOutputTokens,
             response_format:
               format === "schema"
                 ? {
