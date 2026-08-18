@@ -10,7 +10,13 @@ Vercel preview 可以先构建，但 production promotion 必须绑定到通过�
 
 这是部署目标上的外部必做项，当前仓库配置无法替管理员开启。未配置 required Deployment Checks/人工 promotion 约束，或无法提供 SHA 对账证据时，发布不得验收。代码内 `build && scan:build` 只闭合候选构建产物与扫描之间的差异，不能替代 production promotion gate。
 
-部署平台不得配置共享的模型 Base URL、模型名或 API Key。模型设置由每个用户在运行时界面填写，浏览器直接向用户选择的 HTTPS 模型服务商发送请求。`.env.example` 只有说明，不提供任何构建值。
+部署平台不得配置共享的模型 Base URL、模型名或 API Key。模型设置由每个用户在运行时界面填写，API Key 只随当前请求发送，不写入项目、构建产物或代理日志。`.env.example` 只有说明，不提供任何构建值。
+
+### Nova CORS 代理（可选）
+
+本项目包含一个受限的 Vercel Function：`/api/model-proxy`。在 Vercel 构建中，前端会自动把模型请求发到同源代理；代理只接受 Nova 的固定 HTTPS 主机和 `/del/v1/chat/completions` 路径，校验 `model` 与 `messages`，移除内部 `upstreamUrl` 字段后转发，不提供任意网址转发能力，也不保存或打印 API Key。当前实现以同源部署为目标；如需让其他受控来源调用代理，才设置 Vercel 环境变量 `MODEL_PROXY_ALLOWED_ORIGIN` 为精确 origin。
+
+用户在界面中应填写 Nova 的 Base URL `https://nova.deloitte.com.cn/del/v1`（填完整 `/chat/completions` 地址也会被规范化）和自己生成的模型 API Key。GitHub Pages 构建不会启用该代理，仍要求模型服务商允许浏览器 CORS；要绕过当前 Nova 的 CORS 限制，必须把应用部署到 Vercel（或其他提供同源后端函数的受控平台）。Vercel 官方支持 Vite 项目根目录 `api` 函数及用 `vercel.json` 为 SPA 配置 rewrite，参见 [Vite on Vercel](https://vercel.com/docs/frameworks/frontend/vite) 和 [Static Configuration with vercel.json](https://vercel.com/docs/project-configuration/vercel-json)。
 
 发布前必须满足：
 

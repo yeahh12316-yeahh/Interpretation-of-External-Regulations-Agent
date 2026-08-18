@@ -103,5 +103,11 @@ export default defineConfig({
     process.env.GITHUB_ACTIONS === "true"
       ? "/Interpretation-of-External-Regulations-Agent/"
       : "/",
+  define: {
+    "import.meta.env.VITE_MODEL_PROXY_URL": JSON.stringify(
+      process.env.VITE_MODEL_PROXY_URL?.trim() ||
+        (process.env.VERCEL === "1" ? "/api/model-proxy" : ""),
+    ),
+  },
   plugins: [react(), localOcrAssets()],
 });

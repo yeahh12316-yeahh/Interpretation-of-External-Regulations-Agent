@@ -26,6 +26,11 @@ export interface ModelGateway {
   requestStructured<T>(request: StructuredModelRequest<T>): Promise<T>;
 }
 
+const configuredProxyUrl = (): string =>
+  typeof import.meta.env.VITE_MODEL_PROXY_URL === "string"
+    ? import.meta.env.VITE_MODEL_PROXY_URL.trim()
+    : "";
+
 interface ChatCompletionResponse {
   choices?: Array<{
     message?: {
@@ -80,7 +85,9 @@ function createGateway(
         throw new ModelGatewayError("auth");
       }
 
-      const endpoint = normalizeChatCompletionsUrl(config.baseUrl);
+      const upstreamEndpoint = normalizeChatCompletionsUrl(config.baseUrl);
+      const proxyEndpoint = configuredProxyUrl();
+      const endpoint = proxyEndpoint || upstreamEndpoint;
       const responseSchema = schemaDefinition(request.schema);
 
       const complete = async (messages: ModelMessage[]): Promise<string> => {
@@ -110,26 +117,29 @@ function createGateway(
           } catch {
             signal = undefined;
           }
+          const requestBody: Record<string, unknown> = {
+            model: config.model.trim(),
+            messages,
+            temperature: config.temperature,
+            max_tokens: config.maxOutputTokens,
+            response_format: {
+              type: "json_schema",
+              json_schema: {
+                name: request.schemaName ?? "structured_response",
+                strict: true,
+                schema: responseSchema,
+              },
+            },
+          };
+          if (proxyEndpoint) requestBody.upstreamUrl = upstreamEndpoint;
+
           const response = await fetch(endpoint, {
             method: "POST",
             headers: {
               Authorization: `Bearer ${apiKey}`,
               "Content-Type": "application/json",
             },
-            body: JSON.stringify({
-              model: config.model.trim(),
-              messages,
-              temperature: config.temperature,
-              max_tokens: config.maxOutputTokens,
-              response_format: {
-                type: "json_schema",
-                json_schema: {
-                  name: request.schemaName ?? "structured_response",
-                  strict: true,
-                  schema: responseSchema,
-                },
-              },
-            }),
+            body: JSON.stringify(requestBody),
             signal,
           });
 
