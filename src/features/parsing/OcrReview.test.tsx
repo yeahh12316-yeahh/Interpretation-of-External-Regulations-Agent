@@ -146,6 +146,20 @@ describe("applyOcrCorrection", () => {
 });
 
 describe("OcrReview", () => {
+  test("shows a successful OCR page as auto-passed without manual data entry", () => {
+    const page = ocrPage(1);
+    render(<OcrReview result={parseResultWith(page)} reviewId={page.unitId} />);
+
+    expect(
+      screen.getByText("OCR 已自动通过，未要求填写复核人。"),
+    ).toBeVisible();
+    expect(screen.getByRole("status")).toHaveTextContent("建议人工抽查");
+    expect(screen.queryByLabelText("OCR复核人")).not.toBeInTheDocument();
+    expect(
+      screen.queryByRole("button", { name: "保存纠错" }),
+    ).not.toBeInTheDocument();
+  });
+
   test("never hydrates a forged persisted correction into the authoritative result", async () => {
     const page = ocrPage(1);
     const result = parseResultWith(page);

@@ -173,8 +173,7 @@ it("uses the authoritative Task 8 parse gate and blocks stale source content", a
   expect(screen.getByRole("alert")).toHaveTextContent(/解析|OCR/);
 });
 
-it("renders OCR review in the production parsing step and unlocks only after correction", async () => {
-  const user = userEvent.setup();
+it("auto-passes successful OCR pages without requiring a reviewer", () => {
   const session = emptySession();
   const text = "第一条 不得泄露合成信息。";
   const source = {
@@ -288,30 +287,13 @@ it("renders OCR review in the production parsing step and unlocks only after cor
     />,
   );
 
-  expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
-  expect(screen.queryByText("伪造的本地纠错文本")).not.toBeInTheDocument();
-  expect(screen.getByRole("textbox", { name: "OCR 纠错文本" })).toHaveValue(
-    text,
-  );
-  const reviewerInput = screen.getByLabelText("OCR复核人");
-  const saveCorrection = screen.getByRole("button", { name: "保存纠错" });
-  expect(reviewerInput).toHaveAttribute("aria-invalid", "true");
-  expect(reviewerInput).toHaveAccessibleDescription("请先填写 OCR 复核人");
-  expect(screen.getByText("请先填写 OCR 复核人")).toHaveAttribute(
-    "role",
-    "alert",
-  );
-  expect(saveCorrection).toBeDisabled();
-  await user.click(saveCorrection);
-  expect(screen.getByText("待审阅")).toBeVisible();
-  expect(screen.getByRole("button", { name: "下一步" })).toBeDisabled();
-  await user.type(screen.getByLabelText("OCR复核人"), "复核员甲");
-  expect(reviewerInput).toHaveAttribute("aria-invalid", "false");
-  expect(screen.queryByText("请先填写 OCR 复核人")).not.toBeInTheDocument();
-  expect(saveCorrection).toBeEnabled();
-  await user.click(saveCorrection);
-  expect(await screen.findByText("已纠错")).toBeVisible();
   expect(screen.getByRole("button", { name: "下一步" })).toBeEnabled();
+  expect(screen.queryByText("伪造的本地纠错文本")).not.toBeInTheDocument();
+  expect(screen.queryByLabelText("OCR复核人")).not.toBeInTheDocument();
+  expect(
+    screen.queryByRole("button", { name: "保存纠错" }),
+  ).not.toBeInTheDocument();
+  expect(screen.getByText("OCR 已自动通过，未要求填写复核人。")).toBeVisible();
 });
 
 it("automatically restores the latest valid session on production mount", async () => {
