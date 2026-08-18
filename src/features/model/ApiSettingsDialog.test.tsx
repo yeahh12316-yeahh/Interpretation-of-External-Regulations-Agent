@@ -126,7 +126,7 @@ describe("ThirdPartyDataFlowDialog", () => {
     );
 
     const dialog = screen.getByRole("dialog", {
-      name: "本次分析将使用外部模型",
+      name: "第三方模型数据流确认",
     });
     expect(within(dialog).getByText(/监管原文分块.*发送到/)).toBeVisible();
     expect(within(dialog).getByText(/model\.example/)).toBeVisible();

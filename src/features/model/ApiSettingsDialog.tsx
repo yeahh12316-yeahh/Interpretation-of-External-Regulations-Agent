@@ -229,7 +229,7 @@ export function ThirdPartyDataFlowDialog({
 
   return (
     <div
-      aria-labelledby="data-flow-title"
+      aria-label="第三方模型数据流确认"
       aria-describedby="data-flow-description"
       aria-modal="true"
       className="workflow-dialog data-flow-dialog"

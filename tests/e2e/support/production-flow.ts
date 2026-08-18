@@ -308,7 +308,7 @@ export const uploadAndAnalyze = async (
   await page.getByRole("button", { name: "开始监管分析" }).click();
   const consent = page.getByRole("dialog", { name: /第三方模型数据流/u });
   await consent.getByRole("checkbox").check();
-  await consent.getByRole("button", { name: "确认并发送" }).click();
+  await consent.getByRole("button", { name: "同意并开始分析" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "监管分析完成" }),
   ).toBeVisible();
