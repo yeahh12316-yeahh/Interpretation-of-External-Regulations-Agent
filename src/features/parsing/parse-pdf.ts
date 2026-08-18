@@ -383,6 +383,75 @@ export async function parsePdfPages(
     });
   };
 
+  // Some PDFs contain a malformed or unsupported text layer. In that case
+  // PDF.js can reject getTextContent even though the page is renderable. OCR
+  // must be attempted before marking the page as lost; otherwise every page
+  // is reported as a text-extraction failure and the document is blocked.
+  const tryOcrPage = async (
+    page: PdfPageLike,
+    pageNumber: number,
+  ): Promise<boolean> => {
+    const bitmapRenderer =
+      ocrDependencies.renderPageBitmap ?? renderPageBitmap;
+    if (!ocrDependencies.renderPageBitmap && !canRenderPage(page)) return false;
+
+    let bitmap: OcrPageBitmap | undefined;
+    try {
+      bitmap = await bitmapRenderer({
+        page,
+        pageNumber,
+        sourceId,
+        sourceType,
+        signal,
+      });
+      const runOcr = ocrDependencies.runOcr ?? ocrPages;
+      let pageResults: OcrPageResult[];
+      try {
+        pageResults = await runOcr([bitmap], signal, (progress) => {
+          ocrDependencies.onOcrProgress?.(progress);
+          ocrDependencies.onProgress?.({
+            stage: "ocr",
+            completed: pageNumber - 1 + progress.progress,
+            total: pdf.numPages,
+            page: pageNumber,
+            detail: progress.status,
+          });
+        });
+      } catch (error) {
+        if (signal.aborted || isAbortError(error)) throw abortError();
+        pageResults = [failedOcrResult(bitmap)];
+      }
+      recordOcrResult(
+        pageResults.find((ocrResult) => ocrResult.page === pageNumber) ??
+          failedOcrResult(bitmap),
+      );
+      if (
+        !result.failedPages.some((failure) => failure.page === pageNumber) &&
+        !result.successfulPages.includes(pageNumber)
+      ) {
+        result.successfulPages.push(pageNumber);
+      }
+      return true;
+    } catch (error) {
+      if (signal.aborted || isAbortError(error)) throw abortError();
+      if (!result.ocrFailedPages.includes(pageNumber))
+        result.ocrFailedPages.push(pageNumber);
+      if (!result.failedPages.some((failure) => failure.page === pageNumber)) {
+        result.failedPages.push({
+          page: pageNumber,
+          error: "页面 OCR 渲染失败",
+        });
+      }
+      result.successfulPages = result.successfulPages.filter(
+        (successfulPage) => successfulPage !== pageNumber,
+      );
+      return true;
+    } finally {
+      if (bitmap)
+        (ocrDependencies.releasePageBitmap ?? releasePageBitmap)(bitmap);
+    }
+  };
+
   for (let pageNumber = 1; pageNumber <= pdf.numPages; pageNumber += 1) {
     throwIfAborted(signal);
     ocrDependencies.onProgress?.({
@@ -433,61 +502,11 @@ export async function parsePdfPages(
           };
         }),
       );
-      const bitmapRenderer =
-        ocrDependencies.renderPageBitmap ?? renderPageBitmap;
       if (
         lowText &&
         (ocrDependencies.renderPageBitmap || canRenderPage(page))
       ) {
-        let bitmap: OcrPageBitmap | undefined;
-        try {
-          bitmap = await bitmapRenderer({
-            page,
-            pageNumber,
-            sourceId,
-            sourceType,
-            signal,
-          });
-          const runOcr = ocrDependencies.runOcr ?? ocrPages;
-          let pageResults: OcrPageResult[];
-          try {
-            pageResults = await runOcr([bitmap], signal, (progress) => {
-              ocrDependencies.onOcrProgress?.(progress);
-              ocrDependencies.onProgress?.({
-                stage: "ocr",
-                completed: pageNumber - 1 + progress.progress,
-                total: pdf.numPages,
-                page: pageNumber,
-                detail: progress.status,
-              });
-            });
-          } catch (error) {
-            if (signal.aborted || isAbortError(error)) throw abortError();
-            pageResults = [failedOcrResult(bitmap)];
-          }
-          recordOcrResult(
-            pageResults.find((ocrResult) => ocrResult.page === pageNumber) ??
-              failedOcrResult(bitmap),
-          );
-        } catch (error) {
-          if (signal.aborted || isAbortError(error)) throw abortError();
-          if (!result.ocrFailedPages.includes(pageNumber))
-            result.ocrFailedPages.push(pageNumber);
-          if (
-            !result.failedPages.some((failure) => failure.page === pageNumber)
-          ) {
-            result.failedPages.push({
-              page: pageNumber,
-              error: "页面 OCR 渲染失败",
-            });
-          }
-          result.successfulPages = result.successfulPages.filter(
-            (successfulPage) => successfulPage !== pageNumber,
-          );
-        } finally {
-          if (bitmap)
-            (ocrDependencies.releasePageBitmap ?? releasePageBitmap)(bitmap);
-        }
+        await tryOcrPage(page, pageNumber);
       }
       ocrDependencies.onProgress?.({
         stage: "extracting",
@@ -499,6 +518,16 @@ export async function parsePdfPages(
     } catch (error) {
       if (signal.aborted || isAbortError(error)) {
         throw abortError();
+      }
+      if (page && (await tryOcrPage(page, pageNumber))) {
+        ocrDependencies.onProgress?.({
+          stage: "ocr",
+          completed: pageNumber,
+          total: pdf.numPages,
+          page: pageNumber,
+          detail: `第 ${pageNumber}/${pdf.numPages} 页文本层异常，已改用 OCR`,
+        });
+        continue;
       }
       result.failedPages.push({ page: pageNumber, error: "页面文本提取失败" });
       ocrDependencies.onProgress?.({

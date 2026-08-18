@@ -595,6 +595,65 @@ describe("page failures and stable anchors", () => {
     });
     expect(result.failedPages).toEqual([]);
     expect(result.ocrFailedPages).toEqual([]);
+    expect(result.successfulPages).toEqual([1]);
+  });
+
+  test("falls back to OCR when the PDF text layer throws", async () => {
+    const fakePdf = {
+      numPages: 1,
+      getPage: async () => ({
+        getTextContent: async () => {
+          throw new Error("synthetic text-layer exception");
+        },
+      }),
+    };
+
+    const result = await parsePdfPages(
+      fakePdf,
+      "SRC-regulatory_text-text-layer-fallback",
+      "regulatory_text",
+      new AbortController().signal,
+      {
+        renderPageBitmap: async ({ pageNumber, sourceId, sourceType }) => ({
+          pageNumber,
+          sourceId,
+          sourceType,
+          image: {} as HTMLCanvasElement,
+          width: 1200,
+          height: 1600,
+        }),
+        runOcr: async (pages) =>
+          pages.map((page) => ({
+            unitId: `${page.sourceId}:p${page.pageNumber}:ocr`,
+            sourceId: page.sourceId,
+            sourceType: page.sourceType,
+            page: page.pageNumber,
+            method: "ocr" as const,
+            confidence: 0.86,
+            text: "第一条 文本层异常时仍可通过 OCR 提取。",
+            originalOcrText: "第一条 文本层异常时仍可通过 OCR 提取。",
+            correctedText: null,
+            reviewStatus: "unreviewed" as const,
+            reviewedAt: null,
+            reviewedBy: null,
+            correctionHistory: [],
+            boundingBox: { x: 0, y: 0, width: 1200, height: 1600 },
+            regions: [],
+            lowConfidenceCharacters: [],
+          })),
+      },
+    );
+
+    expect(result.units).toEqual([
+      expect.objectContaining({
+        page: 1,
+        extractionMethod: "ocr",
+        text: "第一条 文本层异常时仍可通过 OCR 提取。",
+      }),
+    ]);
+    expect(result.failedPages).toEqual([]);
+    expect(result.ocrFailedPages).toEqual([]);
+    expect(result.successfulPages).toEqual([1]);
   });
 
   test("records an OCR failure as a finalization blocker", async () => {
