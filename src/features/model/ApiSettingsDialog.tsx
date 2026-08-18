@@ -68,6 +68,15 @@ export function ApiSettingsDialog({
     setConnection({ kind: "testing" });
     try {
       await testConnection(config(), apiKey);
+      // A successful connection test proves the exact credentials and model
+      // can be used. Keep them in the current session immediately so the
+      // user can start analysis without having to repeat the same action via
+      // "保存设置". The API key still never enters persistent storage.
+      sessionCredentials.set({
+        baseUrl: baseUrl.trim(),
+        apiKey,
+        model: model.trim(),
+      });
       setConnection({
         kind: "success",
         message: "连接成功：鉴权、模型响应和结构化输出均正常。",

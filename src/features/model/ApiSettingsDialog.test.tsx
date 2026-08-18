@@ -54,6 +54,11 @@ describe("ApiSettingsDialog", () => {
     await user.click(screen.getByRole("button", { name: "测试连接" }));
 
     expect(await screen.findByRole("status")).toHaveTextContent("连接成功");
+    expect(sessionCredentials.get()).toMatchObject({
+      baseUrl: MODEL_BASE_URL,
+      apiKey: secret,
+      model: "model-a",
+    });
     await user.click(screen.getByRole("button", { name: "保存设置" }));
 
     expect(sessionCredentials.get()).toMatchObject({
@@ -130,7 +135,9 @@ describe("ThirdPartyDataFlowDialog", () => {
     });
     expect(within(dialog).getByText(/监管原文分块.*发送到/)).toBeVisible();
     expect(within(dialog).getByText(/model\.example/)).toBeVisible();
-    const confirm = within(dialog).getByRole("button", { name: "同意并开始分析" });
+    const confirm = within(dialog).getByRole("button", {
+      name: "同意并开始分析",
+    });
     expect(confirm).toBeDisabled();
 
     await user.click(
