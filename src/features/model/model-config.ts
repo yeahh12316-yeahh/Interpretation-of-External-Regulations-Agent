@@ -11,7 +11,7 @@ export const DEFAULT_MODEL_CONFIG: ModelConfig = {
   model: "",
   temperature: 0,
   maxOutputTokens: 2_000,
-  timeoutMs: 30_000,
+  timeoutMs: 120_000,
 };
 
 export function normalizeChatCompletionsUrl(baseUrl: string): string {

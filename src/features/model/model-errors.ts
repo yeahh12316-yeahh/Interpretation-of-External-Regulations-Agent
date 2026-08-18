@@ -13,7 +13,8 @@ const safeMessages: Record<ModelErrorKind, string> = {
   auth: "鉴权失败，请检查 API Key 是否有效。",
   not_found: "接口或模型不存在，请检查 Base URL 和模型名称。",
   rate_limit: "请求过于频繁或额度不足，请稍后重试。",
-  timeout: "模型请求超时，请检查网络或稍后重试。",
+  timeout:
+    "模型请求超过单次分析的 120 秒等待上限；请检查接口是否能处理当前材料，或稍后重试。",
   invalid_schema:
     "模型未按要求返回结构化 JSON；系统已尝试 JSON Schema、兼容 JSON 模式和两次修复仍未通过。请更换支持结构化输出的模型或检查接口兼容性后重试。",
   consent_required: "发送用户材料前必须确认第三方模型数据流告知。",

@@ -155,6 +155,14 @@ const schemaDefinition = (schema: ZodType<unknown>): Record<string, unknown> =>
 const cancellationError = (): DOMException =>
   new DOMException("模型请求已取消", "AbortError");
 
+export const modelRequestTimeoutMs = (
+  config: ModelConfig,
+  schemaName?: string,
+): number =>
+  schemaName?.startsWith("analysis_")
+    ? Math.max(config.timeoutMs ?? 60_000, 120_000)
+    : (config.timeoutMs ?? 60_000);
+
 function createGateway(
   config: ModelConfig,
   apiKey: string,
@@ -182,6 +190,10 @@ function createGateway(
       const proxyEndpoint = configuredProxyUrl();
       const endpoint = proxyEndpoint || upstreamEndpoint;
       const responseSchema = schemaDefinition(request.schema);
+      const requestTimeoutMs = modelRequestTimeoutMs(
+        config,
+        request.schemaName,
+      );
 
       const complete = async (
         messages: ModelMessage[],
@@ -195,7 +207,7 @@ function createGateway(
         const timeout = globalThis.setTimeout(() => {
           timedOut = true;
           controller.abort();
-        }, config.timeoutMs ?? 60_000);
+        }, requestTimeoutMs);
         const cancelFromCaller = () => {
           callerCancelled = true;
           controller.abort();
