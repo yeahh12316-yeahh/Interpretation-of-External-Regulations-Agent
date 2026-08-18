@@ -30,7 +30,10 @@ import {
 } from "./ocr/ocr-pipeline";
 import type { ParseProgressCallback } from "./parse-progress";
 
-export const PDF_OPERATION_TIMEOUT_MS = 60_000;
+// Keep a malformed or unusually complex page from making the whole intake
+// screen appear frozen. The caller can still cancel immediately; this bound
+// is the final safety net when PDF.js never settles a page promise.
+export const PDF_OPERATION_TIMEOUT_MS = 30_000;
 
 const testProcess = globalThis as typeof globalThis & {
   process?: { cwd(): string };
@@ -71,9 +74,13 @@ interface PdfTextItem {
 }
 
 interface PdfPageLike {
-  getTextContent(): Promise<{ items: readonly unknown[] }>;
+  getTextContent?(options?: {
+    includeMarkedContent?: boolean;
+    disableCombineTextItems?: boolean;
+  }): Promise<{ items: readonly unknown[] }>;
   getViewport?(options: { scale: number }): PageViewport;
   render?(parameters: Parameters<PDFPageProxy["render"]>[0]): RenderTask;
+  cleanup?(): boolean;
 }
 
 export interface PdfDocumentLike {
@@ -343,15 +350,18 @@ export async function parsePdfPages(
       page: pageNumber,
       detail: `正在提取第 ${pageNumber}/${pdf.numPages} 页文本`,
     });
+    let page: PdfPageLike | undefined;
     try {
-      const page = await raceWithTimeout(
+      page = await raceWithTimeout(
         pdf.getPage(pageNumber),
         signal,
         PDF_OPERATION_TIMEOUT_MS,
         "PDF 页面加载超时",
       );
+      if (typeof page.getTextContent !== "function")
+        throw new Error("PDF 页面不支持文本提取");
       const textContent = await raceWithTimeout(
-        page.getTextContent(),
+        page.getTextContent({ includeMarkedContent: false }),
         signal,
         PDF_OPERATION_TIMEOUT_MS,
         "PDF 文本提取超时",
@@ -449,6 +459,22 @@ export async function parsePdfPages(
         throw abortError();
       }
       result.failedPages.push({ page: pageNumber, error: "页面文本提取失败" });
+      ocrDependencies.onProgress?.({
+        stage: "extracting",
+        completed: pageNumber,
+        total: pdf.numPages,
+        page: pageNumber,
+        detail: `第 ${pageNumber}/${pdf.numPages} 页提取失败，已跳过`,
+      });
+    } finally {
+      // PDFPageProxy retains operator lists and text-layer resources until
+      // explicitly cleaned. Releasing each page is important when both
+      // upload panels parse documents at the same time.
+      try {
+        page?.cleanup?.();
+      } catch {
+        // Cleanup is best-effort; the page result above remains authoritative.
+      }
     }
   }
 
@@ -470,13 +496,14 @@ export async function parsePdf(
 ): Promise<PdfPageParseResult & { pageCount: number }> {
   throwIfAborted(signal);
   const loadingTask = getDocument({ data: new Uint8Array(bytes) });
+  let pdf: Awaited<typeof loadingTask.promise> | undefined;
   const cancelLoading = () => {
     void loadingTask.destroy().catch(() => undefined);
   };
   signal.addEventListener("abort", cancelLoading, { once: true });
 
   try {
-    const pdf = await raceWithTimeout(
+    pdf = await raceWithTimeout(
       loadingTask.promise,
       signal,
       PDF_OPERATION_TIMEOUT_MS,
@@ -499,6 +526,15 @@ export async function parsePdf(
     throw new Error("PDF 文本提取失败");
   } finally {
     signal.removeEventListener("abort", cancelLoading);
+    // Release cached page resources before destroying the loading task. This
+    // prevents a late worker message from keeping the promise chain alive.
+    // PDF.js exposes cleanup on PDFDocumentProxy, but keep this defensive for
+    // test doubles and future versions.
+    try {
+      pdf?.cleanup();
+    } catch {
+      // Loading failed or was aborted; destroy below is still sufficient.
+    }
     await loadingTask.destroy().catch(() => undefined);
   }
 }
@@ -509,12 +545,13 @@ export async function inspectPdfTextLayer(
 ): Promise<Array<{ page: number; itemCount: number; text: string }>> {
   throwIfAborted(signal);
   const loadingTask = getDocument({ data: new Uint8Array(bytes) });
+  let pdf: Awaited<typeof loadingTask.promise> | undefined;
   const cancelLoading = () => {
     void loadingTask.destroy().catch(() => undefined);
   };
   signal.addEventListener("abort", cancelLoading, { once: true });
   try {
-    const pdf = await raceWithTimeout(
+    pdf = await raceWithTimeout(
       loadingTask.promise,
       signal,
       PDF_OPERATION_TIMEOUT_MS,
@@ -529,8 +566,10 @@ export async function inspectPdfTextLayer(
         PDF_OPERATION_TIMEOUT_MS,
         "PDF 页面加载超时",
       );
+      if (typeof page.getTextContent !== "function")
+        throw new Error("PDF 页面不支持文本提取");
       const content = await raceWithTimeout(
-        page.getTextContent(),
+        page.getTextContent({ includeMarkedContent: false }),
         signal,
         PDF_OPERATION_TIMEOUT_MS,
         "PDF 文本提取超时",
@@ -541,6 +580,7 @@ export async function inspectPdfTextLayer(
         itemCount: items.length,
         text: items.map((item) => item.str).join(""),
       });
+      page.cleanup?.();
     }
     return pages;
   } catch (error) {
@@ -548,6 +588,11 @@ export async function inspectPdfTextLayer(
     throw new Error("PDF 文本层检查失败");
   } finally {
     signal.removeEventListener("abort", cancelLoading);
+    try {
+      pdf?.cleanup();
+    } catch {
+      // Best-effort cleanup for inspection callers.
+    }
     await loadingTask.destroy().catch(() => undefined);
   }
 }

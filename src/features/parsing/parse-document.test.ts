@@ -1,7 +1,7 @@
 import { readFile } from "node:fs/promises";
 import { resolve } from "node:path";
 
-import { describe, expect, test } from "vitest";
+import { describe, expect, test, vi } from "vitest";
 
 import { SourceUnitSchema } from "../../domain/schemas";
 import { validateFile } from "../intake/file-policy";
@@ -442,6 +442,36 @@ describe("page failures and stable anchors", () => {
       "Bank Risk",
     ]);
     expect(result.units[0]?.article).toBe("第2026条");
+  });
+
+  test("cleans every PDF page after extraction and disables marked-content work", async () => {
+    const cleanup = vi.fn();
+    const getTextContent = vi.fn(async () => ({
+      items: [
+        {
+          str: "第一条 页面文本",
+          transform: [1, 0, 0, 1, 20, 700],
+          width: 100,
+          height: 12,
+        },
+      ],
+    }));
+    const fakePdf = {
+      numPages: 1,
+      getPage: async () => ({ getTextContent, cleanup }),
+    };
+
+    await parsePdfPages(
+      fakePdf,
+      "SRC-regulatory_text-cleanup",
+      "regulatory_text",
+      new AbortController().signal,
+    );
+
+    expect(getTextContent).toHaveBeenCalledWith({
+      includeMarkedContent: false,
+    });
+    expect(cleanup).toHaveBeenCalledTimes(1);
   });
 
   test("records failed and low-text PDF pages instead of silently dropping them", async () => {
