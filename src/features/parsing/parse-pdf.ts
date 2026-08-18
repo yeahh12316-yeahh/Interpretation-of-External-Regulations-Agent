@@ -33,8 +33,32 @@ import type { ParseProgressCallback } from "./parse-progress";
 // Keep a malformed or unusually complex page from making the whole intake
 // screen appear frozen. The caller can still cancel immediately; this bound
 // is the final safety net when PDF.js never settles a page promise.
-export const PDF_OPERATION_TIMEOUT_MS = 15_000;
+export const PDF_OPERATION_TIMEOUT_MS = 30_000;
 export const PDF_DESTROY_TIMEOUT_MS = 2_000;
+
+// PDF.js shares worker resources between loading tasks. Starting both intake
+// panels at once can leave the worker's text-stream promises unresolved on
+// larger PDFs. Keep the complete document lifecycle serialized; the second
+// panel still reports progress while it waits for its turn.
+let pdfParseQueue: Promise<void> = Promise.resolve();
+
+const acquirePdfParseSlot = async (
+  signal: AbortSignal,
+): Promise<() => void> => {
+  const previous = pdfParseQueue;
+  let release: () => void = () => undefined;
+  const turn = new Promise<void>((resolve) => {
+    release = resolve;
+  });
+  pdfParseQueue = previous.then(() => turn);
+  try {
+    await raceWithAbort(previous, signal);
+    return release;
+  } catch (error) {
+    release();
+    throw error;
+  }
+};
 
 const testProcess = globalThis as typeof globalThis & {
   process?: { cwd(): string };
@@ -513,19 +537,22 @@ export async function parsePdf(
   onProgress: ParseProgressCallback = () => undefined,
 ): Promise<PdfPageParseResult & { pageCount: number }> {
   throwIfAborted(signal);
-  let loadingTask = getDocument({ data: new Uint8Array(bytes) });
-  let pdf: Awaited<typeof loadingTask.promise> | undefined;
+  const releasePdfParseSlot = await acquirePdfParseSlot(signal);
+  let loadingTask: ReturnType<typeof getDocument> | undefined;
+  let pdf: Awaited<ReturnType<typeof getDocument>["promise"]> | undefined;
   const cancelLoading = () => {
-    void destroyLoadingTask(loadingTask);
+    if (loadingTask) void destroyLoadingTask(loadingTask);
   };
   signal.addEventListener("abort", cancelLoading, { once: true });
 
   try {
+    loadingTask = getDocument({ data: new Uint8Array(bytes) });
+    const activeLoadingTask = loadingTask;
     const parseLoadedDocument = async (
       detail: (pageCount: number) => string,
     ): Promise<PdfPageParseResult & { pageCount: number }> => {
       pdf = await raceWithTimeout(
-        loadingTask.promise,
+        activeLoadingTask.promise,
         signal,
         PDF_OPERATION_TIMEOUT_MS,
         "PDF 加载超时",
@@ -542,38 +569,9 @@ export async function parsePdf(
       return { ...pages, pageCount: pdf.numPages };
     };
 
-    let pages = await parseLoadedDocument(
+    const pages = await parseLoadedDocument(
       (pageCount) => `共 ${pageCount} 页，开始提取文本`,
     );
-    const hasTextExtractionFailure = pages.failedPages.some(
-      (failure) => failure.error === "页面文本提取失败",
-    );
-    if (hasTextExtractionFailure) {
-      // Some browser PDF.js workers can stall on a malformed final page even
-      // though the same bytes are readable by the main-thread parser. Retry
-      // the complete document without a worker so that a worker-specific
-      // failure does not discard an otherwise valid source.
-      onProgress({
-        stage: "extracting",
-        completed: 0,
-        total: pages.pageCount,
-        detail: "文本层出现异常，正在切换兼容解析模式重试",
-      });
-      try {
-        pdf?.cleanup();
-      } catch {
-        // Best-effort cleanup before opening the compatibility task.
-      }
-      await destroyLoadingTask(loadingTask);
-      loadingTask = getDocument({
-        data: new Uint8Array(bytes),
-        disableWorker: true,
-      } as Parameters<typeof getDocument>[0]);
-      pdf = undefined;
-      pages = await parseLoadedDocument(
-        (pageCount) => `兼容模式：共 ${pageCount} 页，重新提取文本`,
-      );
-    }
     return pages;
   } catch (error) {
     if (signal.aborted) throw abortError();
@@ -591,7 +589,8 @@ export async function parsePdf(
     } catch {
       // Loading failed or was aborted; destroy below is still sufficient.
     }
-    await destroyLoadingTask(loadingTask);
+    if (loadingTask) await destroyLoadingTask(loadingTask);
+    releasePdfParseSlot();
   }
 }
 
