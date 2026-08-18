@@ -595,6 +595,7 @@ describe("page failures and stable anchors", () => {
     });
     expect(result.failedPages).toEqual([]);
     expect(result.ocrFailedPages).toEqual([]);
+    expect(result.lowTextPages).toEqual([1]);
     expect(result.successfulPages).toEqual([1]);
   });
 
@@ -653,6 +654,7 @@ describe("page failures and stable anchors", () => {
     ]);
     expect(result.failedPages).toEqual([]);
     expect(result.ocrFailedPages).toEqual([]);
+    expect(result.lowTextPages).toEqual([1]);
     expect(result.successfulPages).toEqual([1]);
   });
 

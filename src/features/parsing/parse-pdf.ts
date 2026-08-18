@@ -602,6 +602,13 @@ export async function parsePdfPages(
         throw abortError();
       }
       if (page && (await tryOcrPage(page, pageNumber))) {
+        // A text-layer exception is still an OCR page for the authoritative
+        // quality record. Without this marker, the OCR review exists but the
+        // lowTextPages/OCR page sets do not match and the next-step gate
+        // incorrectly remains blocked after a successful OCR fallback.
+        if (!result.lowTextPages.includes(pageNumber)) {
+          result.lowTextPages.push(pageNumber);
+        }
         ocrDependencies.onProgress?.({
           stage: "ocr",
           completed: pageNumber,
