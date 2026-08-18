@@ -135,6 +135,98 @@ describe("OpenAI-compatible model gateway", () => {
     ).resolves.toEqual({ findings: [] });
   });
 
+  test("accepts usable JSON returned in reasoning_content when content is empty", async () => {
+    server.use(
+      http.post(MODEL_CHAT_URL, () =>
+        HttpResponse.json({
+          choices: [
+            {
+              message: {
+                content: "",
+                reasoning_content: '{"findings":[]}',
+              },
+            },
+          ],
+        }),
+      ),
+    );
+
+    await expect(
+      createModelGateway(config, secret).requestStructured(request),
+    ).resolves.toEqual({ findings: [] });
+  });
+
+  test("retries an analysis request in generic JSON mode when JSON Schema is rejected", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let calls = 0;
+    server.use(
+      http.post(MODEL_CHAT_URL, async ({ request: incoming }) => {
+        calls += 1;
+        requestBodies.push((await incoming.json()) as Record<string, unknown>);
+        if (calls === 1) {
+          return HttpResponse.json(
+            { error: { message: "json_schema is not supported" } },
+            { status: 422 },
+          );
+        }
+        return HttpResponse.json({
+          choices: [{ message: { content: '{"findings":[]}' } }],
+        });
+      }),
+    );
+
+    await expect(
+      createModelGateway(config, secret).requestStructured({
+        ...request,
+        schemaName: "analysis_document_identity_v1",
+      }),
+    ).resolves.toEqual({ findings: [] });
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[0]).toMatchObject({
+      response_format: { type: "json_schema" },
+    });
+    expect(requestBodies[1]).toMatchObject({
+      response_format: { type: "json_object" },
+    });
+    expect(JSON.stringify(requestBodies[1])).toContain(
+      "监管文本：机构应当建立制度。",
+    );
+  });
+
+  test("retries an analysis request with its source context when schema output is invalid", async () => {
+    const requestBodies: Array<Record<string, unknown>> = [];
+    let calls = 0;
+    server.use(
+      http.post(MODEL_CHAT_URL, async ({ request: incoming }) => {
+        calls += 1;
+        requestBodies.push((await incoming.json()) as Record<string, unknown>);
+        return HttpResponse.json({
+          choices: [
+            {
+              message: {
+                content: calls === 1 ? "不是 JSON" : '{"findings":[]}',
+              },
+            },
+          ],
+        });
+      }),
+    );
+
+    await expect(
+      createModelGateway(config, secret).requestStructured({
+        ...request,
+        schemaName: "analysis_document_identity_v1",
+      }),
+    ).resolves.toEqual({ findings: [] });
+    expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[1]).toMatchObject({
+      response_format: { type: "json_object" },
+    });
+    expect(JSON.stringify(requestBodies[1])).toContain(
+      "监管文本：机构应当建立制度。",
+    );
+  });
+
   test("extracts JSON when the model wraps it in explanation or Markdown", async () => {
     server.use(
       http.post(MODEL_CHAT_URL, () =>
@@ -142,7 +234,8 @@ describe("OpenAI-compatible model gateway", () => {
           choices: [
             {
               message: {
-                content: '结果如下：\\n```json\\n{"findings":[]}\\n```\\n以上。',
+                content:
+                  '结果如下：\\n```json\\n{"findings":[]}\\n```\\n以上。',
               },
             },
           ],
@@ -232,7 +325,7 @@ describe("OpenAI-compatible model gateway", () => {
     const requestBodies: Array<Record<string, unknown>> = [];
     let call = 0;
     server.use(
-        http.post(MODEL_CHAT_URL, async ({ request: incoming }) => {
+      http.post(MODEL_CHAT_URL, async ({ request: incoming }) => {
         requestBodies.push((await incoming.json()) as Record<string, unknown>);
         call += 1;
         return HttpResponse.json({
