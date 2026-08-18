@@ -32,7 +32,7 @@ pnpm dev:auto
 - 本地预览：`http://127.0.0.1:4173/`（或 `:4174`）
 - 公开稳定链接：`https://yeahh12316-yeahh.github.io/Interpretation-of-External-Regulations-Agent/`
 
-浏览器中填写的模型 API Key 只用于当前浏览器会话。仓库、构建过程和部署平台均不配置共享模型密钥；Vercel 构建可通过同源的受限 `/api/model-proxy` 转发到 Nova，GitHub Pages 仍要求服务商支持浏览器 CORS。
+浏览器中填写的模型 API Key 只用于当前浏览器会话。仓库、构建过程和部署平台均不配置共享模型密钥；Vercel 构建通过受限 `/api/model-proxy` 转发到 Nova，GitHub Pages 构建也指向该代理，避免浏览器直接触发 Nova 的 CORS 限制。
 
 ## 发布前门禁
 

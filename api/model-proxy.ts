@@ -2,6 +2,10 @@ const NOVA_ORIGIN = "https://nova.deloitte.com.cn";
 const NOVA_PATH = "/del/v1/chat/completions";
 const MAX_REQUEST_BYTES = 1_500_000;
 const REQUEST_TIMEOUT_MS = 90_000;
+const DEFAULT_ALLOWED_ORIGINS = new Set([
+  "https://interpretation-of-external-regulati.vercel.app",
+  "https://yeahh12316-yeahh.github.io",
+]);
 
 type JsonRecord = Record<string, unknown>;
 
@@ -11,7 +15,9 @@ const isRecord = (value: unknown): value is JsonRecord =>
 const allowedOrigin = (request: Request): string | null => {
   const origin = request.headers.get("origin");
   const configured = process.env.MODEL_PROXY_ALLOWED_ORIGIN?.trim();
-  if (!origin || !configured || origin !== configured) return null;
+  if (!origin) return null;
+  if (configured) return origin === configured ? origin : null;
+  if (!DEFAULT_ALLOWED_ORIGINS.has(origin)) return null;
   return origin;
 };
 
