@@ -212,6 +212,89 @@ const releasePageBitmap = (page: OcrPageBitmap): void => {
   if ("close" in image && typeof image.close === "function") image.close();
 };
 
+const recoverFailedPagesWithLiteParse = async (
+  parsed: PdfPageParseResult & { pageCount: number },
+  bytes: ArrayBuffer,
+  sourceId: string,
+  sourceType: SourceType,
+  signal: AbortSignal,
+  onProgress: ParseProgressCallback,
+): Promise<PdfPageParseResult & { pageCount: number }> => {
+  if (parsed.failedPages.length === 0) return parsed;
+  try {
+    onProgress({
+      stage: "extracting",
+      completed: 0,
+      total: parsed.pageCount,
+      detail: "文本层异常，正在启用本地备用解析器",
+    });
+    const { parsePdfWithLiteParse } = await import("./liteparse-pdf");
+    const fallback = await parsePdfWithLiteParse(bytes, signal);
+    const failedPages = new Set(parsed.failedPages.map(({ page }) => page));
+    const recoveredPages = fallback.pages.filter(
+      (page) => failedPages.has(page.pageNumber) && page.text.trim(),
+    );
+    if (recoveredPages.length === 0) return parsed;
+
+    const recoveredNumbers = new Set(
+      recoveredPages.map(({ pageNumber }) => pageNumber),
+    );
+    const units = parsed.units.filter(
+      (unit) => !recoveredNumbers.has(unit.page ?? -1),
+    );
+    for (const page of recoveredPages) {
+      const lines = page.text
+        .split(/\r?\n+/u)
+        .map((text) => text.trim())
+        .filter(Boolean);
+      units.push(
+        ...lines.map((text, paragraphIndex) => ({
+          sourceId,
+          sourceType,
+          page: page.pageNumber,
+          article: articleFromText(text),
+          paragraphIndex,
+          text,
+          extractionMethod: "text_layer" as const,
+          confidence: 1,
+          boundingBox: undefined,
+        })),
+      );
+    }
+    const nextFailedPages = parsed.failedPages.filter(
+      ({ page }) => !recoveredNumbers.has(page),
+    );
+    const nextOcrFailedPages = parsed.ocrFailedPages.filter(
+      (page) => !recoveredNumbers.has(page),
+    );
+    const successfulPages = Array.from(
+      new Set([...parsed.successfulPages, ...recoveredNumbers]),
+    ).sort((left, right) => left - right);
+    onProgress({
+      stage: "extracting",
+      completed: parsed.pageCount,
+      total: parsed.pageCount,
+      detail: `备用解析器已恢复 ${recoveredPages.length} 页`,
+    });
+    return {
+      ...parsed,
+      units: units.sort(
+        (left, right) =>
+          (left.page ?? 0) - (right.page ?? 0) ||
+          left.paragraphIndex - right.paragraphIndex,
+      ),
+      failedPages: nextFailedPages,
+      ocrFailedPages: nextOcrFailedPages,
+      successfulPages,
+    };
+  } catch (error) {
+    if (signal.aborted || isAbortError(error)) throw abortError();
+    // The existing PDF.js/OCR result remains authoritative if the optional
+    // WASM parser is unavailable or cannot handle this file.
+    return parsed;
+  }
+};
+
 const failedOcrResult = (bitmap: OcrPageBitmap): OcrPageResult => ({
   unitId: `${bitmap.sourceId}:p${bitmap.pageNumber}:ocr`,
   sourceId: bitmap.sourceId,
@@ -391,8 +474,7 @@ export async function parsePdfPages(
     page: PdfPageLike,
     pageNumber: number,
   ): Promise<boolean> => {
-    const bitmapRenderer =
-      ocrDependencies.renderPageBitmap ?? renderPageBitmap;
+    const bitmapRenderer = ocrDependencies.renderPageBitmap ?? renderPageBitmap;
     if (!ocrDependencies.renderPageBitmap && !canRenderPage(page)) return false;
 
     let bitmap: OcrPageBitmap | undefined;
@@ -601,7 +683,14 @@ export async function parsePdf(
     const pages = await parseLoadedDocument(
       (pageCount) => `共 ${pageCount} 页，开始提取文本`,
     );
-    return pages;
+    return recoverFailedPagesWithLiteParse(
+      pages,
+      bytes,
+      sourceId,
+      sourceType,
+      signal,
+      onProgress,
+    );
   } catch (error) {
     if (signal.aborted) throw abortError();
     if (error instanceof Error && error.message === "PDF 文本提取失败")

@@ -106,7 +106,12 @@ export function applyOcrCorrection(
 export interface OcrReviewProps {
   result: ParseResult;
   reviewId: string;
-  reviewer: string;
+  /**
+   * Supplying a reviewer enables the legacy/manual correction form. The
+   * production workflow intentionally omits it: successful OCR is accepted
+   * automatically and reviewer entry is no longer a required step.
+   */
+  reviewer?: string;
   onChange?: (result: ParseResult) => void;
 }
 
@@ -142,6 +147,22 @@ export function OcrReview({
     return (
       <section aria-label={`第 ${review.page} 页 OCR 审阅`}>
         <p role="alert">该页 OCR 失败，必须重试或补录后才能定稿</p>
+      </section>
+    );
+  }
+
+  if (reviewer === undefined) {
+    return (
+      <section aria-label={`第 ${review.page} 页 OCR 审阅`}>
+        <p>OCR 已自动通过，未要求填写复核人。</p>
+        {review.confidence < 0.7 ||
+        review.lowConfidenceCharacters.length > 0 ? (
+          <p role="status">系统提示：该页置信度较低，建议人工抽查。</p>
+        ) : null}
+        <details>
+          <summary>查看 OCR 原文</summary>
+          <pre data-testid="ocr-original-text">{review.originalOcrText}</pre>
+        </details>
       </section>
     );
   }
@@ -185,9 +206,6 @@ export function OcrReview({
         />
       </label>
       <button
-        aria-describedby={
-          !reviewer.trim() ? "ocr-reviewer-required" : undefined
-        }
         disabled={!reviewer.trim() || !draft.trim()}
         type="button"
         onClick={save}

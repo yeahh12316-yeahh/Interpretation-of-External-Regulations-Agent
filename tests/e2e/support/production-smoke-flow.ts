@@ -15,8 +15,6 @@ import {
 } from "./production-flow";
 
 const SYNTHETIC_MODEL_BASE_URL = "https://production-smoke-model.invalid/v1";
-const SYNTHETIC_CORRECTED_OFFICIAL_TEXT =
-  "官方说明：合成扫描件仅用于说明年度实施口径。";
 const OCR_WARNING_PARAMETERS = [
   "language_model_ngram_on",
   "segsearch_max_char_wh_ratio",
@@ -109,7 +107,6 @@ export const runProductionSmokeFlow = async (
         mimeType: "application/pdf",
         buffer: officialScanPdf,
       },
-      ocrCorrectedText: SYNTHETIC_CORRECTED_OFFICIAL_TEXT,
     },
   );
   expect(ocrAssetResponses.length).toBeGreaterThan(2);
@@ -148,7 +145,7 @@ export const runProductionSmokeFlow = async (
     .filter({ hasText: "OFF-SCAN" });
   await official.getByRole("button", { name: "查看依据" }).click();
   await expect(page.getByTestId("evidence-original")).toContainText(
-    SYNTHETIC_CORRECTED_OFFICIAL_TEXT,
+    /合\s*成\s*官\s*方\s*解\s*读/u,
   );
   const officialEvidence = page.getByRole("complementary", {
     name: "原文证据",

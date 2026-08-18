@@ -29,6 +29,7 @@
   },
   "type": "module",
   "dependencies": {
+    "@llamaindex/liteparse-wasm": "2.13.1",
     "@react-pdf/renderer": "^4.6.0",
     "@tesseract.js-data/chi_sim": "^1.0.0",
     "@tesseract.js-data/eng": "^1.0.0",

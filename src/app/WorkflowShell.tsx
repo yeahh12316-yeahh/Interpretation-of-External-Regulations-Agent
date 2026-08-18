@@ -155,7 +155,6 @@ export function WorkflowShell({
     text: string;
   } | null>(null);
   const [running, setRunning] = useState(false);
-  const [ocrReviewer, setOcrReviewer] = useState("");
   const [progress, setProgress] = useState<{
     stage: string;
     completed: number;
@@ -185,10 +184,6 @@ export function WorkflowShell({
     () => canPreviewReportDraft(session) && !evidenceReady,
     [session, evidenceReady],
   );
-  const hasOcrReviews = session.parseResults.some(
-    ({ ocrReviews }) => ocrReviews.length > 0,
-  );
-  const ocrReviewerMissing = hasOcrReviews && !ocrReviewer.trim();
   const transitionContext = {
     parsingReady: ready,
     evidenceReady,
@@ -602,7 +597,9 @@ export function WorkflowShell({
     <section className="workflow-step-page screen active">
       <div className="title">
         <h1 className="workflow-section-title">材料上传</h1>
-        <p className="analysis-subtitle">监管文件必填，官方解读选填；文件仅在浏览器本地解析。</p>
+        <p className="analysis-subtitle">
+          监管文件必填，官方解读选填；文件仅在浏览器本地解析。
+        </p>
       </div>
       <p className="helper-text">材料版本、效力与重大判断需合规复核。</p>
       <MaterialUpload parseFile={parseFile} onParsed={handleParsed} />
@@ -611,27 +608,11 @@ export function WorkflowShell({
     <section className="workflow-step-page screen active">
       <div className="title">
         <h1 className="workflow-section-title">解析与OCR</h1>
-        <p className="analysis-subtitle">确认解析质量后，再进入监管分析。</p>
+        <p className="analysis-subtitle">
+          确认解析质量后，再进入监管分析；OCR
+          成功页会自动通过，不再要求填写复核人。
+        </p>
       </div>
-      {hasOcrReviews ? (
-        <label className="ocr-reviewer">
-          OCR复核人
-          <input
-            aria-label="OCR复核人"
-            aria-describedby={
-              ocrReviewerMissing ? "ocr-reviewer-required" : undefined
-            }
-            aria-invalid={ocrReviewerMissing}
-            value={ocrReviewer}
-            onChange={(event) => setOcrReviewer(event.target.value)}
-          />
-          {ocrReviewerMissing ? (
-            <p id="ocr-reviewer-required" role="alert">
-              请先填写 OCR 复核人
-            </p>
-          ) : null}
-        </label>
-      ) : null}
       {session.parseResults.map((result) => (
         <article key={result.source.sourceId}>
           <h2 className="analysis-subtitle">{result.source.title}</h2>
@@ -648,7 +629,6 @@ export function WorkflowShell({
               key={review.unitId}
               result={result}
               reviewId={review.unitId}
-              reviewer={ocrReviewer}
               onChange={handleParsed}
             />
           ))}
@@ -695,10 +675,10 @@ export function WorkflowShell({
   );
   return (
     <WorkflowErrorBoundary onBack={() => prior && move(prior.key)}>
-        <div className="workflow-shell">
+      <div className="workflow-shell">
         <header className="top app-header">
           <div className="app-header-meta">
-              <div className="app-project">{session.project.projectName}</div>
+            <div className="app-project">{session.project.projectName}</div>
             <p className="app-project-subtitle">
               本地文件处理 · 用户自带模型接口
             </p>
@@ -740,7 +720,9 @@ export function WorkflowShell({
           }
         >
           <nav aria-label="外规解读工作流" className="side workflow-sidebar">
-            <div className="logo">Deloitte<i>.</i></div>
+            <div className="logo">
+              Deloitte<i>.</i>
+            </div>
             <h1 className="agent">外规解读agent</h1>
             <div className="side-label">工作流程</div>
             <ol>

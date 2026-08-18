@@ -253,7 +253,6 @@ export const uploadAndAnalyze = async (
     readonly navigate?: boolean;
     readonly regulatoryFile?: FilePayload;
     readonly officialFile?: FilePayload;
-    readonly ocrCorrectedText?: string;
   } = {},
 ): Promise<void> => {
   if (options.navigate !== false) await page.goto("./");
@@ -302,21 +301,9 @@ export const uploadAndAnalyze = async (
   await settings.getByRole("button", { name: "保存设置" }).click();
   await page.getByRole("button", { name: "下一步" }).click();
   const ocrReviews = page.getByRole("region", { name: /页 OCR 审阅/u });
-  const ocrReviewCount = await ocrReviews.count();
-  if (ocrReviewCount > 0) {
-    await page.getByLabel("OCR复核人").fill("合成流程复核人");
-    for (let index = 0; index < ocrReviewCount; index += 1) {
-      const review = ocrReviews.nth(index);
-      await expect(review.getByText("待审阅")).toBeVisible();
-      if (options.ocrCorrectedText)
-        await review
-          .getByRole("textbox", { name: "OCR 纠错文本" })
-          .fill(options.ocrCorrectedText);
-      await review.getByRole("button", { name: "保存纠错" }).click();
-      await expect(review.getByText("已纠错")).toBeVisible();
-    }
-    await expect(page.getByRole("button", { name: "下一步" })).toBeEnabled();
-  }
+  if ((await ocrReviews.count()) > 0)
+    await expect(ocrReviews.first()).toContainText("OCR 已自动通过");
+  await expect(page.getByRole("button", { name: "下一步" })).toBeEnabled();
   await page.getByRole("button", { name: "下一步" }).click();
   await page.getByRole("button", { name: "开始监管分析" }).click();
   const consent = page.getByRole("dialog", { name: /第三方模型数据流/u });

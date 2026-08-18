@@ -1074,28 +1074,63 @@ describe("calculateQuality", () => {
     },
   );
 
-  test("blocks unresolved low-confidence OCR evidence", () => {
-    const ocrUnits: ParsedSourceUnit[] = [
-      ...pageUnits.slice(0, 2),
-      {
-        ...unit,
-        extractionMethod: "ocr",
-        confidence: 0.55,
-        reviewStatus: "unreviewed",
-        lowConfidenceCharacters: [
-          {
-            text: "必",
-            confidence: 0.55,
-            boundingBox: { x: 0, y: 0, width: 1, height: 1 },
-          },
-        ],
+  test("allows successful OCR with a visible low-confidence warning", () => {
+    const ocrUnit: ParsedSourceUnit = {
+      ...unit,
+      unitId: `${unit.sourceId}:p${unit.page}:ocr`,
+      extractionMethod: "ocr",
+      confidence: 0.55,
+      boundingBox: { x: 0, y: 0, width: 100, height: 20 },
+      originalOcrText: unit.text,
+      correctedText: null,
+      reviewStatus: "unreviewed",
+      reviewedAt: null,
+      reviewedBy: null,
+      correctionHistory: [],
+      ocrRegions: [],
+      lowConfidenceCharacters: [
+        {
+          text: "必",
+          confidence: 0.55,
+          boundingBox: { x: 0, y: 0, width: 1, height: 1 },
+        },
+      ],
+    };
+    const ocrUnits: ParsedSourceUnit[] = [...pageUnits.slice(0, 2), ocrUnit];
+    const ocrReview: OcrPageResult = {
+      unitId: ocrUnit.unitId!,
+      sourceId: ocrUnit.sourceId,
+      sourceType: ocrUnit.sourceType,
+      page: ocrUnit.page!,
+      method: "ocr",
+      confidence: ocrUnit.confidence,
+      text: ocrUnit.text,
+      originalOcrText: ocrUnit.originalOcrText!,
+      correctedText: null,
+      reviewStatus: "unreviewed",
+      reviewedAt: null,
+      reviewedBy: null,
+      correctionHistory: [],
+      boundingBox: { x: 0, y: 0, width: 100, height: 20 },
+      regions: [],
+      lowConfidenceCharacters: ocrUnit.lowConfidenceCharacters!,
+    };
+    const result: ParseResult = {
+      ...completeParseResult,
+      units: ocrUnits,
+      ocrReviews: [ocrReview],
+      anchors: buildAnchors(ocrUnits),
+      quality: {
+        ...completeParseResult.quality,
+        lowTextPages: [3],
       },
-    ];
+    };
     expect(
-      canFinalize(project(), ocrUnits, [
-        { ...completeOutcome, units: ocrUnits },
-      ]),
-    ).toBe(false);
+      canFinalizeSession({
+        project: project(),
+        parseResults: [result],
+      }),
+    ).toBe(true);
   });
 
   test("counts unsupported findings and incomplete mandatory reviews from actual records", () => {

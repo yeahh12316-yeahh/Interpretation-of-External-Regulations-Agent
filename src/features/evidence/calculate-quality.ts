@@ -607,11 +607,11 @@ const parsingEvidenceComplete = (
     ) {
       return false;
     }
-    const unresolvedOcr =
-      unit.extractionMethod === "ocr" &&
-      (unit.lowConfidenceCharacters?.length ?? 0) > 0 &&
-      unit.reviewStatus !== "corrected";
-    return !unresolvedOcr;
+    // OCR is an automatic extraction step, not a mandatory data-entry task.
+    // Successful OCR pages are authoritative enough to continue; confidence
+    // warnings remain visible in the parsing screen for optional spot checks.
+    // Only an explicit OCR failure (handled above) blocks the workflow.
+    return true;
   });
 };
 
@@ -660,13 +660,38 @@ const ocrEvidenceComplete = (
     );
     if (matchingUnits.length !== 1) return false;
     const [unit] = matchingUnits;
-    const lastCorrection = review.correctionHistory.at(-1);
-    return (
+    const commonIdentity =
       review.method === "ocr" &&
       review.sourceId === outcome.sourceId &&
       review.sourceType === outcome.sourceType &&
-      review.reviewStatus === "corrected" &&
       !review.error &&
+      unit.text === review.text &&
+      unit.confidence === review.confidence &&
+      unit.originalOcrText === review.originalOcrText &&
+      stableValue(unit.boundingBox) === stableValue(review.boundingBox) &&
+      stableValue(unit.ocrRegions ?? []) === stableValue(review.regions) &&
+      stableValue(unit.lowConfidenceCharacters ?? []) ===
+        stableValue(review.lowConfidenceCharacters);
+    if (!commonIdentity) return false;
+
+    if (review.reviewStatus === "unreviewed") {
+      return (
+        review.correctedText === null &&
+        review.reviewedAt === null &&
+        review.reviewedBy === null &&
+        review.correctionHistory.length === 0 &&
+        unit.correctedText === null &&
+        unit.reviewStatus === "unreviewed" &&
+        unit.reviewedAt === null &&
+        unit.reviewedBy === null &&
+        stableValue(unit.correctionHistory ?? []) ===
+          stableValue(review.correctionHistory)
+      );
+    }
+
+    if (review.reviewStatus !== "corrected") return false;
+    const lastCorrection = review.correctionHistory.at(-1);
+    return (
       typeof review.correctedText === "string" &&
       review.correctedText.trim().length > 0 &&
       review.text === review.correctedText &&
@@ -677,19 +702,12 @@ const ocrEvidenceComplete = (
       lastCorrection?.correctedText === review.correctedText &&
       lastCorrection.reviewedBy === review.reviewedBy &&
       lastCorrection.reviewedAt === review.reviewedAt &&
-      unit.text === review.text &&
-      unit.confidence === review.confidence &&
-      unit.originalOcrText === review.originalOcrText &&
       unit.correctedText === review.correctedText &&
       unit.reviewStatus === review.reviewStatus &&
       unit.reviewedAt === review.reviewedAt &&
       unit.reviewedBy === review.reviewedBy &&
       stableValue(unit.correctionHistory ?? []) ===
-        stableValue(review.correctionHistory) &&
-      stableValue(unit.boundingBox) === stableValue(review.boundingBox) &&
-      stableValue(unit.ocrRegions ?? []) === stableValue(review.regions) &&
-      stableValue(unit.lowConfidenceCharacters ?? []) ===
-        stableValue(review.lowConfidenceCharacters)
+        stableValue(review.correctionHistory)
     );
   });
 };
