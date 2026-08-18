@@ -39,6 +39,10 @@ interface ChatCompletionResponse {
   }>;
 }
 
+interface NovaAuthChallenge {
+  locationUrl?: unknown;
+}
+
 const statusKind = (
   status: number,
 ): "auth" | "not_found" | "rate_limit" | "network" => {
@@ -55,6 +59,22 @@ const jsonFromContent = (content: string): unknown => {
     .replace(/\s*```$/, "");
   return JSON.parse(withoutFence);
 };
+
+const parseResponseJson = (content: string): unknown => {
+  try {
+    return JSON.parse(content);
+  } catch {
+    return undefined;
+  }
+};
+
+const isNovaAuthChallenge = (payload: unknown): payload is NovaAuthChallenge =>
+  typeof payload === "object" &&
+  payload !== null &&
+  typeof (payload as NovaAuthChallenge).locationUrl === "string";
+
+const novaAuthMessage =
+  "Nova 返回了登录/鉴权挑战。API 接口不会自动弹出登录页；请先在 Nova 页面完成登录并重新生成 API Key，或确认该 Key 已获 API 调用权限。";
 
 const schemaDefinition = (schema: ZodType<unknown>): Record<string, unknown> =>
   z.toJSONSchema(schema) as Record<string, unknown>;
@@ -143,14 +163,22 @@ function createGateway(
             signal,
           });
 
+          // Read the body once so an upstream auth challenge can be diagnosed
+          // without exposing the API key or provider internals.
+          const responseText = await response.text();
+          const responseJson = parseResponseJson(responseText);
           if (!response.ok) {
+            if (
+              (response.status === 401 || response.status === 403) &&
+              isNovaAuthChallenge(responseJson)
+            ) {
+              throw new ModelGatewayError("auth", novaAuthMessage);
+            }
             throw new ModelGatewayError(statusKind(response.status));
           }
 
-          let payload: ChatCompletionResponse;
-          try {
-            payload = (await response.json()) as ChatCompletionResponse;
-          } catch {
+          const payload = responseJson as ChatCompletionResponse | undefined;
+          if (!payload || typeof payload !== "object") {
             throw new ModelGatewayError("invalid_schema");
           }
           const content = payload.choices?.[0]?.message?.content;

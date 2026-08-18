@@ -132,6 +132,28 @@ describe("OpenAI-compatible model gateway", () => {
     },
   );
 
+  test("explains Nova's JSON login challenge instead of reporting a generic network error", async () => {
+    server.use(
+      http.post(MODEL_CHAT_URL, () =>
+        HttpResponse.json(
+          {
+            status: 402,
+            locationUrl:
+              "https://nova.deloitte.com.cn/del/data/v1/oauth2/authorization/D.Nova",
+          },
+          { status: 401 },
+        ),
+      ),
+    );
+
+    const rejection = createModelGateway(config, secret).requestStructured(
+      request,
+    );
+    await expect(rejection).rejects.toMatchObject({ kind: "auth" });
+    await expect(rejection).rejects.toThrow(/Nova.*登录|鉴权挑战/);
+    await expect(rejection).rejects.not.toThrow(/sk-never/);
+  });
+
   test("reports fetch rejection as an uncertain CORS-or-network diagnosis", async () => {
     server.use(http.post(MODEL_CHAT_URL, () => HttpResponse.error()));
 
