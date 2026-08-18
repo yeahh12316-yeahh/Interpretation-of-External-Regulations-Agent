@@ -266,6 +266,51 @@ describe("OpenAI-compatible model gateway", () => {
     },
   );
 
+  test("classifies proxy timeout and payload-size responses without retrying them as format failures", async () => {
+    server.use(
+      http.post(MODEL_CHAT_URL, () =>
+        HttpResponse.json({ error: "upstream_timeout" }, { status: 504 }),
+      ),
+    );
+    await expect(
+      createModelGateway(config, secret).requestStructured({
+        ...request,
+        schemaName: "analysis_document_identity_v1",
+      }),
+    ).rejects.toMatchObject({ kind: "timeout" });
+
+    server.resetHandlers();
+    server.use(
+      http.post(MODEL_CHAT_URL, () =>
+        HttpResponse.json({ error: "request_too_large" }, { status: 413 }),
+      ),
+    );
+    await expect(
+      createModelGateway(config, secret).requestStructured({
+        ...request,
+        schemaName: "analysis_document_identity_v1",
+      }),
+    ).rejects.toMatchObject({ kind: "request_too_large" });
+  });
+
+  test("does not mistake a proxy validation error for unsupported JSON Schema", async () => {
+    let calls = 0;
+    server.use(
+      http.post(MODEL_CHAT_URL, () => {
+        calls += 1;
+        return HttpResponse.json({ error: "invalid_request" }, { status: 400 });
+      }),
+    );
+
+    await expect(
+      createModelGateway(config, secret).requestStructured({
+        ...request,
+        schemaName: "analysis_document_identity_v1",
+      }),
+    ).rejects.toMatchObject({ kind: "bad_request" });
+    expect(calls).toBe(1);
+  });
+
   test("explains Nova's JSON login challenge instead of reporting a generic network error", async () => {
     server.use(
       http.post(MODEL_CHAT_URL, () =>

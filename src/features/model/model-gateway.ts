@@ -53,11 +53,62 @@ interface NovaAuthChallenge {
 
 const statusKind = (
   status: number,
-): "auth" | "not_found" | "rate_limit" | "network" => {
+  responseJson: unknown,
+):
+  | "auth"
+  | "not_found"
+  | "rate_limit"
+  | "timeout"
+  | "request_too_large"
+  | "bad_request"
+  | "upstream_unavailable"
+  | "network" => {
   if (status === 401 || status === 403) return "auth";
   if (status === 404) return "not_found";
   if (status === 429) return "rate_limit";
+  if (status === 413) return "request_too_large";
+  if (status === 504 || responseErrorCode(responseJson) === "upstream_timeout")
+    return "timeout";
+  if (
+    status === 502 ||
+    responseErrorCode(responseJson) === "upstream_unavailable"
+  )
+    return "upstream_unavailable";
+  if (status >= 400 && status < 500) return "bad_request";
   return "network";
+};
+
+const responseErrorCode = (payload: unknown): string | undefined => {
+  if (!payload || typeof payload !== "object") return undefined;
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const code = (error as { code?: unknown }).code;
+    return typeof code === "string" ? code : undefined;
+  }
+  return undefined;
+};
+
+const responseErrorText = (payload: unknown): string => {
+  if (!payload || typeof payload !== "object") return "";
+  const error = (payload as { error?: unknown }).error;
+  if (typeof error === "string") return error;
+  if (error && typeof error === "object") {
+    const message = (error as { message?: unknown }).message;
+    return typeof message === "string" ? message : "";
+  }
+  return "";
+};
+
+const supportsStructuredFormatFallback = (
+  status: number,
+  payload: unknown,
+): boolean => {
+  if (status === 415) return true;
+  if (status !== 400 && status !== 422) return false;
+  return /json[_ -]?schema|response[_ -]?format|structured output|structured response|not supported|unsupported/i.test(
+    responseErrorText(payload),
+  );
 };
 
 const jsonFromContent = (content: string): unknown => {
@@ -267,13 +318,13 @@ function createGateway(
             }
             if (
               format === "schema" &&
-              (response.status === 400 ||
-                response.status === 415 ||
-                response.status === 422)
+              supportsStructuredFormatFallback(response.status, responseJson)
             ) {
               throw new StructuredFormatUnsupportedError();
             }
-            throw new ModelGatewayError(statusKind(response.status));
+            throw new ModelGatewayError(
+              statusKind(response.status, responseJson),
+            );
           }
 
           const payload = responseJson as ChatCompletionResponse | undefined;

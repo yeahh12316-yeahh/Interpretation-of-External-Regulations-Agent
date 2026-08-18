@@ -1,7 +1,12 @@
 const NOVA_ORIGIN = "https://nova.deloitte.com.cn";
 const NOVA_PATH = "/del/v1/chat/completions";
-const MAX_REQUEST_BYTES = 1_500_000;
-const REQUEST_TIMEOUT_MS = 90_000;
+// Keep enough headroom for the structured schema plus a production chunk.
+// The browser already chunks source material, but locator evidence can add
+// significant JSON overhead to analysis requests.
+const MAX_REQUEST_BYTES = 3_500_000;
+// The client waits up to 120 seconds for an analysis request. Let the proxy
+// return a truthful timeout just before the hosting function's hard limit.
+const REQUEST_TIMEOUT_MS = 115_000;
 const DEFAULT_ALLOWED_ORIGINS = new Set([
   "https://interpretation-of-external-regulati.vercel.app",
   "https://yeahh12316-yeahh.github.io",
@@ -82,27 +87,24 @@ const isValidMessages = (value: unknown): boolean =>
       typeof message.content === "string",
   );
 
-const requestBody = async (request: Request): Promise<JsonRecord | null> => {
-  const raw = await request.text();
-  if (new TextEncoder().encode(raw).byteLength > MAX_REQUEST_BYTES) return null;
-  try {
-    const parsed: unknown = JSON.parse(raw);
-    return isRecord(parsed) ? parsed : null;
-  } catch {
-    return null;
-  }
-};
-
 const forward = async (request: Request): Promise<Response> => {
   const auth = request.headers.get("authorization") ?? "";
   if (!/^Bearer\s+\S+$/i.test(auth)) {
     return jsonResponse(request, { error: "missing_authorization" }, 401);
   }
 
-  const input = await requestBody(request);
-  if (!input) {
+  const raw = await request.text();
+  if (new TextEncoder().encode(raw).byteLength > MAX_REQUEST_BYTES) {
+    return jsonResponse(request, { error: "request_too_large" }, 413);
+  }
+  let parsed: unknown;
+  try {
+    parsed = JSON.parse(raw);
+  } catch {
     return jsonResponse(request, { error: "invalid_request" }, 400);
   }
+  const input = isRecord(parsed) ? parsed : null;
+  if (!input) return jsonResponse(request, { error: "invalid_request" }, 400);
 
   const upstreamUrl = normalizeNovaUrl(input.upstreamUrl);
   if (!upstreamUrl) {

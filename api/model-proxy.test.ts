@@ -31,11 +31,16 @@ describe("Vercel model proxy", () => {
       expect(init?.headers).toMatchObject({
         Authorization: "Bearer ak-test-only",
       });
-      const forwarded = JSON.parse(String(init?.body)) as Record<string, unknown>;
+      const forwarded = JSON.parse(String(init?.body)) as Record<
+        string,
+        unknown
+      >;
       expect(forwarded).not.toHaveProperty("upstreamUrl");
       expect(JSON.stringify(forwarded)).not.toContain("ak-test-only");
       return new Response(
-        JSON.stringify({ choices: [{ message: { content: '{"connection":"ok"}' } }] }),
+        JSON.stringify({
+          choices: [{ message: { content: '{"connection":"ok"}' } }],
+        }),
         { status: 200, headers: { "Content-Type": "application/json" } },
       );
     });
@@ -55,10 +60,31 @@ describe("Vercel model proxy", () => {
     vi.stubGlobal("fetch", upstreamFetch);
 
     const response = await proxy.fetch(
-      makeRequest({ ...validBody, upstreamUrl: "https://example.com/chat/completions" }),
+      makeRequest({
+        ...validBody,
+        upstreamUrl: "https://example.com/chat/completions",
+      }),
     );
 
     expect(response.status).toBe(400);
+    expect(upstreamFetch).not.toHaveBeenCalled();
+  });
+
+  test("returns a distinct payload-size error before contacting Nova", async () => {
+    const upstreamFetch = vi.fn();
+    vi.stubGlobal("fetch", upstreamFetch);
+
+    const response = await proxy.fetch(
+      makeRequest({
+        ...validBody,
+        messages: [{ role: "user", content: "x".repeat(3_600_000) }],
+      }),
+    );
+
+    expect(response.status).toBe(413);
+    await expect(response.json()).resolves.toEqual({
+      error: "request_too_large",
+    });
     expect(upstreamFetch).not.toHaveBeenCalled();
   });
 
