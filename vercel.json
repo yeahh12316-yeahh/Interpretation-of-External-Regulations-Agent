@@ -12,7 +12,8 @@
   ],
   "functions": {
     "api/model-proxy.ts": {
-      "maxDuration": 120
+      "maxDuration": 120,
+      "regions": ["hkg1"]
     }
   },
   "headers": [
