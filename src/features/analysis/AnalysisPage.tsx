@@ -11,8 +11,20 @@ export interface AnalysisPageProps {
   onRun: () => void;
   onCancel: () => void;
   running: boolean;
-  progress: { stage: string; completed: number; total: number } | null;
+  progress: {
+    phase: "preparing" | "completed";
+    stage: string;
+    completed: number;
+    total: number;
+  } | null;
 }
+
+const stageLabels: Record<string, string> = {
+  document_identity: "文件身份",
+  atomic_clauses: "原子条款",
+  key_matters: "关键事项",
+  institution_impact: "机构影响",
+};
 
 const severity = (finding: Finding) =>
   finding.requiredReview ? "必审" : "一般";
@@ -45,7 +57,13 @@ export function AnalysisPage({
       </header>
       {running && progress ? (
         <div role="status" className="notice">
-          <p>阶段：{progress.stage}</p>
+          <p>
+            {progress.phase === "preparing" && progress.stage === "正在准备分析计划"
+              ? progress.stage
+              : progress.phase === "preparing"
+                ? `正在准备请求模型：${stageLabels[progress.stage] ?? progress.stage}`
+              : `已完成阶段：${stageLabels[progress.stage] ?? progress.stage}`}
+          </p>
           <progress max={progress.total} value={progress.completed} />{" "}
           <span>
             {progress.completed}/{progress.total}

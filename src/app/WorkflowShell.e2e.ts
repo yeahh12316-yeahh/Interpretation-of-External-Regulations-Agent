@@ -198,9 +198,9 @@ test("production flow analyzes, reviews, restores and reaches the report gate wi
   await page.getByRole("button", { name: "下一步" }).click();
   await page.getByRole("button", { name: "下一步" }).click();
   await page.getByRole("button", { name: "开始监管分析" }).click();
-  const consent = page.getByRole("dialog", { name: /第三方模型数据流/ });
+  const consent = page.getByRole("dialog", { name: "本次分析将使用外部模型" });
   await consent.getByRole("checkbox").check();
-  await consent.getByRole("button", { name: "确认并发送" }).click();
+  await consent.getByRole("button", { name: "同意并开始分析" }).click();
   await expect(
     page.getByRole("status").filter({ hasText: "监管分析完成" }),
   ).toBeVisible();

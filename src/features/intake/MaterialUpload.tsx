@@ -8,7 +8,7 @@ import {
   useState,
 } from "react";
 
-import type { SourceType } from "../../domain/source";
+import type { SourceType, SourceUnit } from "../../domain/source";
 import {
   parseDocument,
   type ParseProgress,
@@ -44,16 +44,29 @@ const fileType = (file: File): string =>
 export interface MaterialUploadProps {
   parseFile?: typeof parseDocument;
   onParsed?: (result: ParseResult) => void;
+  initialResults?: Partial<Record<SourceType, ParseResult>>;
+  initialSources?: readonly SourceUnit[];
 }
+
+const stateFromResult = (result: ParseResult): UploadState => ({
+  status: result.quality.finalizationBlocked ? "blocked" : "complete",
+  result,
+});
 
 export function MaterialUpload({
   parseFile = parseDocument,
   onParsed,
+  initialResults,
+  initialSources = [],
 }: MaterialUploadProps = {}): JSX.Element {
-  const [uploads, setUploads] = useState<Record<SourceType, UploadState>>({
-    regulatory_text: EMPTY_STATE,
-    official_interpretation: EMPTY_STATE,
-  });
+  const [uploads, setUploads] = useState<Record<SourceType, UploadState>>(() => ({
+    regulatory_text: initialResults?.regulatory_text
+      ? stateFromResult(initialResults.regulatory_text)
+      : EMPTY_STATE,
+    official_interpretation: initialResults?.official_interpretation
+      ? stateFromResult(initialResults.official_interpretation)
+      : EMPTY_STATE,
+  }));
   const controllers = useRef<Record<SourceType, AbortController | null>>({
     regulatory_text: null,
     official_interpretation: null,
@@ -66,6 +79,25 @@ export function MaterialUpload({
     },
     [],
   );
+
+  useEffect(() => {
+    if (!initialResults) return;
+    setUploads((current) => {
+      const next = { ...current };
+      let changed = false;
+      (Object.keys(SOURCE_LABEL) as SourceType[]).forEach((sourceType) => {
+        const result = initialResults[sourceType];
+        if (!result || current[sourceType].status === "parsing") return;
+        if (current[sourceType].result?.fileHash === result.fileHash) return;
+        next[sourceType] = {
+          ...stateFromResult(result),
+          file: current[sourceType].file,
+        };
+        changed = true;
+      });
+      return changed ? next : current;
+    });
+  }, [initialResults]);
 
   const update = (sourceType: SourceType, state: UploadState) => {
     setUploads((current) => ({ ...current, [sourceType]: state }));
@@ -170,6 +202,9 @@ export function MaterialUpload({
   ): JSX.Element => {
     const state = uploads[sourceType];
     const label = SOURCE_LABEL[sourceType];
+    const restoredSource = initialSources.find(
+      ({ sourceType: candidateType }) => candidateType === sourceType,
+    );
     return (
       <section
         className="upload-box"
@@ -203,14 +238,23 @@ export function MaterialUpload({
           <p>可拖拽、选择或粘贴 PDF、DOCX、TXT 文件</p>
         </div>
 
-        {state.file ? (
+        {!state.file && !state.result && restoredSource ? (
+          <div className="upload-alert" role="alert">
+            已恢复来源“{restoredSource.title}”，但当前保存记录缺少权威解析证据；
+            请重新选择该文件以继续。
+          </div>
+        ) : null}
+
+        {state.file || state.result ? (
           <dl className="upload-meta">
             <dt>文件名</dt>
-            <dd>{state.file.name}</dd>
+            <dd>
+              {state.file?.name ?? `${state.result?.source.title ?? label}（已恢复）`}
+            </dd>
             <dt>类型</dt>
-            <dd>{fileType(state.file)}</dd>
+            <dd>{state.file ? fileType(state.file) : "已恢复解析记录"}</dd>
             <dt>大小</dt>
-            <dd>{formatBytes(state.file.size)}</dd>
+            <dd>{state.file ? formatBytes(state.file.size) : "已随解析结果恢复"}</dd>
             <dt>来源</dt>
             <dd>{label}</dd>
             {state.result ? (

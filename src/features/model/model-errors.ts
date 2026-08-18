@@ -14,7 +14,8 @@ const safeMessages: Record<ModelErrorKind, string> = {
   not_found: "接口或模型不存在，请检查 Base URL 和模型名称。",
   rate_limit: "请求过于频繁或额度不足，请稍后重试。",
   timeout: "模型请求超时，请检查网络或稍后重试。",
-  invalid_schema: "模型响应不符合所需结构，已停止处理。",
+  invalid_schema:
+    "模型未按要求返回结构化 JSON，系统已自动尝试两次修复仍未通过；请更换支持结构化输出的模型或检查接口兼容性后重试。",
   consent_required: "发送用户材料前必须确认第三方模型数据流告知。",
   network: "模型接口不可用，请检查 HTTPS 地址和网络连接。",
 };

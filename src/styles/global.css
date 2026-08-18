@@ -661,6 +661,112 @@ select {
   justify-content: flex-end;
 }
 
+.data-flow-dialog {
+  background: rgb(17 17 17 / 55%);
+}
+
+.data-flow-card {
+  display: grid;
+  gap: 1rem;
+  width: min(720px, 100%);
+  max-height: 90vh;
+  overflow: auto;
+  padding: 1.5rem;
+  border-top: 4px solid var(--green);
+  background: #fff;
+  box-shadow: 0 1rem 3rem rgb(0 0 0 / 30%);
+}
+
+.data-flow-header {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 1rem;
+}
+
+.data-flow-header h2,
+.data-flow-header p {
+  margin: 0;
+}
+
+.data-flow-lead {
+  max-width: 62ch;
+  margin: 0;
+  color: #444;
+  line-height: 1.7;
+}
+
+.dialog-close {
+  width: 2rem;
+  height: 2rem;
+  border: 1px solid #b7b7b7;
+  background: #fff;
+  cursor: pointer;
+  font-size: 1.25rem;
+  line-height: 1;
+}
+
+.data-flow-summary {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 0.75rem;
+  margin: 0;
+}
+
+.data-flow-summary div {
+  min-width: 0;
+  padding: 0.75rem;
+  border: 1px solid #d9d9d9;
+  background: #fafafa;
+}
+
+.data-flow-summary dt {
+  color: #707070;
+  font-size: 0.75rem;
+}
+
+.data-flow-summary dd {
+  margin: 0.35rem 0 0;
+  overflow-wrap: anywhere;
+  font-weight: 700;
+}
+
+.data-flow-files {
+  display: grid;
+  gap: 0.25rem;
+  margin: 0;
+  padding-left: 1.2rem;
+  color: #555;
+  font-size: 0.8rem;
+}
+
+.data-flow-consent {
+  display: flex !important;
+  grid-template-columns: none !important;
+  align-items: flex-start !important;
+  gap: 0.6rem !important;
+  padding: 0.8rem;
+  border: 1px solid #d9e8bd;
+  background: #f5faed;
+  line-height: 1.55;
+}
+
+.data-flow-consent input {
+  width: auto;
+  min-height: auto;
+  margin-top: 0.2rem;
+}
+
+@media (max-width: 640px) {
+  .data-flow-summary {
+    grid-template-columns: 1fr;
+  }
+
+  .data-flow-card .dialog-actions {
+    flex-wrap: wrap;
+  }
+}
+
 .workflow-nav {
   border-bottom: 1px solid var(--black);
   padding: var(--space-2) var(--space-4);

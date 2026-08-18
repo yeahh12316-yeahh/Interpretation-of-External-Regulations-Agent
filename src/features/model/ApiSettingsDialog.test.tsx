@@ -125,13 +125,17 @@ describe("ThirdPartyDataFlowDialog", () => {
       />,
     );
 
-    const dialog = screen.getByRole("dialog", { name: "第三方模型数据流告知" });
-    expect(within(dialog).getByText(/监管文本.*发送至/)).toBeVisible();
+    const dialog = screen.getByRole("dialog", {
+      name: "本次分析将使用外部模型",
+    });
+    expect(within(dialog).getByText(/监管原文分块.*发送到/)).toBeVisible();
     expect(within(dialog).getByText(/model\.example/)).toBeVisible();
-    const confirm = within(dialog).getByRole("button", { name: "确认并发送" });
+    const confirm = within(dialog).getByRole("button", { name: "同意并开始分析" });
     expect(confirm).toBeDisabled();
 
-    await user.click(within(dialog).getByRole("checkbox", { name: /已了解/ }));
+    await user.click(
+      within(dialog).getByRole("checkbox", { name: /确认这些材料可以发送/ }),
+    );
     await user.click(confirm);
 
     await waitFor(() => expect(onConfirm).toHaveBeenCalledOnce());

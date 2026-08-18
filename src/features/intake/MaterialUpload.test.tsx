@@ -34,6 +34,60 @@ test("marks the regulatory file required and official interpretation optional", 
   expect(screen.getByText("选填")).toBeVisible();
 });
 
+test("shows authoritative parse results restored from the saved workflow", () => {
+  const restored = {
+    fileHash: "a".repeat(64),
+    source: {
+      sourceId: "SRC-regulatory_text-restored",
+      sourceType: "regulatory_text" as const,
+      title: "restored.txt",
+      content: "第一条 已恢复原文。",
+    },
+    pageCount: null,
+    successfulPages: [],
+    failedPages: [],
+    units: [],
+    ocrReviews: [],
+    anchors: [],
+    quality: {
+      totalCharacters: 10,
+      parsedUnitCount: 0,
+      failedPageCount: 0,
+      lowTextPages: [],
+      extractionCoverage: 1,
+      ocrFailedPages: [],
+      finalizationBlocked: false,
+    },
+  } satisfies ParseResult;
+
+  render(<MaterialUpload initialResults={{ regulatory_text: restored }} />);
+
+  const region = screen.getByRole("region", { name: "监管文件上传" });
+  expect(within(region).getByText(/restored\.txt（已恢复）/u)).toBeVisible();
+  expect(within(region).getByText("解析完成")).toBeVisible();
+  expect(within(region).getByText("已恢复解析记录")).toBeVisible();
+});
+
+test("explains when a restored source has no authoritative parse evidence", () => {
+  render(
+    <MaterialUpload
+      initialSources={[
+        {
+          sourceId: "SRC-regulatory_text-incomplete",
+          sourceType: "regulatory_text",
+          title: "incomplete.pdf",
+          content: "历史来源内容",
+        },
+      ]}
+    />,
+  );
+
+  expect(screen.getByRole("alert")).toHaveTextContent(
+    "缺少权威解析证据",
+  );
+  expect(screen.getByRole("alert")).toHaveTextContent("重新选择该文件");
+});
+
 test("accepts file selection, drag-and-drop, and clipboard paste without mixing sources", async () => {
   render(<MaterialUpload />);
   const user = userEvent.setup();

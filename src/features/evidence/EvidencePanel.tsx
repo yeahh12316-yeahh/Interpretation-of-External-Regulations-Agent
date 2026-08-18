@@ -31,6 +31,7 @@ export interface EvidencePanelProps {
   atomicRequirements?: readonly AtomicRequirement[];
   ruleReviewAttestations?: unknown;
   officialPrimarySourceIds?: OfficialPrimarySourceIds;
+  openValidationDetailsRequest?: number;
 }
 
 const HighlightedExcerpt = ({
@@ -61,10 +62,14 @@ export function EvidencePanel({
   atomicRequirements = [],
   ruleReviewAttestations = [],
   officialPrimarySourceIds,
+  openValidationDetailsRequest = 0,
 }: EvidencePanelProps): JSX.Element {
   const [detailsOpen, setDetailsOpen] = useState(false);
   const closeDetails = useCallback(() => setDetailsOpen(false), []);
   useEffect(() => setDetailsOpen(false), [selectedFindingId]);
+  useEffect(() => {
+    if (openValidationDetailsRequest > 0) setDetailsOpen(true);
+  }, [openValidationDetailsRequest]);
 
   const finding = findings.find(
     ({ findingId }) => findingId === selectedFindingId,

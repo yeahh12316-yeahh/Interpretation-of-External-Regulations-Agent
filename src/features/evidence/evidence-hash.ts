@@ -1,12 +1,32 @@
-const stableValue = (value: unknown): string => {
-  if (Array.isArray(value)) return `[${value.map(stableValue).join(",")}]`;
-  if (value && typeof value === "object") {
-    return `{${Object.entries(value)
-      .sort(([left], [right]) => left.localeCompare(right))
-      .map(([key, item]) => `${JSON.stringify(key)}:${stableValue(item)}`)
-      .join(",")}}`;
+const appendStableValue = (value: unknown, output: string[]): void => {
+  if (Array.isArray(value)) {
+    output.push("[");
+    value.forEach((item, index) => {
+      if (index > 0) output.push(",");
+      appendStableValue(item, output);
+    });
+    output.push("]");
+    return;
   }
-  return JSON.stringify(value) ?? "undefined";
+  if (value && typeof value === "object") {
+    output.push("{");
+    Object.entries(value)
+      .sort(([left], [right]) => left.localeCompare(right))
+      .forEach(([key, item], index) => {
+        if (index > 0) output.push(",");
+        output.push(JSON.stringify(key), ":");
+        appendStableValue(item, output);
+      });
+    output.push("}");
+    return;
+  }
+  output.push(JSON.stringify(value) ?? "undefined");
+};
+
+const stableValue = (value: unknown): string => {
+  const output: string[] = [];
+  appendStableValue(value, output);
+  return output.join("");
 };
 
 /**
@@ -14,12 +34,22 @@ const stableValue = (value: unknown): string => {
  * it is deliberately not described as authentication or a digital signature.
  */
 export const evidenceDigest = (value: unknown): string => {
-  let hash = 0xcbf29ce484222325n;
+  // Keep the existing FNV-1a 64-bit output format, but use two 32-bit limbs
+  // instead of a BigInt multiply for every byte. This is materially cheaper
+  // for large OCR sessions restored and saved in the browser.
+  let high = 0xcbf29ce4;
+  let low = 0x84222325;
   for (const byte of new TextEncoder().encode(stableValue(value))) {
-    hash ^= BigInt(byte);
-    hash = BigInt.asUintN(64, hash * 0x100000001b3n);
+    low = (low ^ byte) >>> 0;
+    const lowWord = low;
+    const lowProduct = lowWord * 0x1b3;
+    const carry = Math.floor(lowProduct / 0x100000000);
+    low = lowProduct >>> 0;
+    high = (high * 0x1b3 + lowWord * 0x100 + carry) >>> 0;
   }
-  return `fnv1a64:${hash.toString(16).padStart(16, "0")}`;
+  return `fnv1a64:${high.toString(16).padStart(8, "0")}${low
+    .toString(16)
+    .padStart(8, "0")}`;
 };
 
 export { stableValue };

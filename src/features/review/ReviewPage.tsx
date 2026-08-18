@@ -72,6 +72,7 @@ export function ReviewPage({
   const [humanOpen, setHumanOpen] = useState(false);
   const [returnOpen, setReturnOpen] = useState(false);
   const [expandedId, setExpandedId] = useState<string | null>(null);
+  const [validationDetailsRequest, setValidationDetailsRequest] = useState(0);
   const [reviewer, setReviewer] = useState("合规复核人");
   const [ruleReasons, setRuleReasons] = useState<Record<string, string>>({});
   const [error, setError] = useState<string | null>(null);
@@ -178,7 +179,10 @@ export function ReviewPage({
                 <button
                   className="btn btn-small"
                   type="button"
-                  onClick={() => select(finding.findingId)}
+                  onClick={() => {
+                    select(finding.findingId);
+                    setValidationDetailsRequest((current) => current + 1);
+                  }}
                 >
                   查看依据
                 </button>
@@ -266,6 +270,7 @@ export function ReviewPage({
             atomicRequirements={state.atomicRequirements}
             ruleReviewAttestations={state.ruleReviewAttestations}
             officialPrimarySourceIds={state.officialPrimarySourceIds}
+            openValidationDetailsRequest={validationDetailsRequest}
           />
           {integrityFailed ? (
             <p role="alert">
