@@ -977,6 +977,14 @@ select {
     grid-template-columns: 1fr;
   }
 
+  .review-row {
+    grid-template-columns: minmax(0, 1fr);
+  }
+
+  .review-row > * {
+    min-width: 0;
+  }
+
   .shell.with-evidence,
   .workflow-frame.with-evidence {
     grid-template-columns: 1fr;
