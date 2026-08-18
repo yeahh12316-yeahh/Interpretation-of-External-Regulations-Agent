@@ -15,7 +15,7 @@ const safeMessages: Record<ModelErrorKind, string> = {
   rate_limit: "请求过于频繁或额度不足，请稍后重试。",
   timeout: "模型请求超时，请检查网络或稍后重试。",
   invalid_schema:
-    "模型未按要求返回结构化 JSON，系统已自动尝试两次修复仍未通过；请更换支持结构化输出的模型或检查接口兼容性后重试。",
+    "模型未按要求返回结构化 JSON；系统已尝试 JSON Schema、兼容 JSON 模式和两次修复仍未通过。请更换支持结构化输出的模型或检查接口兼容性后重试。",
   consent_required: "发送用户材料前必须确认第三方模型数据流告知。",
   network: "模型接口不可用，请检查 HTTPS 地址和网络连接。",
 };
