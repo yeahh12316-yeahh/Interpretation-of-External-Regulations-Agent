@@ -156,6 +156,7 @@ export function WorkflowShell({
   } | null>(null);
   const [running, setRunning] = useState(false);
   const [progress, setProgress] = useState<{
+    phase: "preparing" | "completed";
     stage: string;
     completed: number;
     total: number;
@@ -190,27 +191,32 @@ export function WorkflowShell({
     reanalysisPending: session.pendingReanalysis !== null,
   };
   const persist = (next: WorkflowSession) => {
-    const saved = sealWorkflowSession({
+    // Keep navigation responsive. Hashing a large OCR/parse payload is a
+    // deliberately synchronous consistency check, so do it in the queued
+    // persistence turn instead of blocking the click that changes steps.
+    const optimistic = {
       ...qualityBound(next),
       revision: sessionRef.current.revision,
       lastSavedAt: new Date().toISOString(),
-    });
-    sessionRef.current = saved;
-    setSession(saved);
+      contentHash: sessionRef.current.contentHash,
+    };
+    sessionRef.current = optimistic;
+    setSession(optimistic);
     persistenceQueue.current = persistenceQueue.current
       .catch(() => undefined)
       .then(async () => {
         const latest = sessionRef.current;
-        const candidate = sealWorkflowSession({
-          ...latest,
-          revision: persistedRevision.current,
-        });
+        const sealed = sealWorkflowSession(latest);
+        if (sessionRef.current === latest) {
+          sessionRef.current = sealed;
+          setSession(sealed);
+        }
         const stored = await repository.save(
-          candidate,
+          sealed,
           persistedRevision.current,
         );
         persistedRevision.current = stored.revision;
-        if (sessionRef.current.contentHash === latest.contentHash) {
+        if (sessionRef.current === sealed) {
           const synchronized = sealWorkflowSession({
             ...sessionRef.current,
             revision: stored.revision,
@@ -407,7 +413,12 @@ export function WorkflowShell({
     analysisBaseline.current = analysisStateToken(startingSession);
     setRunning(true);
     setMessage(null);
-    setProgress({ stage: "准备分析", completed: 0, total: 1 });
+    setProgress({
+      phase: "preparing",
+      stage: "正在准备分析计划",
+      completed: 0,
+      total: 1,
+    });
     try {
       const request = startingSession.pendingReanalysis;
       const sourceUnits = request
@@ -462,9 +473,17 @@ export function WorkflowShell({
         abort.signal,
         (update: AnalysisProgress) =>
           setProgress({
+            phase: update.phase,
             stage: update.stage,
             completed: update.completedNodes,
             total: update.totalNodes,
+          }),
+        ({ totalNodes, firstStage }) =>
+          setProgress({
+            phase: "preparing",
+            stage: firstStage ?? "已生成分析计划",
+            completed: 0,
+            total: totalNodes,
           }),
       );
       if (analysisBaseline.current !== analysisStateToken(sessionRef.current))
@@ -615,7 +634,14 @@ export function WorkflowShell({
         </p>
       </div>
       <p className="helper-text">材料版本、效力与重大判断需合规复核。</p>
-      <MaterialUpload parseFile={parseFile} onParsed={handleParsed} />
+      <MaterialUpload
+        initialResults={Object.fromEntries(
+          session.parseResults.map((result) => [result.source.sourceType, result]),
+        )}
+        initialSources={session.project.sourceUnits}
+        parseFile={parseFile}
+        onParsed={handleParsed}
+      />
     </section>
   ) : session.project.workflowStep === "parsing" ? (
     <section className="workflow-step-page screen active">
@@ -814,7 +840,14 @@ export function WorkflowShell({
           open={consentOpen}
           endpoint={sessionCredentials.get()?.baseUrl ?? ""}
           model={sessionCredentials.get()?.model ?? ""}
+          sourceTitles={sessionRef.current.project.sourceUnits.map(
+            ({ title }) => title,
+          )}
           onCancel={() => setConsentOpen(false)}
+          onEditSettings={() => {
+            setConsentOpen(false);
+            setSettingsOpen(true);
+          }}
           onConfirm={() => {
             setConsentOpen(false);
             void executeAnalysis();

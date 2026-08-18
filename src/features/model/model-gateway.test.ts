@@ -115,6 +115,46 @@ describe("OpenAI-compatible model gateway", () => {
     expect(JSON.stringify(body)).not.toContain(secret);
   });
 
+  test("accepts provider message content returned as text parts", async () => {
+    server.use(
+      http.post(MODEL_CHAT_URL, () =>
+        HttpResponse.json({
+          choices: [
+            {
+              message: {
+                content: [{ type: "text", text: '{"findings":[]}' }],
+              },
+            },
+          ],
+        }),
+      ),
+    );
+
+    await expect(
+      createModelGateway(config, secret).requestStructured(request),
+    ).resolves.toEqual({ findings: [] });
+  });
+
+  test("extracts JSON when the model wraps it in explanation or Markdown", async () => {
+    server.use(
+      http.post(MODEL_CHAT_URL, () =>
+        HttpResponse.json({
+          choices: [
+            {
+              message: {
+                content: '结果如下：\\n```json\\n{"findings":[]}\\n```\\n以上。',
+              },
+            },
+          ],
+        }),
+      ),
+    );
+
+    await expect(
+      createModelGateway(config, secret).requestStructured(request),
+    ).resolves.toEqual({ findings: [] });
+  });
+
   test.each([
     [401, "auth"],
     [404, "not_found"],
@@ -192,7 +232,7 @@ describe("OpenAI-compatible model gateway", () => {
     const requestBodies: Array<Record<string, unknown>> = [];
     let call = 0;
     server.use(
-      http.post(MODEL_CHAT_URL, async ({ request: incoming }) => {
+        http.post(MODEL_CHAT_URL, async ({ request: incoming }) => {
         requestBodies.push((await incoming.json()) as Record<string, unknown>);
         call += 1;
         return HttpResponse.json({
@@ -213,9 +253,13 @@ describe("OpenAI-compatible model gateway", () => {
       findings: [],
     });
     expect(requestBodies).toHaveLength(2);
+    expect(requestBodies[1]).toMatchObject({
+      response_format: { type: "json_object" },
+    });
     const repairText = JSON.stringify(requestBodies[1]);
     expect(repairText).toContain("findings: none");
     expect(repairText).toContain("不得新增");
+    expect(repairText).toContain("findings");
     expect(repairText).not.toContain("机构应当建立制度");
   });
 

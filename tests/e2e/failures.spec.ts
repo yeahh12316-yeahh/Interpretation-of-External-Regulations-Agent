@@ -86,7 +86,7 @@ test.describe("model failure diagnostics", () => {
       [401, /鉴权失败/u],
       [404, /接口或模型不存在/u],
       [429, /请求过于频繁或额度不足/u],
-      ["invalid", /模型响应不符合所需结构/u],
+      ["invalid", /模型未按要求返回结构化 JSON/u],
     ];
     for (const [nextMode, message] of cases) {
       mode = nextMode;

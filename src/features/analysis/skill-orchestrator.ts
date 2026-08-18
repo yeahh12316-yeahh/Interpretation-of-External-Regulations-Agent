@@ -804,6 +804,7 @@ export interface AnalysisInput {
 }
 
 export interface AnalysisProgress {
+  phase: "completed";
   stage: AnalysisStage;
   nodeId: string;
   completedNodes: number;
@@ -813,6 +814,15 @@ export interface AnalysisProgress {
 
 export type AnalysisProgressHandler = (
   progress: AnalysisProgress,
+) => void | Promise<void>;
+
+export interface AnalysisPlan {
+  totalNodes: number;
+  firstStage: AnalysisStage | null;
+}
+
+export type AnalysisPlanHandler = (
+  plan: AnalysisPlan,
 ) => void | Promise<void>;
 
 interface AnalysisNode {
@@ -2577,6 +2587,7 @@ export async function runAnalysis(
   input: AnalysisInput,
   signal?: AbortSignal,
   onProgress?: AnalysisProgressHandler,
+  onPlan?: AnalysisPlanHandler,
 ): Promise<AnalysisDraft> {
   throwIfAborted(signal);
   const model = input.model.trim();
@@ -2619,6 +2630,10 @@ export async function runAnalysis(
   const nodes = nodesFor(chunks).filter(
     (node) => !requestedStages || requestedStages.includes(node.stage),
   );
+  await onPlan?.({
+    totalNodes: nodes.length,
+    firstStage: nodes[0]?.stage ?? null,
+  });
   const inputFingerprint = await executionPlanFingerprint(
     input.sourceUnits,
     parsedUnits,
@@ -2873,6 +2888,7 @@ export async function runAnalysis(
     });
 
     await onProgress?.({
+      phase: "completed",
       stage: node.stage,
       nodeId: node.nodeId,
       completedNodes: checkpoint.runs.length,

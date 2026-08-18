@@ -196,16 +196,20 @@ export interface ThirdPartyDataFlowDialogProps {
   open: boolean;
   endpoint: string;
   model: string;
+  sourceTitles?: readonly string[];
   onConfirm: () => void;
   onCancel: () => void;
+  onEditSettings?: () => void;
 }
 
 export function ThirdPartyDataFlowDialog({
   open,
   endpoint,
   model,
+  sourceTitles = [],
   onConfirm,
   onCancel,
+  onEditSettings,
 }: ThirdPartyDataFlowDialogProps): JSX.Element | null {
   const [acknowledged, setAcknowledged] = useState(false);
   useEffect(() => setAcknowledged(false), [open, endpoint, model]);
@@ -225,31 +229,83 @@ export function ThirdPartyDataFlowDialog({
 
   return (
     <div
-      aria-labelledby="data-flow-title"
+      aria-label="第三方模型数据流确认"
+      aria-describedby="data-flow-description"
       aria-modal="true"
-      className="workflow-dialog"
+      className="workflow-dialog data-flow-dialog"
       role="dialog"
     >
-      <h2 id="data-flow-title">第三方模型数据流告知</h2>
-      <p>
-        本次操作会将监管文本及相关提示词发送至 {provider} 的模型{" "}
-        {model || "（未命名）"}。
-        数据处理受该服务商的条款与隐私政策约束，请确认材料允许发送至该服务商。
-      </p>
-      <label>
-        <input
-          checked={acknowledged}
-          type="checkbox"
-          onChange={(event) => setAcknowledged(event.target.checked)}
-        />
-        我已了解上述第三方数据流并确认可以发送
-      </label>
-      <button disabled={!acknowledged} type="button" onClick={confirm}>
-        确认并发送
-      </button>
-      <button type="button" onClick={onCancel}>
-        取消
-      </button>
+      <section className="data-flow-card">
+        <header className="data-flow-header">
+          <div>
+            <p className="eyebrow">发送前最后确认</p>
+            <h2 id="data-flow-title">本次分析将使用外部模型</h2>
+          </div>
+          <button
+            aria-label="关闭数据流确认"
+            className="dialog-close"
+            type="button"
+            onClick={onCancel}
+          >
+            ×
+          </button>
+        </header>
+        <p id="data-flow-description" className="data-flow-lead">
+          监管原文分块和分析提示词会离开浏览器，发送到下方服务商。请确认材料允许发送，分析结果仍需人工复核。
+        </p>
+        <dl className="data-flow-summary">
+          <div>
+            <dt>服务商</dt>
+            <dd>{provider}</dd>
+          </div>
+          <div>
+            <dt>模型</dt>
+            <dd>{model || "未命名模型"}</dd>
+          </div>
+          <div>
+            <dt>本次材料</dt>
+            <dd>{sourceTitles.length} 份已完成解析的材料</dd>
+          </div>
+        </dl>
+        {sourceTitles.length ? (
+          <ul className="data-flow-files" aria-label="本次发送的材料">
+            {sourceTitles.slice(0, 4).map((title) => (
+              <li key={title}>{title}</li>
+            ))}
+            {sourceTitles.length > 4 ? (
+              <li>另有 {sourceTitles.length - 4} 份材料</li>
+            ) : null}
+          </ul>
+        ) : null}
+        <label className="data-flow-consent">
+          <input
+            checked={acknowledged}
+            type="checkbox"
+            onChange={(event) => setAcknowledged(event.target.checked)}
+          />
+          <span>
+            我确认这些材料可以发送至上述服务商，并理解模型输出不是最终审计结论。
+          </span>
+        </label>
+        <div className="dialog-actions">
+          {onEditSettings ? (
+            <button className="btn btn-link" type="button" onClick={onEditSettings}>
+              返回修改接口
+            </button>
+          ) : null}
+          <button className="btn btn-secondary" type="button" onClick={onCancel}>
+            取消
+          </button>
+          <button
+            className="btn btn-primary"
+            disabled={!acknowledged}
+            type="button"
+            onClick={confirm}
+          >
+            同意并开始分析
+          </button>
+        </div>
+      </section>
     </div>
   );
 }

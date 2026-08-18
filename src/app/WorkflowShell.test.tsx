@@ -347,7 +347,7 @@ it("does not call the model before configuration and explicit data-flow consent"
   await user.click(screen.getByRole("button", { name: "开始监管分析" }));
   expect(run).not.toHaveBeenCalled();
   expect(
-    screen.getByRole("dialog", { name: /第三方模型数据流/ }),
+    screen.getByRole("dialog", { name: "第三方模型数据流确认" }),
   ).toBeVisible();
 });
 
