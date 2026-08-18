@@ -34,6 +34,7 @@ import type { ParseProgressCallback } from "./parse-progress";
 // screen appear frozen. The caller can still cancel immediately; this bound
 // is the final safety net when PDF.js never settles a page promise.
 export const PDF_OPERATION_TIMEOUT_MS = 30_000;
+export const PDF_DESTROY_TIMEOUT_MS = 2_000;
 
 const testProcess = globalThis as typeof globalThis & {
   process?: { cwd(): string };
@@ -61,6 +62,23 @@ const raceWithTimeout = async <T>(
   });
   try {
     return await Promise.race([raceWithAbort(promise, signal), timeout]);
+  } finally {
+    if (timer) clearTimeout(timer);
+  }
+};
+
+const destroyLoadingTask = async (
+  loadingTask: ReturnType<typeof getDocument>,
+): Promise<void> => {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const destruction = Promise.resolve()
+    .then(() => loadingTask.destroy())
+    .catch(() => undefined);
+  const timeout = new Promise<void>((resolve) => {
+    timer = setTimeout(resolve, PDF_DESTROY_TIMEOUT_MS);
+  });
+  try {
+    await Promise.race([destruction, timeout]);
   } finally {
     if (timer) clearTimeout(timer);
   }
@@ -498,7 +516,7 @@ export async function parsePdf(
   const loadingTask = getDocument({ data: new Uint8Array(bytes) });
   let pdf: Awaited<typeof loadingTask.promise> | undefined;
   const cancelLoading = () => {
-    void loadingTask.destroy().catch(() => undefined);
+    void destroyLoadingTask(loadingTask);
   };
   signal.addEventListener("abort", cancelLoading, { once: true });
 
@@ -535,7 +553,7 @@ export async function parsePdf(
     } catch {
       // Loading failed or was aborted; destroy below is still sufficient.
     }
-    await loadingTask.destroy().catch(() => undefined);
+    await destroyLoadingTask(loadingTask);
   }
 }
 
@@ -547,7 +565,7 @@ export async function inspectPdfTextLayer(
   const loadingTask = getDocument({ data: new Uint8Array(bytes) });
   let pdf: Awaited<typeof loadingTask.promise> | undefined;
   const cancelLoading = () => {
-    void loadingTask.destroy().catch(() => undefined);
+    void destroyLoadingTask(loadingTask);
   };
   signal.addEventListener("abort", cancelLoading, { once: true });
   try {
@@ -593,6 +611,6 @@ export async function inspectPdfTextLayer(
     } catch {
       // Best-effort cleanup for inspection callers.
     }
-    await loadingTask.destroy().catch(() => undefined);
+    await destroyLoadingTask(loadingTask);
   }
 }
