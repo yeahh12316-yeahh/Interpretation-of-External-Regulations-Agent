@@ -27,13 +27,6 @@
     "node": "24.19.0",
     "pnpm": "11.19.0"
   },
-  "devEngines": {
-    "packageManager": {
-      "name": "pnpm",
-      "version": "11.19.0",
-      "onFail": "download"
-    }
-  },
   "type": "module",
   "dependencies": {
     "@react-pdf/renderer": "^4.6.0",
