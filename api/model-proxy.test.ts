@@ -79,4 +79,21 @@ describe("Vercel model proxy", () => {
       "https://app.example",
     );
   });
+
+  test("allows the published Vercel and GitHub Pages origins by default", async () => {
+    const response = await proxy.fetch(
+      new Request("https://app.example/api/model-proxy", {
+        method: "OPTIONS",
+        headers: {
+          Origin: "https://yeahh12316-yeahh.github.io",
+          "Access-Control-Request-Method": "POST",
+        },
+      }),
+    );
+
+    expect(response.status).toBe(204);
+    expect(response.headers.get("Access-Control-Allow-Origin")).toBe(
+      "https://yeahh12316-yeahh.github.io",
+    );
+  });
 });
