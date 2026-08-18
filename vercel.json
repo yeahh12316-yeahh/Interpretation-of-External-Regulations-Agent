@@ -6,10 +6,15 @@
   "outputDirectory": "dist",
   "rewrites": [
     {
-      "source": "/(.*)",
+      "source": "/((?!api(?:/|$)).*)",
       "destination": "/index.html"
     }
   ],
+  "functions": {
+    "api/model-proxy.ts": {
+      "maxDuration": 120
+    }
+  },
   "headers": [
     {
       "source": "/(.*)",
