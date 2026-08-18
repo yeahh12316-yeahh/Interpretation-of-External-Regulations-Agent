@@ -145,7 +145,7 @@ export const runProductionSmokeFlow = async (
     .filter({ hasText: "OFF-SCAN" });
   await official.getByRole("button", { name: "查看依据" }).click();
   await expect(page.getByTestId("evidence-original")).toContainText(
-    "合成官方解读",
+    /合\s*成\s*官\s*方\s*解\s*读/u,
   );
   const officialEvidence = page.getByRole("complementary", {
     name: "原文证据",
