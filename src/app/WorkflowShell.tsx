@@ -1,5 +1,7 @@
 import {
   Component,
+  lazy,
+  Suspense,
   useEffect,
   useMemo,
   useRef,
@@ -11,7 +13,13 @@ import {
 
 import type { WorkflowStep } from "../domain/project";
 import { canTransition } from "../domain/state-machine";
-import { AnalysisPage } from "../features/analysis/AnalysisPage";
+const AnalysisPage = lazy(() =>
+  import("../features/analysis/AnalysisPage").then(
+    ({ AnalysisPage: page }) => ({
+      default: page,
+    }),
+  ),
+);
 import {
   runAnalysis,
   type AnalysisDraft,
@@ -41,9 +49,21 @@ import {
 } from "../features/model/model-gateway";
 import { sessionCredentials } from "../features/model/session-credentials";
 import type { ParseResult } from "../features/parsing/parse-document";
-import { OcrReview } from "../features/parsing/OcrReview";
-import { ReviewPage } from "../features/review/ReviewPage";
-import { ReportPage } from "../features/reports/ReportPage";
+const OcrReview = lazy(() =>
+  import("../features/parsing/OcrReview").then(({ OcrReview: page }) => ({
+    default: page,
+  })),
+);
+const ReviewPage = lazy(() =>
+  import("../features/review/ReviewPage").then(({ ReviewPage: page }) => ({
+    default: page,
+  })),
+);
+const ReportPage = lazy(() =>
+  import("../features/reports/ReportPage").then(({ ReportPage: page }) => ({
+    default: page,
+  })),
+);
 import { canPreviewReportDraft } from "../features/reports/report-model";
 import {
   cancelReanalysis,
@@ -166,6 +186,7 @@ export function WorkflowShell({
   const [draftReportOpen, setDraftReportOpen] = useState(false);
   const controller = useRef<AbortController | null>(null);
   const persistenceQueue = useRef<Promise<void>>(Promise.resolve());
+  const persistenceTimer = useRef<number | null>(null);
   const persistedRevision = useRef(session.revision);
   const analysisBaseline = useRef<string | null>(null);
   const sessionRef = useRef(session);
@@ -191,43 +212,63 @@ export function WorkflowShell({
     reanalysisPending: session.pendingReanalysis !== null,
   };
   const persist = (next: WorkflowSession) => {
-    // Keep navigation responsive. Hashing a large OCR/parse payload is a
-    // deliberately synchronous consistency check, so do it in the queued
-    // persistence turn instead of blocking the click that changes steps.
+    // Keep the click path lightweight. Quality calculation and hashing a large
+    // OCR/parse payload are deliberately synchronous consistency checks, so
+    // do them in a coalesced persistence turn instead of blocking the click
+    // that changes steps.
     const optimistic = {
-      ...qualityBound(next),
+      ...next,
       revision: sessionRef.current.revision,
       lastSavedAt: new Date().toISOString(),
       contentHash: sessionRef.current.contentHash,
     };
     sessionRef.current = optimistic;
     setSession(optimistic);
-    persistenceQueue.current = persistenceQueue.current
-      .catch(() => undefined)
-      .then(async () => {
-        const latest = sessionRef.current;
-        const sealed = sealWorkflowSession(latest);
-        if (sessionRef.current === latest) {
-          sessionRef.current = sealed;
-          setSession(sealed);
-        }
-        const stored = await repository.save(
-          sealed,
-          persistedRevision.current,
+    if (persistenceTimer.current !== null) {
+      window.clearTimeout(persistenceTimer.current);
+    }
+    persistenceTimer.current = window.setTimeout(() => {
+      persistenceTimer.current = null;
+      persistenceQueue.current = persistenceQueue.current
+        .catch(() => undefined)
+        .then(async () => {
+          const latest = sessionRef.current;
+          const sealed = sealWorkflowSession(qualityBound(latest));
+          if (sessionRef.current === latest) {
+            sessionRef.current = sealed;
+            setSession(sealed);
+          }
+          const stored = await repository.save(
+            sealed,
+            persistedRevision.current,
+          );
+          persistedRevision.current = stored.revision;
+          if (sessionRef.current === sealed) {
+            const synchronized = sealWorkflowSession({
+              ...sessionRef.current,
+              revision: stored.revision,
+            });
+            sessionRef.current = synchronized;
+            setSession(synchronized);
+          } else {
+            // A newer UI change arrived while this save was running. Carry
+            // the repository revision forward without replacing that change;
+            // the next coalesced save will reseal the newer content.
+            const newer = {
+              ...sessionRef.current,
+              revision: stored.revision,
+            };
+            sessionRef.current = newer;
+            setSession(newer);
+          }
+        })
+        .catch(() =>
+          setMessage({
+            kind: "error",
+            text: "本地保存冲突或失败，请恢复后重试",
+          }),
         );
-        persistedRevision.current = stored.revision;
-        if (sessionRef.current === sealed) {
-          const synchronized = sealWorkflowSession({
-            ...sessionRef.current,
-            revision: stored.revision,
-          });
-          sessionRef.current = synchronized;
-          setSession(synchronized);
-        }
-      })
-      .catch(() =>
-        setMessage({ kind: "error", text: "本地保存冲突或失败，请恢复后重试" }),
-      );
+    }, 180);
   };
   const move = (nextStep: WorkflowStep) => {
     if (running) {
@@ -235,15 +276,21 @@ export function WorkflowShell({
       return;
     }
     setDraftReportOpen(false);
-    const gate = canTransition(session.project, nextStep, transitionContext);
+    const current = sessionRef.current;
+    const gate = canTransition(current.project, nextStep, {
+      parsingReady: hasAuthoritativeParsingEvidence(current),
+      evidenceReady:
+        current.project.findings.length > 0 && canFinalizeSession(current),
+      reanalysisPending: current.pendingReanalysis !== null,
+    });
     if (!gate.allowed) {
       setMessage({ kind: "error", text: gate.reason });
       return;
     }
     setMessage(null);
     persist({
-      ...session,
-      project: { ...session.project, workflowStep: nextStep },
+      ...current,
+      project: { ...current.project, workflowStep: nextStep },
     });
   };
   useEffect(() => {
@@ -292,7 +339,11 @@ export function WorkflowShell({
     // remain unchanged; this is a compatibility migration for sessions saved
     // before OCR fallback pages were recorded in lowTextPages.
     persist(candidate);
-  }, [recovering, session.project.parsingCompleted, session.parseResults.length]);
+  }, [
+    recovering,
+    session.project.parsingCompleted,
+    session.parseResults.length,
+  ]);
   const handleParsed = (result: ParseResult) => {
     const current = sessionRef.current;
     if (
@@ -603,7 +654,12 @@ export function WorkflowShell({
   const selectFinding = (id: string | null) => {
     if (running) return;
     const current = sessionRef.current;
-    persist({ ...current, selectedFindingId: id });
+    // Selection is ephemeral UI state. Persisting it recalculated quality,
+    // re-hashed the complete evidence graph, and wrote IndexedDB on every
+    // finding click, which could freeze the browser with large materials.
+    const next = { ...current, selectedFindingId: id };
+    sessionRef.current = next;
+    setSession(next);
   };
   const page = draftReportOpen ? (
     <>
@@ -636,7 +692,10 @@ export function WorkflowShell({
       <p className="helper-text">材料版本、效力与重大判断需合规复核。</p>
       <MaterialUpload
         initialResults={Object.fromEntries(
-          session.parseResults.map((result) => [result.source.sourceType, result]),
+          session.parseResults.map((result) => [
+            result.source.sourceType,
+            result,
+          ]),
         )}
         initialSources={session.project.sourceUnits}
         parseFile={parseFile}
@@ -799,7 +858,15 @@ export function WorkflowShell({
                 {message.text}
               </p>
             ) : null}
-            {page}
+            <Suspense
+              fallback={
+                <section className="workflow-step-page screen active">
+                  <p className="helper-text">正在加载当前工作台…</p>
+                </section>
+              }
+            >
+              {page}
+            </Suspense>
             <footer className="page-controls">
               {session.project.workflowStep === "review" &&
               draftReportAvailable &&
