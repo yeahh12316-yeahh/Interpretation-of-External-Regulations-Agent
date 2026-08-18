@@ -545,7 +545,10 @@ export async function parsePdf(
     let pages = await parseLoadedDocument(
       (pageCount) => `共 ${pageCount} 页，开始提取文本`,
     );
-    if (pages.failedPages.length > 0) {
+    const hasTextExtractionFailure = pages.failedPages.some(
+      (failure) => failure.error === "页面文本提取失败",
+    );
+    if (hasTextExtractionFailure) {
       // Some browser PDF.js workers can stall on a malformed final page even
       // though the same bytes are readable by the main-thread parser. Retry
       // the complete document without a worker so that a worker-specific
